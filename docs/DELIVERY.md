@@ -116,10 +116,23 @@ by the infrastructure repository's CI inside the air gap with that cluster's val
 file; there is no Argo CD or Flux:
 
 ```bash
-helm upgrade --install kafkafim oci://registry.internal/charts/kafkafim --version 1.2.3 -f values-<cluster>.yaml --set image.registry=registry.internal/kafkafim
+helm upgrade --install kafkafim oci://registry.internal/charts/kafkafim --version 1.2.3 -f values-<cluster>.yaml --set image.registry=registry.internal/kafkafim --set image.digest="$(cut -d@ -f2 kafkafim-1.2.3-image.digest)"
 ```
 
-Where `cosign` is unavailable inside the air gap, `skopeo copy --all oci:kafkafim-1.2.3-image docker://registry.internal/kafkafim/kafkafim:1.2.3` pushes the image without its signature.
+`image.digest` pins the pods to the exact image that was signed and checksummed,
+so a tag moved or overwritten in the internal registry cannot change what runs.
+`kafkafim-1.2.3-image.digest` holds the full reference
+(`ghcr.io/matabar/kafkafim@sha256:...`); the chart takes only the `sha256:<64 hex>`
+part after `@` (the registry comes from `image.registry`), and its schema rejects
+anything else. `cosign load` and `skopeo copy --all --preserve-digests` push the same
+bytes, so the digest is the same in the internal registry (to check:
+`skopeo inspect --raw docker://registry.internal/kafkafim/kafkafim:1.2.3 | sha256sum`). The pod image is then `registry.internal/kafkafim/kafkafim@sha256:...`;
+the `app.kubernetes.io/version` label still reads `1.2.3` (the chart's appVersion).
+A per-cluster values file can carry `image.digest` instead of the `--set`. Leave
+`image.tag` empty, or set it to `1.2.3` for a `:1.2.3@sha256:...` reference; never put
+`1.2.3@sha256:...` in `image.tag` (the chart fails and points at `image.digest`).
+
+Where `cosign` is unavailable inside the air gap, `skopeo copy --all --preserve-digests oci:kafkafim-1.2.3-image docker://registry.internal/kafkafim/kafkafim:1.2.3` pushes the image without its signature (`--preserve-digests` makes skopeo fail rather than convert the manifests, which would change the digest).
 
 ## Local developer loop
 
