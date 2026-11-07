@@ -251,7 +251,7 @@ class PipelineSupervisorIntegrationTest {
     awaitState(app, "d-replay", PipelineState.RUNNING);
     PipelineSupervisor supervisor = supervisor(app);
     assertThat(supervisor.failure("d-bad"))
-        .contains("DLQ topic 'd.bad.kafkafim-dlq'")
+        .contains("DLQ topic 'd.bad.kafkafim-dlq' (identity '<none>' on Kafka cluster 'local')")
         .contains("does not exist");
     MeterRegistry meters = app.getBean(MeterRegistry.class);
     assertThat(gauge(meters, "d-bad", "failed_preflight")).isEqualTo(1);

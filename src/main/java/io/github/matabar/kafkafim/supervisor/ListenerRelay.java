@@ -81,13 +81,13 @@ final class ListenerRelay {
 
       @Override
       public void onAuthFailure(SinkKey key, int status, String reason) {
-        toSupervisor(s -> s.onAuthFailure(key.pipeline(), key.cluster(), key.identity()));
+        toSupervisor(s -> s.onAuthChanged(key.pipeline(), key.cluster(), key.identity()));
         forward(sinkListeners, l -> l.onAuthFailure(key, status, reason));
       }
 
       @Override
       public void onAuthRecovered(SinkKey key) {
-        toSupervisor(s -> s.onAuthRecovered(key.pipeline(), key.cluster(), key.identity()));
+        toSupervisor(s -> s.onAuthChanged(key.pipeline(), key.cluster(), key.identity()));
         forward(sinkListeners, l -> l.onAuthRecovered(key));
       }
 

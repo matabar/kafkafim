@@ -92,6 +92,7 @@ final class PipelineRuntime {
   private @Nullable String failure; // guarded by lock
   private final Set<String> pauseReasons = new TreeSet<>(); // guarded by lock
   private @Nullable Thread starter; // guarded by lock
+  private boolean stopping; // guarded by lock
   private @Nullable CountDownLatch stopSignal; // guarded by lock
   private @Nullable KafkaPipelineSource source; // guarded by lock
   private Map<RouteTarget.StreamKey, BulkSink<RecordProcessor.DocumentRef>> sinks =
@@ -152,6 +153,9 @@ final class PipelineRuntime {
   /** Starts the pipeline in the background; no-op while starting or started. */
   void start() {
     synchronized (lock) {
+      if (stopping) {
+        throw new IllegalStateException("Pipeline '" + name + "' is stopping; start it afterwards");
+      }
       if (starter != null || state.isStarted()) {
         return;
       }
@@ -259,19 +263,7 @@ final class PipelineRuntime {
       }
       sinks = opened;
       source = created;
-      pauseReasons.removeIf(reason -> reason.startsWith(AUTH_REASON_PREFIX));
-      for (String cluster : clusters) {
-        if (isOpen(context.sinks().breaker(cluster).getState())) {
-          pauseReasons.add(BREAKER_REASON_PREFIX + cluster);
-        } else {
-          pauseReasons.remove(BREAKER_REASON_PREFIX + cluster);
-        }
-      }
-      if (writer.isBlocked()) {
-        pauseReasons.add(DLQ_BLOCKED_REASON);
-      } else {
-        pauseReasons.remove(DLQ_BLOCKED_REASON);
-      }
+      resetReasonsForStart();
       pauseReasons.forEach(created::pause);
     }
     try {
@@ -303,6 +295,10 @@ final class PipelineRuntime {
       discard(created);
       LOG.warn("Pipeline '{}': source could not start, retrying: {}", name, e.toString());
       return Attempt.RETRY;
+    } catch (RuntimeException e) {
+      discard(created);
+      LOG.error("Pipeline '{}': source failed to start", name, e);
+      return failed(List.of("source failed to start: " + e));
     }
     synchronized (lock) {
       if (signal.getCount() == 0) {
@@ -318,6 +314,25 @@ final class PipelineRuntime {
         compiled.streams().size(),
         config.dlq().topic());
     return Attempt.STARTED;
+  }
+
+  /**
+   * Prepares the pause reasons for a new source, under the lock. Breaker and auth reasons are
+   * dropped: they belong to the previous run's sinks, whose senders were the only ones probing the
+   * breaker or retrying the identity, so keeping them would pause the new source with nothing left
+   * to clear them. If the cluster is still down or the identity still rejected, the new sinks'
+   * first requests report it again (the breaker moves on to half-open and open, the sink to auth
+   * failure), and the in-flight byte budget bounds what is fetched meanwhile. {@code dlq-blocked}
+   * stays: the pipeline's DLQ writer outlives the source, keeps retrying its failed sends, and its
+   * {@code onUnblocked} clears the reason. No foreign lock is taken here (the DLQ writer calls its
+   * listener under its own lock, which leads to this runtime's lock).
+   */
+  void resetReasonsForStart() {
+    synchronized (lock) {
+      pauseReasons.removeIf(reason ->
+          reason.startsWith(AUTH_REASON_PREFIX) || reason.startsWith(BREAKER_REASON_PREFIX));
+      report();
+    }
   }
 
   private Attempt failed(List<String> problems) {
@@ -350,6 +365,7 @@ final class PipelineRuntime {
   void stop() {
     Thread pending;
     synchronized (lock) {
+      stopping = true;
       if (stopSignal != null) {
         stopSignal.countDown();
       }
@@ -379,6 +395,7 @@ final class PipelineRuntime {
       if (state != PipelineState.FAILED_PREFLIGHT) {
         setState(PipelineState.STOPPED);
       }
+      stopping = false;
     }
   }
 
@@ -425,6 +442,29 @@ final class PipelineRuntime {
         report();
       }
     }
+  }
+
+  /**
+   * Re-reads the auth state of one bulk stream after a sink reported a change, and pauses or
+   * resumes accordingly. Events are hints: one from a sink of an earlier run, or a failure event
+   * overtaken by a recovery on another sender thread, cannot leave a stale pause, because only the
+   * current sink's {@link BulkSink#authFailing()} decides.
+   */
+  void authChanged(String cluster, @Nullable String identity) {
+    synchronized (lock) {
+      BulkSink<RecordProcessor.DocumentRef> sink =
+          sinks.get(new RouteTarget.StreamKey(cluster, identity));
+      String reason = authReason(cluster, identity);
+      if (sink != null && sink.authFailing()) {
+        pause(reason);
+      } else {
+        resume(reason);
+      }
+    }
+  }
+
+  static String authReason(String cluster, @Nullable String identity) {
+    return AUTH_REASON_PREFIX + cluster + "/" + (identity == null ? "<none>" : identity);
   }
 
   /** Whether a breaker state stops sends to its cluster. */

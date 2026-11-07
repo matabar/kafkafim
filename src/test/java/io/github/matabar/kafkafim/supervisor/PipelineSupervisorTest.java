@@ -106,14 +106,29 @@ class PipelineSupervisorTest {
   }
 
   @Test
-  void authFailurePausesOnlyTheOwningPipelineUntilRecovery() {
+  void authEventWithoutCurrentSinkLeavesNoPause() {
+    // A late event from a sink of an earlier run (or of a pipeline that is not started) must not
+    // pause a source that nothing would ever resume: the current sink's auth state decides.
     SinkKey key = new SinkKey("to-both", "es2", null);
     relay.sinkListener().onAuthFailure(key, 401, "{}");
-    relay.sinkListener().onAuthFailure(key, 401, "{}");
-    assertThat(supervisor.pauseReasons("to-both")).containsExactly("es-auth:es2/<none>");
-    assertThat(supervisor.pauseReasons("to-es2")).isEmpty();
+    assertThat(supervisor.pauseReasons("to-both")).isEmpty();
     relay.sinkListener().onAuthRecovered(key);
     assertThat(supervisor.pauseReasons("to-both")).isEmpty();
+  }
+
+  @Test
+  void restartDropsBreakerReasonsButKeepsTheDlqBlockedReason() {
+    relay
+        .sinkListener()
+        .onBreakerStateChange("es", CircuitBreaker.State.CLOSED, CircuitBreaker.State.OPEN);
+    relay.dlqListener().onBlocked("to-es", null);
+    assertThat(supervisor.pauseReasons("to-es"))
+        .containsExactlyInAnyOrder("dlq-blocked", "es-breaker:es");
+    PipelineRuntime toEs =
+        supervisor.runtimes().stream().filter(r -> r.name().equals("to-es")).findFirst().get();
+    toEs.resetReasonsForStart();
+    // The new run's senders probe the breaker again; the DLQ writer's retries clear dlq-blocked.
+    assertThat(supervisor.pauseReasons("to-es")).containsExactly("dlq-blocked");
   }
 
   @Test

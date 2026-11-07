@@ -147,7 +147,11 @@ public final class PipelineSupervisor implements SmartLifecycle {
     return runtime(pipeline).pauseReasons();
   }
 
-  /** Starts one pipeline in the background (reload hook); no-op while starting or started. */
+  /**
+   * Starts one pipeline in the background (reload hook); no-op while starting or started.
+   *
+   * @throws IllegalStateException while the pipeline is being stopped
+   */
   public void startPipeline(String pipeline) {
     runtime(pipeline).start();
   }
@@ -190,19 +194,14 @@ public final class PipelineSupervisor implements SmartLifecycle {
     }
   }
 
-  /** A bulk stream's identity was rejected (401/403). */
-  void onAuthFailure(String pipeline, String cluster, @Nullable String identity) {
+  /**
+   * A bulk stream's identity was rejected (401/403) or accepted again: the runtime re-reads the
+   * current sink's auth state, so stale or reordered events cannot leave a pause behind.
+   */
+  void onAuthChanged(String pipeline, String cluster, @Nullable String identity) {
     PipelineRuntime runtime = pipelines.get(pipeline);
     if (runtime != null) {
-      runtime.pause(authReason(cluster, identity));
-    }
-  }
-
-  /** A bulk stream's identity was accepted again. */
-  void onAuthRecovered(String pipeline, String cluster, @Nullable String identity) {
-    PipelineRuntime runtime = pipelines.get(pipeline);
-    if (runtime != null) {
-      runtime.resume(authReason(cluster, identity));
+      runtime.authChanged(cluster, identity);
     }
   }
 
@@ -217,13 +216,6 @@ public final class PipelineSupervisor implements SmartLifecycle {
     } else {
       runtime.resume(PipelineRuntime.DLQ_BLOCKED_REASON);
     }
-  }
-
-  static String authReason(String cluster, @Nullable String identity) {
-    return PipelineRuntime.AUTH_REASON_PREFIX
-        + cluster
-        + "/"
-        + (identity == null ? "<none>" : identity);
   }
 
   private final Map<String, PipelineState> lastStates = new ConcurrentHashMap<>();

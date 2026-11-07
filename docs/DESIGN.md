@@ -171,6 +171,15 @@ original timestamp. The supervisor also refuses to start a pipeline whose config
 would make Elasticsearch reject whole bulk requests (`op: create` with
 `document.version-field`, a blank ingest `pipeline`).
 
+Pause reasons (`es-breaker:<cluster>`, `es-auth:<cluster>/<identity>`, `dlq-blocked`)
+belong to the pipeline, not to its source. Auth events are hints: the supervisor re-reads
+the current sink's auth state, so a late event from a closed sink cannot leave a pause
+behind. When a pipeline is restarted (reload), breaker and auth reasons are dropped,
+because only the old run's senders were probing the breaker or retrying the identity; the
+new sinks report them again if the cluster is still down, and the in-flight budget bounds
+what is fetched meanwhile. `dlq-blocked` stays until the shared DLQ writer's retries
+succeed. A pipeline that is stopping cannot be started until the stop returns.
+
 - **Batching**: a batch is sealed at `bulk.max-docs`, at `bulk.max-bytes` (an action
   that would push it over seals it first, so only a single action larger than
   `max-bytes` makes a larger request), when its oldest action is `max-age` old

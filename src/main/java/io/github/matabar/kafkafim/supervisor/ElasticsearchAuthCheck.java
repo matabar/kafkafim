@@ -49,6 +49,11 @@ final class ElasticsearchAuthCheck implements Preflight.AuthCheck {
     } catch (ResponseException e) {
       return classify(e.getResponse().getStatusCode());
     } catch (IOException | RuntimeException e) {
+      if (isTlsRejection(e)) {
+        // The cluster answered, but its certificate does not match the configured trust (or the
+        // client certificate was refused): configuration, retrying would never help.
+        return Preflight.Status.rejected("TLS handshake failed: " + e);
+      }
       return Preflight.Status.unreachable(e.toString());
     } finally {
       try {
@@ -57,6 +62,16 @@ final class ElasticsearchAuthCheck implements Preflight.AuthCheck {
         // Nothing to do; the client held one connection at most.
       }
     }
+  }
+
+  static boolean isTlsRejection(Throwable error) {
+    for (Throwable t = error; t != null; t = t.getCause() == t ? null : t.getCause()) {
+      if (t instanceof javax.net.ssl.SSLHandshakeException
+          || t instanceof javax.net.ssl.SSLPeerUnverifiedException) {
+        return true;
+      }
+    }
+    return false;
   }
 
   /**

@@ -87,6 +87,18 @@ class PreflightTest {
   }
 
   @Test
+  void tlsHandshakeRejectionIsConfiguration() {
+    assertThat(
+            ElasticsearchAuthCheck.isTlsRejection(
+                new java.io.IOException(
+                    "wrapped",
+                    new javax.net.ssl.SSLHandshakeException("PKIX path building failed"))))
+        .isTrue();
+    assertThat(ElasticsearchAuthCheck.isTlsRejection(new java.net.ConnectException("refused")))
+        .isFalse();
+  }
+
+  @Test
   void unknownIdentityIsConfiguration() {
     ElasticsearchAuthCheck check =
         new ElasticsearchAuthCheck(TestConfigs.withPipelines("{}").elasticsearch().clusters());

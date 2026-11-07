@@ -4,8 +4,10 @@ import java.util.Set;
 
 /**
  * Hook for telemetry: pipeline state changes and supervisor pause reasons. Beans of this type are
- * picked up by the supervisor. Called from supervisor, sink and DLQ threads; must be quick and must
- * not throw (an exception is logged and ignored).
+ * picked up by the supervisor. Called from supervisor, sink and DLQ threads while the pipeline's
+ * state lock is held: implementations must be quick, must not throw (an exception is logged and
+ * ignored), and must not call back into the {@link PipelineSupervisor} (record the values they are
+ * given instead), which could deadlock with another pipeline's callback.
  */
 public interface SupervisorListener {
 
