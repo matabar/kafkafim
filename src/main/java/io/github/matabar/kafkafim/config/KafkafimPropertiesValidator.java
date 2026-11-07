@@ -52,9 +52,8 @@ public final class KafkafimPropertiesValidator implements Validator {
     ConfigValidator.Result result = ConfigValidator.validate(properties);
     result.warnings().forEach(warning -> LOG.warn("kafkafim configuration: {}", warning));
     List<String> problems = new ArrayList<>(result.errors());
-    if (!properties.allowInlineSecrets()) {
-      problems.addAll(InlineSecretCheck.errors(properties, sources.get()));
-    }
+    problems.addAll(
+        InlineSecretCheck.errors(properties, sources.get(), properties.allowInlineSecrets()));
     return problems;
   }
 }

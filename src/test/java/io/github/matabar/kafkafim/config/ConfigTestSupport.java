@@ -5,15 +5,17 @@ import static org.assertj.core.api.Assertions.assertThat;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import org.springframework.boot.context.properties.bind.validation.BindValidationException;
+import org.springframework.boot.env.ConfigTreePropertySource;
 import org.springframework.boot.env.YamlPropertySourceLoader;
 import org.springframework.boot.test.context.assertj.AssertableApplicationContext;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
-import org.springframework.core.env.MapPropertySource;
 import org.springframework.core.env.PropertySource;
 import org.springframework.core.io.ByteArrayResource;
 import org.springframework.validation.FieldError;
@@ -79,11 +81,24 @@ final class ConfigTestSupport {
         .withInitializer(context -> {
           var sources = context.getEnvironment().getPropertySources();
           if (!extraSources.isEmpty()) {
-            sources.addLast(new MapPropertySource("secrets", extraSources));
+            sources.addLast(new ConfigTreePropertySource("configtree", configTree(extraSources)));
           }
           load(yaml).forEach(sources::addLast);
         })
         .withUserConfiguration(KafkafimConfiguration.class);
+  }
+
+  /** Writes {@code secrets} as files of a temporary configtree, as a mounted Secret would be. */
+  static Path configTree(Map<String, Object> secrets) {
+    try {
+      Path tree = Files.createTempDirectory("kafkafim-configtree");
+      for (Map.Entry<String, Object> secret : secrets.entrySet()) {
+        Files.writeString(tree.resolve(secret.getKey()), String.valueOf(secret.getValue()));
+      }
+      return tree;
+    } catch (IOException e) {
+      throw new UncheckedIOException(e);
+    }
   }
 
   static List<PropertySource<?>> load(String yaml) {

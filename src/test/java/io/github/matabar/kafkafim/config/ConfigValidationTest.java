@@ -248,14 +248,12 @@ class ConfigValidationTest {
           ES + ".uris=https://a:9200",
           ES + ".default-identity=basic",
           basic("basic"),
-          ES + ".identities.key.api-key=${k}",
+          ES + ".identities.key.api-key=key",
           ES + ".identities.cert.ssl.keystore-location=/k.p12",
           basic("cert-basic"),
           ES + ".identities.cert-basic.ssl.keystore-location=/k.p12",
-          ES + ".identities.cert-key.api-key=${k}",
-          ES + ".identities.cert-key.ssl.keystore-location=/k.p12",
-          "k=secret",
-          "p=secret");
+          ES + ".identities.cert-key.api-key=key",
+          ES + ".identities.cert-key.ssl.keystore-location=/k.p12");
     }
 
     @Test
@@ -264,8 +262,7 @@ class ConfigValidationTest {
           MINIMAL,
           ES + ".identities.w: set either username+password or api-key, not both",
           basic("w"),
-          ES + ".identities.w.api-key=${p}",
-          "p=secret");
+          ES + ".identities.w.api-key=key");
     }
 
     @Test
@@ -856,6 +853,6 @@ class ConfigValidationTest {
   /** Basic auth for {@code identity}; several properties joined with newlines. */
   private static String basic(String identity) {
     String path = ES + ".identities." + identity;
-    return path + ".username=u\n" + path + ".password=${p}\np=secret";
+    return path + ".username=u\n" + path + ".password=pw\nkafkafim.allow-inline-secrets=true";
   }
 }

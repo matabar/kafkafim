@@ -46,6 +46,7 @@ class ArchitectureTest {
     "org.springframework.boot.convert..",
     "org.springframework.boot.env..",
     "org.springframework.boot.cloud..",
+    "org.springframework.boot.origin..",
     "org.springframework.util.unit..",
     "org.springframework.validation..",
     "org.springframework.core.env..",
