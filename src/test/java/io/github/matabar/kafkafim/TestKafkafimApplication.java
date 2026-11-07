@@ -2,7 +2,7 @@ package io.github.matabar.kafkafim;
 
 import org.springframework.boot.SpringApplication;
 
-/** Runs the application locally against Testcontainers-managed Kafka, Elasticsearch and LGTM. */
+/** Runs the application locally against the Testcontainers-managed infrastructure. */
 public class TestKafkafimApplication {
 
   /** Starts the application with the Testcontainers configuration applied. */
