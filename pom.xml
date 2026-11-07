@@ -29,6 +29,7 @@
 		<java.version>27</java.version>
 		<!-- CI-friendly version: releases pass -Drevision=<git tag> (docs/DELIVERY.md) -->
 		<revision>0.1.0-SNAPSHOT</revision>
+		<archunit.version>1.4.1</archunit.version>
 	</properties>
 	<dependencies>
 		<dependency>
@@ -106,6 +107,13 @@
 		<dependency>
 			<groupId>org.testcontainers</groupId>
 			<artifactId>testcontainers-kafka</artifactId>
+			<scope>test</scope>
+		</dependency>
+		<!-- Package-boundary rules (ADR-0003) -->
+		<dependency>
+			<groupId>com.tngtech.archunit</groupId>
+			<artifactId>archunit-junit5</artifactId>
+			<version>${archunit.version}</version>
 			<scope>test</scope>
 		</dependency>
 	</dependencies>
