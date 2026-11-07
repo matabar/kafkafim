@@ -157,6 +157,8 @@ For each `groups.<g>`:
   `otel.headers` or `otel.secretHeaders` is set: Boot maps those variables into a
   property source that wins over configtree, so they would silently replace the
   chart's headers).
+  `extraEnvFrom` cannot be checked (the chart does not see inside the referenced
+  Secret or ConfigMap): do not put these variables there either.
 
 `values.schema.json` checks the shape only (types, required keys, no unknown keys,
 group names are DNS labels); the cross-field rules above are `fail` calls in
