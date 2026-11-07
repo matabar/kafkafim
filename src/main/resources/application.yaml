@@ -1,0 +1,104 @@
+spring:
+  application:
+    name: kafkafim
+  main:
+    web-application-type: servlet   # only for actuator + reload endpoint; no business endpoints
+
+server:
+  port: 8080
+  shutdown: graceful
+
+# ---------------------------------------------------------------------------
+# kafkafim configuration model (see docs/DESIGN.md §5). In production this block
+# is rendered by the Helm chart into application-kafkafim.yaml and secrets arrive
+# via spring.config.import=configtree:/etc/kafkafim/secrets/. The values below
+# target the local compose.yaml stack.
+# ---------------------------------------------------------------------------
+kafkafim:
+  allow-inline-secrets: true        # local only; production validation rejects literal secrets
+  kafka:
+    clusters:
+      local:
+        bootstrap-servers: [localhost:9092]
+        security-protocol: PLAINTEXT
+        # Production clusters carry cluster-wide trust here (ssl.truststore-*) plus
+        # named identities that pipelines reference for their consumer and DLQ
+        # producer (docs/DESIGN.md §5.2.1). Example:
+        # identities:
+        #   demo-reader:
+        #     sasl: { mechanism: SCRAM-SHA-256, username: ${kafka.local.demo-reader.username}, password: ${kafka.local.demo-reader.password} }
+        #   dlq-writer:
+        #     sasl: { mechanism: SCRAM-SHA-256, username: ${kafka.local.dlq-writer.username}, password: ${kafka.local.dlq-writer.password} }
+        # default-identity: demo-reader
+  elasticsearch:
+    clusters:
+      local:
+        uris: [http://localhost:9200]
+        # Production clusters carry cluster-wide trust here (ssl.ca-certificate) plus
+        # named identities that routes reference (docs/DESIGN.md §5.2.1). Example:
+        # identities:
+        #   demo-writer: { username: ${elasticsearch.local.demo-writer.username}, password: ${elasticsearch.local.demo-writer.password} }
+        #   ingest-key:  { api-key: ${elasticsearch.local.ingest-key.api-key} }
+        # default-identity: demo-writer
+        bulk:
+          max-docs: 5000
+          max-bytes: 5MB
+          max-age: 200ms
+          in-flight: 2
+  pipelines:
+    demo:
+      source:
+        cluster: local
+        topics: [demo.events]
+        offset-reset: earliest             # value: JSON object or array of objects (fixed)
+        # identity: demo-reader             # consumer identity; PLAINTEXT locally needs none
+      document:
+        id-field: /id                      # JSON pointer into each object
+        timestamp-field: /@timestamp
+        timestamp-format: iso-8601         # iso-8601 | epoch-millis | epoch-seconds | pattern:<DateTimeFormatter>
+        on-bad-timestamp: dlq              # dlq | ingest-time
+      routes:
+        - when:
+            - { field: /region, equals: eu }
+          cluster: local
+          # identity: demo-writer            # ES identity; local cluster has security disabled
+          index: "demo-eu-%{+yyyy.MM.dd}"
+        - default: true
+          cluster: local
+          index: "demo-%{region}-%{+yyyy.MM}"
+      route-mode: first
+      dlq:
+        topic: demo.events.kafkafim-dlq
+        # identity: dlq-writer              # producer identity; default: source identity
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics,reload
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-components: always
+      show-details: when-authorized
+  otlp:
+    metrics:
+      export:
+        url: ${OTEL_EXPORTER_OTLP_ENDPOINT:http://localhost:4318}/v1/metrics
+        step: 15s
+  tracing:
+    sampling:
+      probability: 0.01
+  opentelemetry:
+    tracing:
+      export:
+        otlp:
+          endpoint: ${OTEL_EXPORTER_OTLP_ENDPOINT:http://localhost:4318}/v1/traces
+    resource-attributes:
+      service.namespace: kafkafim
+
+logging:
+  structured:
+    format:
+      console: ecs
