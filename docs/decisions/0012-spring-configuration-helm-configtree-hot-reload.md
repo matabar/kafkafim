@@ -15,7 +15,11 @@ production.
   `SPRING_PROFILES_ACTIVE=kafkafim` and `SPRING_CONFIG_ADDITIONAL_LOCATION` pointing
   at the mount. The profile is what makes Spring Boot load the profile-specific file,
   and it disables the default `local` profile (`spring.profiles.default: local`) that
-  holds the development sample in `application-local.yaml`.
+  holds the development sample in `application-local.yaml`. Guards: the chart tests
+  assert the profile env var and the non-optional config location; the application
+  (roadmap 0.2) refuses the `local` profile on `CloudPlatform.KUBERNETES`; the chart
+  passes the non-optional config location so a missing mount fails startup (the image
+  default is `optional:` for local and CI runs).
 - Secrets: Kubernetes `Secret`s mounted as directories and imported with
   `spring.config.import=configtree:...`; cluster definitions reference them with
   `${...}` placeholders. Literal secret values fail validation outside the local
