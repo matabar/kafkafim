@@ -4,7 +4,9 @@ One chart, **one release per Kubernetes cluster**. A release carries every group
 that cluster runs. The chart lives in this repository and is published as an OCI
 artifact (see [DELIVERY.md](DELIVERY.md)); the per-cluster `values-<cluster>.yaml`
 files live in the team's private infrastructure repository, since they name real
-clusters, topics and Secret names.
+clusters, topics and Secret names. That repository's CI, inside the air gap, applies
+each release with plain `helm upgrade --install` (no Argo CD or Flux); the command is
+in [DELIVERY.md](DELIVERY.md#importing-into-the-air-gapped-environment).
 
 ## What the chart does and does not do
 
@@ -166,7 +168,9 @@ group names are DNS labels); the cross-field rules above are `fail` calls in
 
 `config.kafkafim` accepts exactly `kafka`, `elasticsearch` and `pipelines`; the
 schema rejects any other key (for example `allow-inline-secrets`, which is for local
-development only and must never reach a production ConfigMap) instead of silently
+development outside Kubernetes only: the application refuses to start with it on
+Kubernetes (`config/LocalProfileGuard`, [DESIGN §5.4](DESIGN.md#54-helm-rendering)), so a chart install, including the Docker Desktop demo, mounts its secrets as
+files like production) instead of silently
 dropping it. Helm reads values numbers as float64, so integers above 2^53 in
 `config` lose precision: quote them. Application-wide settings that are not
 per-group belong in the image's `application.yaml` or in `extraEnv`.
@@ -239,7 +243,7 @@ against the real application.
 
 - A per-cluster values file is the single place to add a pipeline: add it under
   `config.kafkafim.pipelines`, list it in a group, add its Secret mounts. `helm
-  upgrade` updates the ConfigMap, and the affected group hot-reloads.
+  upgrade --install` updates the ConfigMap, and the affected group hot-reloads.
 - Moving a pipeline between groups changes nothing in Kafka (same `group-id`).
 - Secret rotation: update the `Secret`; kubelet refreshes the mounted files; the
   application reloads the identities that changed and restarts only their pipelines.
