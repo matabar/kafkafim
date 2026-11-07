@@ -586,7 +586,9 @@ explicitly) when it detects Kubernetes (`CloudPlatform.KUBERNETES`, which reads
 `KUBERNETES_SERVICE_HOST`/`_PORT` and honours `spring.main.cloud-platform` for tests;
 `config/LocalProfileGuard`, which runs before any bean is created).
 A pod that lost its profile env would otherwise silently run the compose sample with
-inline secrets allowed.
+inline secrets allowed. The same guard refuses `kafkafim.allow-inline-secrets=true` on
+Kubernetes in any profile (for example set by hand next to `kafkafim`): there, secrets
+must come from mounted `Secret` files imported with `configtree` (§5.5).
 
 Config location failure mode: the image's default is
 `SPRING_CONFIG_ADDITIONAL_LOCATION=optional:/etc/kafkafim/config/` so that local runs
@@ -612,7 +614,8 @@ definitions reference those properties with `${...}` placeholders, so the render
 ConfigMap never contains a secret. Startup validation refuses literal values in `password`,
 `api-key` and `*-password` fields (and in passthrough `properties` keys ending in
 `password`, containing `secret`, `sasl.jaas.config`, `ssl.keystore.key` or
-`user.info`) unless `kafkafim.allow-inline-secrets=true` (local development only). A
+`user.info`) unless `kafkafim.allow-inline-secrets=true` (local development only; on
+`CloudPlatform.KUBERNETES` the flag itself stops startup, §5.4). A
 secret is accepted when it is read straight from a `configtree` file, or when its raw,
 unresolved text is exactly one `${name}` placeholder (no `:default`, which would be an
 inline fallback) whose chain of references ends in a `configtree` file. The check looks
@@ -632,8 +635,8 @@ agent all work. A changed secret file is picked up by the same reload path.
 - **Startup**: binding failure or validation failure stops the pod with a clear
   message that lists every violation at once (Bean Validation and the rules of section
   5.7 run in the same pass), each as `<property path>: <problem>`; readiness never goes
-  green. The `local` profile active on `CloudPlatform.KUBERNETES` stops startup before
-  binding (section 5.4).
+  green. The `local` profile active, or `kafkafim.allow-inline-secrets=true` set, on
+  `CloudPlatform.KUBERNETES` stops startup before binding (section 5.4).
 - **`validate` profile** (application feature, roadmap 0.2): started with
   `--spring.profiles.active=validate,kafkafim` and a rendered ConfigMap mounted, the
   application binds and validates, logs the pipeline summary, and exits 0/1 without
