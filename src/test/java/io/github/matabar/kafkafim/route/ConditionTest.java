@@ -184,6 +184,7 @@ class ConditionTest {
       // A small, fixed stack makes the overflow deterministic whatever -Xss the JVM runs with.
       boolean[] overflowed = new boolean[1];
       boolean[] matched = new boolean[1];
+      Throwable[] escaped = new Throwable[1];
       Thread small =
           new Thread(
               null,
@@ -193,13 +194,18 @@ class ConditionTest {
                 } catch (StackOverflowError e) {
                   overflowed[0] = true;
                 }
-                matched[0] = condition.test(longValue, "t", HeaderLookup.NONE);
+                try {
+                  matched[0] = condition.test(longValue, "t", HeaderLookup.NONE);
+                } catch (Throwable t) {
+                  escaped[0] = t;
+                }
               },
               "small-stack",
               256 * 1024);
       small.start();
       small.join();
       assertThat(overflowed[0]).as("the raw matcher overflows").isTrue();
+      assertThat(escaped[0]).as("condition.test must not throw").isNull();
       assertThat(matched[0]).isFalse();
       assertThat(condition.test(doc("{\"s\":\"ababc\"}"), "t", HeaderLookup.NONE)).isTrue();
     }
