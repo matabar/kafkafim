@@ -445,6 +445,10 @@ public final class BulkSink<H> implements AutoCloseable {
         if (entries.size() == 1) {
           Entry entry = entries.getFirst();
           entry.answered++;
+          // The last request was answered with something other than 401/403; an auth retry of
+          // this action, if any, ends here. Report a recovery before the outcome, as on success.
+          setAuthRetrying(entry, false);
+          updateAuth(() -> requestAuthFailing = false);
           complete(
               entry,
               dlq(
@@ -452,9 +456,6 @@ public final class BulkSink<H> implements AutoCloseable {
                   SinkErrorType.TOO_LARGE,
                   "single-document bulk request of " + bytes + " bytes rejected with 413",
                   413));
-          // The last request was answered with something other than 401/403; an auth retry of
-          // this action, if any, ended with it.
-          updateAuth(() -> requestAuthFailing = false);
           return -1;
         }
         int middle = entries.size() / 2;
