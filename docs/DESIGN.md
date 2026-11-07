@@ -477,7 +477,10 @@ reports the origin but never the value. A literal in YAML, an environment variab
 system property is rejected, also when reached through a placeholder. A credential
 placeholder (secret or username) that nothing defines always fails startup, even with
 inline secrets allowed: Spring leaves unresolvable placeholders as literal text, so a
-missing secret file would otherwise become the password. Secret provisioning stays outside the chart
+missing secret file would otherwise become the password. A value with a placeholder embedded in
+other text (for example a `sasl.jaas.config` string containing `password="${...}"`)
+counts as a literal, so such a value is mounted whole as one secret file. Date patterns
+in index names are checked and resolved with `Locale.ROOT`. Secret provisioning stays outside the chart
 (`existingSecret` names): plain Secrets, Sealed Secrets, External Secrets or a Vault
 agent all work. A changed secret file is picked up by the same reload path.
 

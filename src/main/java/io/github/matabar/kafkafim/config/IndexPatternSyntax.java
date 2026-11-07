@@ -6,6 +6,7 @@ import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 /**
  * Parse-check of Logstash-style index patterns (DESIGN §5.3): literal text, {@code %{field}} (a
@@ -17,7 +18,10 @@ final class IndexPatternSyntax {
   /** Characters Elasticsearch rejects in index names; lower-casing happens at resolution. */
   private static final String FORBIDDEN_LITERAL_CHARS = "\\/*?\"<>|,#: ";
 
-  /** A fixed instant to format date references with, to check what they produce. */
+  /**
+   * A fixed instant to format date references with, to check what they produce. Formatting uses
+   * {@link Locale#ROOT}, which index resolution must use too so check and runtime agree.
+   */
   private static final ZonedDateTime SAMPLE =
       ZonedDateTime.of(2026, 12, 31, 23, 59, 58, 0, ZoneOffset.UTC);
 
@@ -101,7 +105,7 @@ final class IndexPatternSyntax {
       }
       String sample;
       try {
-        sample = DateTimeFormatter.ofPattern(format).format(SAMPLE);
+        sample = DateTimeFormatter.ofPattern(format, Locale.ROOT).format(SAMPLE);
       } catch (IllegalArgumentException | DateTimeException e) {
         errors.add("invalid DateTimeFormatter pattern '" + format + "': " + e.getMessage());
         return;
