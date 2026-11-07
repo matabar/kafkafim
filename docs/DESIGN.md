@@ -430,9 +430,12 @@ SPRING_CONFIG_IMPORT=configtree:/etc/kafkafim/secrets/
 must be active for Spring Boot to load it; activating it also switches off the
 default `local` profile that carries the development sample. Two guards back this:
 the chart's unit tests assert that every rendered `Deployment` sets
-`SPRING_PROFILES_ACTIVE`, and the application refuses to start with the `local`
-profile active when `KUBERNETES_SERVICE_HOST` is set (a pod that lost its profile env
-would otherwise silently run the compose sample with inline secrets allowed).
+`SPRING_PROFILES_ACTIVE=kafkafim` and the non-optional config location, and the
+application (feature, roadmap 0.2) refuses to start with the `local` profile active
+when it detects Kubernetes (`CloudPlatform.KUBERNETES`, which reads
+`KUBERNETES_SERVICE_HOST`/`_PORT` and honours `spring.main.cloud-platform` for tests).
+A pod that lost its profile env would otherwise silently run the compose sample with
+inline secrets allowed.
 
 Config location failure mode: the image's default is
 `SPRING_CONFIG_ADDITIONAL_LOCATION=optional:/etc/kafkafim/config/` so that local runs
@@ -464,8 +467,8 @@ agent all work. A changed secret file is picked up by the same reload path.
 ### 5.6 Validation and hot reload
 
 - **Startup**: binding failure or validation failure stops the pod with a clear
-  message; readiness never goes green. The `local` profile active inside Kubernetes
-  (`KUBERNETES_SERVICE_HOST` set) is a validation failure.
+  message; readiness never goes green. The `local` profile active on
+  `CloudPlatform.KUBERNETES` is a validation failure (roadmap 0.2).
 - **`validate` profile** (application feature, roadmap 0.2): started with
   `--spring.profiles.active=validate,kafkafim` and a rendered ConfigMap mounted, the
   application binds and validates, logs the pipeline summary, and exits 0/1 without
@@ -510,7 +513,7 @@ agent all work. A changed secret file is picked up by the same reload path.
 | Missing topic, DLQ topic, or failed authentication at pipeline start | Pipeline stays stopped (`failed_preflight`), clear log naming resource and identity, alert. Other pipelines unaffected. kafkafim never creates the resource. |
 | DLQ produce fails | Block the partition and alert. Losing data is worse than lag. |
 | Kafka unavailable | Reconnect with backoff; `kafkafim_kafka_connected` gauge drops, alert. |
-| Pod SIGTERM | Spring graceful shutdown: stop fetching, flush in-flight, commit, leave group, bounded by `spring.lifecycle.timeout-per-shutdown-phase` (60s, set in `application.yaml`) inside the pod's `terminationGracePeriodSeconds` (90s, chart default). |
+| Pod SIGTERM | Spring graceful shutdown, higher phases first: Spring Kafka containers stop fetching, flush in-flight, commit and leave the group (phase MAX-100), then the web server drains (phase MAX-1024, instant for actuator-only traffic). `spring.lifecycle.timeout-per-shutdown-phase` (60s, `application.yaml`) bounds each phase; the consumer phase must fit the pod's `terminationGracePeriodSeconds` (90s, chart default). |
 
 Error classification lives in one table (`sink/es/ErrorClassifier`) and is
 unit-tested against captured ES responses, because it decides data loss versus stall.
@@ -688,7 +691,8 @@ versioning (ADR-0003, ADR-0022, ADR-0023).
 - **0.1** single pipeline end to end: bind config, preflight checks, consume, route,
   bulk, commit, metrics, DLQ. SCRAM-SHA-256 and basic auth identities. Compose stack.
 - **0.2** groups, Helm chart, configtree secrets, hot reload, `validate` profile for
-  the infrastructure repository's config checks.
+  the infrastructure repository's config checks, refusal of the `local` profile on
+  Kubernetes.
 - **0.3** traces/logs, Grafana dashboards + alerts, breaker, versioning, data streams.
 - **1.0** runbook, load-test results, first production pipelines, Logstash
   config translator for the common 80%.
