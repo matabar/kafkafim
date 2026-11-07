@@ -587,7 +587,7 @@ explicitly) when it detects Kubernetes (`CloudPlatform.KUBERNETES`, which reads
 `KUBERNETES_SERVICE_HOST`/`_PORT` and honours `spring.main.cloud-platform` for tests;
 `config/LocalProfileGuard`, which runs before any bean is created).
 A pod that lost its profile env would otherwise silently run the compose sample with
-inline secrets allowed. The same guard refuses `kafkafim.allow-inline-secrets=true` on
+inline secrets allowed. As a second application-side check, the same guard refuses `kafkafim.allow-inline-secrets=true` on
 Kubernetes in any profile (for example set by hand next to `kafkafim`): there, secrets
 must come from mounted `Secret` files imported with `configtree` (§5.5).
 
@@ -623,8 +623,9 @@ inline fallback) whose chain of references ends in a `configtree` file. The chec
 at the property source that wins for each name, before placeholder resolution, and
 reports the origin but never the value; likewise the bound configuration records print
 every secret (passwords, API keys, keystore and key passwords, secret passthrough
-`properties` values) as `******` in `toString()`, while usernames stay readable. A literal in YAML, an environment variable or a
-system property is rejected, also when reached through a placeholder. A credential
+`properties` values) as `******` in `toString()`, while usernames stay readable. A
+literal in YAML, an environment variable or a system property is rejected, also when
+reached through a placeholder. A credential
 placeholder (secret or username) that nothing defines always fails startup, even with
 inline secrets allowed: Spring leaves unresolvable placeholders as literal text, so a
 missing secret file would otherwise become the password. A value with a placeholder embedded in

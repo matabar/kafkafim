@@ -69,7 +69,7 @@ public final class LocalProfileGuard implements BeanFactoryPostProcessor, Enviro
           ALLOW_INLINE_SECRETS
               + "=true is set on Kubernetes. Secrets must come from mounted Secret files"
               + " imported with configtree (spring.config.import=configtree:...) and referenced"
-              + " with ${...} placeholders; remove the setting (docs/DESIGN.md §5.5).");
+              + " with ${...} placeholders; remove the setting (docs/DESIGN.md §5.4, §5.5).");
     }
   }
 }
