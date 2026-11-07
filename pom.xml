@@ -195,6 +195,7 @@
 				<artifactId>maven-surefire-plugin</artifactId>
 				<configuration>
 					<excludes>
+						<exclude>**/*$*</exclude>
 						<exclude>**/*IntegrationTest.java</exclude>
 					</excludes>
 				</configuration>
