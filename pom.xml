@@ -29,7 +29,7 @@
 		<java.version>27</java.version>
 		<!-- CI-friendly version: releases pass -Drevision=<git tag> (docs/DELIVERY.md) -->
 		<revision>0.1.0-SNAPSHOT</revision>
-		<archunit.version>1.4.1</archunit.version>
+		<archunit.version>1.5.1</archunit.version>
 		<!-- Google Java Style (ADR-0024) -->
 		<spotless.version>3.11.0</spotless.version>
 		<google-java-format.version>2.0.0</google-java-format.version>
