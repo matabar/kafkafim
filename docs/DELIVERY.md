@@ -111,6 +111,10 @@ describes the `linux/amd64` image, which is what production runs.
 helm push kafkafim-1.2.3.tgz oci://registry.internal/charts
 ```
 
+The release is applied per Kubernetes cluster with plain `helm upgrade --install`, run
+by the infrastructure repository's CI inside the air gap with that cluster's values
+file; there is no Argo CD or Flux:
+
 ```bash
 helm upgrade --install kafkafim oci://registry.internal/charts/kafkafim --version 1.2.3 -f values-<cluster>.yaml --set image.registry=registry.internal/kafkafim
 ```

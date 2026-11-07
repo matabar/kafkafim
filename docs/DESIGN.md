@@ -54,7 +54,7 @@ into ~20 Elasticsearch 8.x clusters.
   reload; the infrastructure repository's CI can validate rendered configuration by
   booting the image with the `validate` profile (section 5.6). DLQ inspection uses
   standard Kafka tooling; replay is a pipeline (section 9).
-- A UI. GitOps + Grafana is the UI.
+- A UI. The infrastructure repository (git) + Grafana is the UI.
 - Non-JSON payloads, Avro, Schema Registry.
 - `update`/`delete` operations (model leaves room; MVP implements `index`/`create`).
 - Multi-tenancy, RBAC, audit log of config changes (git history is the audit log).
@@ -470,9 +470,9 @@ for mTLS, or both.
 **Elasticsearch identity**: exactly one of `username`+`password` (production
 default), `api-key`, or an `ssl` keystore block (PKI realm); a keystore may be
 combined with basic or `api-key` when the cluster requires client certificates on
-top of user auth. Trust (CA) is per cluster. Production today is basic auth with the
-cluster CA for trust only; client certificates are modelled but not exercised in
-the MVP tests.
+top of user auth. Trust (CA) is per cluster. Production uses basic auth (or an API
+key) with the cluster CA for trust only; client certificates stay modelled but are
+not used in production and not exercised in the MVP tests.
 
 - `routes[].identity`: the identity used for that route's bulk items → falls back to
   the cluster's `default-identity` → validation fails if the cluster uses `https`
@@ -969,9 +969,10 @@ and chart checks on every PR; a `v*` tag publishes a signed multi-arch image to
 and an air-gap bundle (the signed multi-arch image saved by digest with `cosign
 save`, its digest file, chart, SBOM, checksums, import instructions) on the GitHub
 Release. Production is air-gapped; the team imports the
-bundle into the internal registry and installs one Helm release per Kubernetes
-cluster. The build is a single Maven module with CI-friendly `${revision}`
-versioning (ADR-0003, ADR-0022, ADR-0023).
+bundle into the internal registry and applies one Helm release per Kubernetes
+cluster with plain `helm upgrade --install`, run from the infrastructure repository's
+CI inside the air gap (no Argo CD or Flux). The build is a single Maven module with
+CI-friendly `${revision}` versioning (ADR-0003, ADR-0022, ADR-0023).
 
 ## 16. Roadmap
 
@@ -988,7 +989,7 @@ versioning (ADR-0003, ADR-0022, ADR-0023).
 
 ## 17. Open questions
 
-- Elasticsearch TLS: confirm the certificate in production is a CA for trust only
-  (assumed), not a client certificate presented with basic auth.
-- GitOps tool used to apply the per-cluster Helm release inside the air gap (Argo CD,
-  Flux, plain `helm upgrade`)? Affects documentation only.
+None open. The questions listed in v0.4 were answered on 2026-11-08: production
+Elasticsearch uses the cluster CA for trust only, with basic auth or an API key
+(§5.2.1), and the per-cluster release is applied with plain `helm upgrade --install`
+from the infrastructure repository (§15).
