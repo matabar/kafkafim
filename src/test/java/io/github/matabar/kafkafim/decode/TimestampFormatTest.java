@@ -144,7 +144,8 @@ class TimestampFormatTest {
         "pattern:yyyyMMdd|20261107|2026-11-07T00:00:00Z",
         "pattern:uuuu-MM-dd|\"2026-11-07\"|2026-11-07T00:00:00Z",
         "pattern:dd/MMM/yyyy:HH:mm:ss Z|\"07/Nov/2026:10:15:30 +0000\"|2026-11-07T10:15:30Z",
-        "pattern:yyyy-MM-dd hh:mm a|\"2026-11-07 03:04 PM\"|2026-11-07T15:04:00Z"
+        "pattern:yyyy-MM-dd hh:mm a|\"2026-11-07 03:04 PM\"|2026-11-07T15:04:00Z",
+        "pattern:G yyyy-MM-dd|\"CE 2026-01-01\"|2026-01-01T00:00:00Z"
       })
   void pattern(String format, String json, String expected) {
     assertParses(format, json, expected);
@@ -160,7 +161,11 @@ class TimestampFormatTest {
         "pattern:yyyy-MM|\"2026-11\"",
         "pattern:HH:mm|\"10:15\"",
         "pattern:yyyy-MM-dd|1.5",
-        "pattern:yyyy-MM-dd|true"
+        "pattern:yyyy-MM-dd|true",
+        "pattern:yyyy-MM-dd hh:mm|\"2026-11-07 03:04\"",
+        "pattern:yyyy-MM-dd mm|\"2026-11-07 45\"",
+        "pattern:yyyy-MM-dd hh:mm XXX|\"2026-11-07 11:30 +01:00\"",
+        "pattern:G yyyy-MM-dd|\"AD 2026-01-01\""
       })
   void patternRejects(String format, String json) {
     assertRejects(format, json);

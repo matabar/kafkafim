@@ -34,7 +34,9 @@ import tools.jackson.databind.JsonNode;
  *   <li>{@code pattern:<p>}: a string (or an integer, read as its digits) parsed with {@code
  *       DateTimeFormatter} pattern {@code p}, {@code Locale.ROOT} and strict resolution ({@code
  *       yyyy} works because the era defaults to CE). Without an offset or zone in the pattern the
- *       time is UTC; without a time it is midnight; a pattern that yields no date fails.
+ *       time is UTC; without any time field it is midnight; a time that cannot resolve (e.g. {@code
+ *       hh} without {@code a}) or a pattern that yields no date fails. Era text under {@code
+ *       Locale.ROOT} is {@code CE}/{@code BCE}, not {@code AD}/{@code BC}.
  * </ul>
  *
  * <p>Every format rejects instants outside years 1 to 9999, which no {@code %{+yyyy...}} index name
@@ -209,6 +211,12 @@ abstract sealed class TimestampFormat {
           return Parse.failed("pattern '" + pattern + "' yields no date from " + describe(value));
         }
         LocalTime time = parsed.query(TemporalQueries.localTime());
+        if (time == null && hasTimeField(parsed)) {
+          // e.g. "hh:mm" without "a": the time is parsed but cannot resolve, and defaulting to
+          // midnight would misdate the document.
+          return Parse.failed(
+              "pattern '" + pattern + "' yields an incomplete time from " + describe(value));
+        }
         ZoneId zone = parsed.query(TemporalQueries.zone());
         return Parse.ok(
             date.atTime(time == null ? LocalTime.MIDNIGHT : time)
@@ -217,6 +225,15 @@ abstract sealed class TimestampFormat {
       } catch (DateTimeException e) {
         return Parse.failed(describe(value) + " does not match pattern '" + pattern + "'");
       }
+    }
+
+    private static boolean hasTimeField(TemporalAccessor parsed) {
+      for (ChronoField field : ChronoField.values()) {
+        if (field.isTimeBased() && parsed.isSupported(field)) {
+          return true;
+        }
+      }
+      return false;
     }
   }
 }
