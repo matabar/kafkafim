@@ -591,12 +591,11 @@ class BulkSinkTest {
 
   @Test
   void exceptionDuringHalfOpenProbesDoesNotLeakBreakerPermits() throws Exception {
-    breaker =
-        CircuitBreaker.of(
-            "c",
-            new BreakerSettings(4, 4, 50f, Duration.ofMillis(50), 2, Duration.ofMillis(5))
-                .toConfig());
+    // Default breaker: the half-open safety net is minutes away, so only settled permits let
+    // the probes through within the wait below.
+    breaker = CircuitBreaker.of("c", BreakerSettings.DEFAULT.toConfig());
     breaker.transitionToOpenState();
+    breaker.transitionToHalfOpenState();
     FakeTransport transport =
         new FakeTransport((request, call) -> {
           if (call <= 2) {
@@ -608,8 +607,42 @@ class BulkSinkTest {
 
     submitAll(sink, "a", "b");
 
-    assertThat(sink.awaitIdle(WAIT)).isTrue();
+    assertThat(sink.awaitIdle(Duration.ofSeconds(5))).isTrue();
     assertThat(outcomes.all()).hasSize(2).containsOnly(ActionOutcome.INDEXED);
+  }
+
+  @Test
+  void itemAuthFailureEndedByTooLargeReportsRecovery() throws Exception {
+    FakeTransport transport =
+        new FakeTransport((request, call) ->
+            call == 1
+                ? FakeTransport.items(request, sent -> new String[] {"403", "security_exception"})
+                : FakeTransport.status(413));
+    BulkSink<String> sink = sink(settings(1, 1 << 20, HOUR, 1), transport);
+
+    submitAll(sink, "a");
+
+    assertThat(sink.awaitIdle(WAIT)).isTrue();
+    assertThat(outcomes.get("a")).isInstanceOf(ActionOutcome.Dlq.class);
+    await().until(() -> events.authRecovered.get() == 1);
+    assertThat(events.authFailures).hasValue(1);
+    assertThat(sink.authFailing()).isFalse();
+  }
+
+  @Test
+  void requestAuthFailureEndedByTooLargeReportsRecovery() throws Exception {
+    FakeTransport transport =
+        new FakeTransport((request, call) ->
+            call == 1
+                ? new Result(401, Fixtures.load("request-401.json"))
+                : FakeTransport.status(413));
+    BulkSink<String> sink = sink(settings(1, 1 << 20, HOUR, 1), transport);
+
+    submitAll(sink, "a");
+
+    assertThat(sink.awaitIdle(WAIT)).isTrue();
+    await().until(() -> events.authRecovered.get() == 1);
+    assertThat(sink.authFailing()).isFalse();
   }
 
   // ---- lifecycle ----

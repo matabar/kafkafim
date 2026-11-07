@@ -29,6 +29,9 @@ public record BreakerSettings(
   public static final BreakerSettings DEFAULT =
       new BreakerSettings(20, 10, 50f, Duration.ofSeconds(10), 2, Duration.ofMillis(200));
 
+  /** Added to {@code waitInOpen} to bound how long the breaker may stay half-open. */
+  static final Duration HALF_OPEN_PROBE_GRACE = Duration.ofMinutes(2);
+
   /** Validates the settings. */
   public BreakerSettings {
     Objects.requireNonNull(waitInOpen, "waitInOpen");
@@ -48,8 +51,9 @@ public record BreakerSettings(
         .waitDurationInOpenState(waitInOpen)
         .permittedNumberOfCallsInHalfOpenState(probesInHalfOpen)
         // Safety net: a half-open breaker whose probes never report back reopens instead of
-        // holding every sender of the cluster forever.
-        .maxWaitDurationInHalfOpenState(waitInOpen)
+        // holding every sender of the cluster forever. Longer than the default 60s response
+        // timeout, so a slow but legitimate probe is not cut short.
+        .maxWaitDurationInHalfOpenState(waitInOpen.plus(HALF_OPEN_PROBE_GRACE))
         .automaticTransitionFromOpenToHalfOpenEnabled(false)
         .slowCallRateThreshold(100f)
         .slowCallDurationThreshold(Duration.ofDays(1))

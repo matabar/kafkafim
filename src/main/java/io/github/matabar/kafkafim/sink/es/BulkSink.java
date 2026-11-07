@@ -207,7 +207,8 @@ public final class BulkSink<H> implements AutoCloseable {
 
   /**
    * Whether the stream is in a configuration failure: the last bulk request was rejected with
-   * 401/403, or some action is waiting to retry after an item-level 401/403.
+   * 401/403, or some action is waiting to retry after an item-level 401/403. Stays as it was after
+   * a {@link #close(Duration)} that timed out.
    */
   public boolean authFailing() {
     synchronized (authLock) {
@@ -451,6 +452,9 @@ public final class BulkSink<H> implements AutoCloseable {
                   SinkErrorType.TOO_LARGE,
                   "single-document bulk request of " + bytes + " bytes rejected with 413",
                   413));
+          // The last request was answered with something other than 401/403; an auth retry of
+          // this action, if any, ended with it.
+          updateAuth(() -> requestAuthFailing = false);
           return -1;
         }
         int middle = entries.size() / 2;
@@ -566,11 +570,16 @@ public final class BulkSink<H> implements AutoCloseable {
 
   private void handleItems(List<Entry> entries, BulkResponse response) {
     if (!response.errors()) {
+      // Report a recovery before the outcomes, so a caller that sees the actions done has
+      // already heard it.
+      for (Entry entry : entries) {
+        setAuthRetrying(entry, false);
+      }
+      updateAuth(() -> requestAuthFailing = false);
       for (Entry entry : entries) {
         entry.answered++;
         complete(entry, ActionOutcome.INDEXED);
       }
-      updateAuth(() -> requestAuthFailing = false);
       return;
     }
     BulkResponse.Item firstAuthFailure = null;
