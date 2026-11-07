@@ -94,6 +94,16 @@ Normalised secret mount path (no trailing slash, "." and ".." resolved).
 {{- end -}}
 
 {{/*
+Where otel.secretHeaders is mounted (JSON list): configtree turns each file into
+management.otlp.metrics.export.headers.<header> and
+management.opentelemetry.tracing.export.otlp.headers.<header> (Spring Boot 4 names).
+Everything under /etc/kafkafim/secrets/management is reserved for these mounts.
+*/}}
+{{- define "kafkafim.otelSecretHeaderMountPaths" -}}
+{{- list "/etc/kafkafim/secrets/management/otlp/metrics/export/headers" "/etc/kafkafim/secrets/management/opentelemetry/tracing/export/otlp/headers" | toJson -}}
+{{- end -}}
+
+{{/*
 A group's replicas (default 2) and HPA minReplicas (default 2), as strings.
 Usage: include "kafkafim.replicas" $group
 */}}
@@ -172,6 +182,9 @@ cannot express.
   {{- if not (hasPrefix "/etc/kafkafim/secrets/" $path) -}}
     {{- fail (printf "secrets[%d] (%s): mountPath %q must be below /etc/kafkafim/secrets/ (the configtree import root)" $i $s.name $s.mountPath) -}}
   {{- end -}}
+  {{- if or (eq $path "/etc/kafkafim/secrets/management") (hasPrefix "/etc/kafkafim/secrets/management/" $path) -}}
+    {{- fail (printf "secrets[%d] (%s): mountPath %q is below /etc/kafkafim/secrets/management, which is reserved for otel.secretHeaders" $i $s.name $s.mountPath) -}}
+  {{- end -}}
   {{- if hasKey $seen $path -}}
     {{- fail (printf "secrets[%d] (%s): mountPath %q is already used by secrets[%s]" $i $s.name $s.mountPath (get $seen $path)) -}}
   {{- end -}}
@@ -188,6 +201,20 @@ cannot express.
   {{- if has $k (list "app.kubernetes.io/name" "app.kubernetes.io/instance" "app.kubernetes.io/component") -}}
     {{- fail (printf "podLabels must not set %s; it is a selector label the chart sets" $k) -}}
   {{- end -}}
+{{- end -}}
+{{- $plainHeaders := dict -}}
+{{- range $h, $_ := .Values.otel.headers -}}
+  {{- $_ := set $plainHeaders (lower $h) $h -}}
+{{- end -}}
+{{- $secretHeaders := dict -}}
+{{- range $h, $_ := .Values.otel.secretHeaders -}}
+  {{- if hasKey $plainHeaders (lower $h) -}}
+    {{- fail (printf "otel header %q is set in both otel.headers and otel.secretHeaders (header names are case-insensitive)" $h) -}}
+  {{- end -}}
+  {{- if hasKey $secretHeaders (lower $h) -}}
+    {{- fail (printf "otel.secretHeaders sets %q and %q; header names are case-insensitive" (get $secretHeaders (lower $h)) $h) -}}
+  {{- end -}}
+  {{- $_ := set $secretHeaders (lower $h) $h -}}
 {{- end -}}
 {{- $reserved := list "SPRING_PROFILES_ACTIVE" "SPRING_CONFIG_ADDITIONAL_LOCATION" "SPRING_CONFIG_IMPORT" "OTEL_EXPORTER_OTLP_ENDPOINT" "JAVA_TOOL_OPTIONS" -}}
 {{- if .Values.otel.headers -}}
