@@ -432,12 +432,13 @@ pointer or a top-level name, taken literally, so `%{a.b}` is the property `"a.b"
 and `%{+yyyy.MM.dd}` (Java `DateTimeFormatter` pattern over `document.timestamp-field`,
 or ingest time if unset, formatted in UTC with `Locale.ROOT`). A reference runs from
 `%{` to the next `}`; everything else is literal, with no escapes. A string field
-contributes its text, a number or boolean Jackson's text form (`42`, `1.5`, `1.0e20`, `true`).
-Resolved index names are lower-cased with `Locale.ROOT`. A pattern whose field is
-missing, `null`, an object or an array, or whose result Elasticsearch would reject
-(forbidden character, leading `-`/`_`/`+`, `.`/`..`, empty, an unpaired UTF-16
-surrogate, more than 255 UTF-8 bytes), routes the document to the DLQ with `error.type=unresolved_index` and the
-cause in `error.reason`.
+contributes its text, a number or boolean Jackson's text form (`42`, `1.5`,
+`1.0e20`, `true`). Resolved index names are lower-cased with `Locale.ROOT`. A
+pattern whose field is missing, `null`, an object or an array, or whose result
+Elasticsearch would reject (forbidden character, leading `-`/`_`/`+`, `.`/`..`,
+empty, an unpaired UTF-16 surrogate, more than 255 UTF-8 bytes), routes the
+document to the DLQ with `error.type=unresolved_index` and the cause in
+`error.reason`.
 
 This covers: static indices, daily/monthly indices from event time, per-region or
 per-tenant clusters, topic-to-index merging, and fan-out. It deliberately cannot do

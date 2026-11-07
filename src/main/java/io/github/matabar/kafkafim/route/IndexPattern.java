@@ -59,7 +59,8 @@ public final class IndexPattern {
    * @param pattern a pattern that passed configuration validation
    * @return the compiled pattern
    * @throws IllegalArgumentException if it is empty, has an unterminated or empty <code>%{</code>,
-   *     an invalid JSON pointer or field name, or a date pattern {@link DateTimeFormatter} rejects
+   *     an invalid JSON pointer or field name, a date pattern {@link DateTimeFormatter} rejects, or
+   *     no references and a name Elasticsearch would reject
    */
   public static IndexPattern compile(String pattern) {
     Specs.require(pattern != null && !pattern.isBlank(), "index pattern is empty");
