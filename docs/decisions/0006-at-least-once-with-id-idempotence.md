@@ -11,8 +11,8 @@ written to the DLQ. Duplicates on redelivery are neutralised by a deterministic
   409 on retry is treated as success.
 - Optional external versioning (`version`, `version_type: external`);
   `version_conflict_engine_exception` is counted as `stale` and treated as success
-  unless the pipeline says `on_version_conflict: dlq`.
-- `id: auto` (ES-generated) is allowed but startup warns: retries duplicate.
+  unless the pipeline says `document.on-version-conflict: dlq`.
+- `document.id-missing: auto` (ES-generated id) is allowed but startup warns: retries duplicate.
 
 ## Consequences
 Exactly-once is not needed. Migration from Logstash can run both systems in parallel

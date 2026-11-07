@@ -23,8 +23,8 @@ chart that the team transfers into the air-gapped environment and deploys there.
   `0.1.0-SNAPSHOT`) and the release workflow passes `-Drevision=1.2.3`.
 - Chart `version` and `appVersion` are both the tag, so one number identifies the
   whole deliverable when it is carried into the air gap.
-- Image tags per release: `1.2.3`, `1.2`, `sha-<7>`. Pushes to `main` publish
-  `main` and `sha-<7>` only (development environments). `latest` is never published.
+- Image tags per release: `1.2.3`, `1.2`, `sha-<7>`. Nothing is published on pushes
+  to `main`; only `v*` tags publish. `latest` is never published.
 
 ## Registries and names
 
@@ -42,7 +42,7 @@ Helm distribution model and is what `helm pull`/`helm push` and `skopeo` underst
 
 | Job | What it proves |
 |---|---|
-| `build` | `./mvnw verify`: compile, unit tests (Surefire, `*Test`/`*Tests`), integration tests (Failsafe, `*IntegrationTest`, Testcontainers Kafka + Elasticsearch), ArchUnit package-boundary tests. Uploads test reports and the jar. |
+| `build` | `./mvnw verify`: compile, unit tests (Surefire defaults minus `*IntegrationTest`), integration tests (Failsafe, `*IntegrationTest`, Testcontainers Kafka + Elasticsearch), ArchUnit package-boundary tests. Uploads test reports and the jar. |
 | `image` | The Dockerfile builds from the tested jar (no push); `hadolint` on the Dockerfile; the container starts read-only and answers `/actuator/health/liveness` within 60 s. |
 | `helm` | `helm lint`, `helm template` with every `charts/kafkafim/ci/*-values.yaml`, `kubeconform` against Kubernetes schemas, `helm unittest` for the group-rendering logic. Skipped until the chart exists. |
 

@@ -6,13 +6,18 @@ Status: accepted · Date: 2026-11-07
 Every document that cannot be indexed goes to a DLQ topic on the **same Kafka
 cluster as the source** (default `<first topic>.kafkafim-dlq`). The record value is
 the original bytes, untouched; the error and provenance travel in headers
-(`kafkafim.pipeline`, `error.type`, `error.reason`, `source.topic/partition/offset`,
-`target.cluster/index`, `attempts`, `first_failure_ts`, `doc_index`).
+(`kafkafim.pipeline`, `kafkafim.error.type`, `kafkafim.error.reason`,
+`kafkafim.source.topic/partition/offset`, `kafkafim.target.cluster/index`,
+`kafkafim.attempts`, `kafkafim.first-failure-ts`, `kafkafim.doc-index`).
 
 Classification:
 - Non-retryable item errors (400 family: mapping, parsing, illegal argument) → DLQ now.
-- Retryable errors (429, 5xx, connection) → retry; after `max_attempts` or
-  `max_elapsed` → DLQ. This is the poison-message bound: a partition always progresses.
+- Retryable **item** errors inside a successful bulk response (e.g.
+  `es_rejected_execution_exception`) → retry; after `max-attempts` or `max-elapsed`
+  → DLQ. This is the poison-message bound: a partition always progresses.
+- Request-level failures (connection errors, 5xx, request-level 429, circuit breaker
+  open, 401/403) are retried indefinitely with backoff and never count toward that
+  bound: an Elasticsearch outage produces Kafka lag, never DLQ records (ADR-0010).
 - Undecodable record, missing `_id`, no matching route, oversized document → DLQ.
 - DLQ produce failure → block the partition and alert. Loss is worse than lag.
 

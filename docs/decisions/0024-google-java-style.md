@@ -11,8 +11,9 @@ All Java code follows the [Google Java Style Guide](https://google.github.io/sty
   Imports are ordered and unused imports removed by the same step.
 - **Conventions** that a formatter cannot fix (naming, Javadoc on public types,
   no wildcard imports, modifier order, empty blocks, overload grouping) are checked by
-  Checkstyle with the `google_checks.xml` that ships inside Checkstyle, raised from
-  `warning` to `error` severity, in the `validate` phase.
+  Checkstyle with the `google_checks.xml` that ships inside Checkstyle; its checks
+  report at `warning` severity and the plugin fails the build on warnings
+  (`violationSeverity=warning`, `failOnViolation=true`), in the `validate` phase.
 - `.editorconfig` mirrors the basics (2-space indent, 100 columns, LF) for IDEs;
   the google-java-format IntelliJ and VS Code plugins apply the exact formatter.
 - Generated code and test resources are excluded; test code is held to the same

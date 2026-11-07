@@ -80,6 +80,9 @@ For each `groups.<g>`:
   another group's pipelines, so a reload in one group cannot touch another.
 - `Deployment kafkafim-<g>` mounts the ConfigMap at `/etc/kafkafim/config/` and every
   `secrets[]` entry read-only at its `mountPath`, and sets
+  `SPRING_PROFILES_ACTIVE=kafkafim` (required: `application-kafkafim.yaml` is a
+  profile-specific file, and the active profile also disables the default `local`
+  profile that carries the development sample),
   `SPRING_CONFIG_ADDITIONAL_LOCATION=/etc/kafkafim/config/`,
   `SPRING_CONFIG_IMPORT=configtree:/etc/kafkafim/secrets/`,
   `OTEL_EXPORTER_OTLP_ENDPOINT`, `JAVA_TOOL_OPTIONS`.
@@ -102,8 +105,10 @@ For each `groups.<g>`:
 - `image.tag` or `.Chart.AppVersion` is non-empty.
 
 Semantic validation of the kafkafim config itself (cluster and identity references,
-route rules, patterns) is the application's job; CI runs the image with the
-`validate` profile against each rendered ConfigMap (DELIVERY.md).
+route rules, patterns) is the application's job. The infrastructure repository that
+holds the per-cluster values can run the image with the `validate` profile against
+each rendered ConfigMap in its own CI; this repository's CI only lints and templates
+the chart.
 
 ## Secrets and configtree naming
 

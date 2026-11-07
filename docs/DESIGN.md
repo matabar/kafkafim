@@ -51,8 +51,9 @@ into ~20 Elasticsearch 8.x clusters.
 - **Expression language.** Routing is rules, not code. If a case cannot be expressed
   with the rule set, the answer is an ES ingest pipeline or a new rule type, not CEL.
 - **CLI subcommands.** One run mode. Validation is fail-fast at startup and on
-  reload; CI validates by booting with a `validate` profile (section 5.6). DLQ
-  inspection uses standard Kafka tooling; replay is a pipeline (section 9).
+  reload; the infrastructure repository's CI can validate rendered configuration by
+  booting the image with the `validate` profile (section 5.6). DLQ inspection uses
+  standard Kafka tooling; replay is a pipeline (section 9).
 - A UI. GitOps + Grafana is the UI.
 - Non-JSON payloads, Avro, Schema Registry.
 - `update`/`delete` operations (model leaves room; MVP implements `index`/`create`).
@@ -212,8 +213,13 @@ the metric.
 Everything is Spring Boot configuration under the `kafkafim` prefix, bound to typed
 records with `@ConfigurationProperties` and checked with Bean Validation plus a
 cross-reference validator (every `cluster` and `identity` name must exist, exactly
-one default route unless `route-mode: all`, patterns must parse). The same model is read from
-`application.yaml` locally and from a Helm-rendered ConfigMap in production.
+one default route unless `route-mode: all`, patterns must parse). The same model is
+read from the `local` profile locally (`application-local.yaml`, the default profile
+via `spring.profiles.default: local`) and from a Helm-rendered
+`application-kafkafim.yaml` in production, where `SPRING_PROFILES_ACTIVE=kafkafim`
+both activates that file and disables the default profile, so the local sample never
+binds in production. The packaged `application.yaml` holds only profile-independent
+defaults (Actuator, OTLP, logging).
 
 ### 5.1 Clusters
 
@@ -281,10 +287,15 @@ kafkafim:
         group-id: kafkafim.orders            # default: kafkafim.<name>
         identity: orders-reader               # consumer identity; default: cluster.default-identity
         offset-reset: latest
+        max-poll-records: 500
+        max-in-flight-bytes: 64MB             # memory bound per pipeline; fetching pauses above it
+        commit-interval: 1s
         max-record-bytes: 8MB                 # value is a JSON object or an array of objects
       document:
         id-field: /order_id                   # JSON pointer into each object; default /id
+        id-missing: dlq                       # dlq (default) | auto (ES-generated id, duplicates on retry)
         version-field: /version               # optional → version_type external
+        on-version-conflict: ignore           # ignore (default, counted as stale) | dlq
         timestamp-field: /@timestamp          # for %{+...} patterns; default: ingest time
         timestamp-format: iso-8601            # iso-8601 (default) | epoch-millis | epoch-seconds | pattern:<DateTimeFormatter>
         on-bad-timestamp: dlq                 # dlq (default) | ingest-time
@@ -309,8 +320,8 @@ kafkafim:
       dlq:
         topic: orders.kafkafim-dlq            # default: <first topic>.kafkafim-dlq
         identity: dlq-writer                  # producer identity; default: the source identity
-        max-attempts: 10                      # per document, retryable errors only
-        max-elapsed: 10m
+        max-attempts: 10                      # per document, item-level retryable errors only
+        max-elapsed: 10m                      # request-level failures (ES down) never count
       latency:
         max-age: 200ms                        # overrides cluster bulk.max-age
 ```
@@ -346,9 +357,10 @@ cluster CA for trust only; client certificates are modelled but not exercised in
 the MVP tests.
 
 - `routes[].identity`: the identity used for that route's bulk items → falls back to
-  the cluster's `default-identity` → validation fails if the cluster is `https` with
-  security enabled and none resolves (plain `http` with no identity is allowed and
-  warned, for local development).
+  the cluster's `default-identity` → validation fails if the cluster uses `https`
+  and none resolves; plain `http` with no identity binds with a startup warning (local
+  development only). Whether the cluster actually enforces security is not knowable
+  at bind time; a 401 at runtime is handled as a configuration failure (section 7).
 - One `RestClient` per `(cluster, identity)`, since the low-level client fixes the
   `Authorization` header (or client certificate) at construction. Batching and bulk
   senders are therefore per `(cluster, identity)`; a pipeline whose routes use two
@@ -409,9 +421,14 @@ chart renders a `Deployment`, a `ConfigMap` with `application-kafkafim.yaml`
 a `Service` and an optional CPU `HorizontalPodAutoscaler`. Pods start with:
 
 ```
+SPRING_PROFILES_ACTIVE=kafkafim
 SPRING_CONFIG_ADDITIONAL_LOCATION=/etc/kafkafim/config/
 SPRING_CONFIG_IMPORT=configtree:/etc/kafkafim/secrets/
 ```
+
+`application-kafkafim.yaml` is a profile-specific file, so the `kafkafim` profile
+must be active for Spring Boot to load it; activating it also switches off the
+default `local` profile that carries the development sample.
 
 The pod template carries **no** config checksum annotation, so a `helm upgrade`
 that only changes pipelines updates the ConfigMap and pods hot-reload. Image,
@@ -438,9 +455,12 @@ agent all work. A changed secret file is picked up by the same reload path.
 
 - **Startup**: binding failure or validation failure stops the pod with a clear
   message; readiness never goes green.
-- **CI**: the image is run with `--spring.profiles.active=validate` and the
-  candidate ConfigMap mounted; the profile binds and validates, logs the pipeline
-  summary, and exits 0/1 without connecting anywhere. This replaces a CLI.
+- **`validate` profile** (application feature, roadmap 0.2): started with
+  `--spring.profiles.active=validate,kafkafim` and a rendered ConfigMap mounted, the
+  application binds and validates, logs the pipeline summary, and exits 0/1 without
+  connecting anywhere. It is meant for the infrastructure repository's CI, where the
+  per-cluster values live. This repository's CI does not use it; it builds the image
+  and smoke-tests it with a liveness probe ([DELIVERY.md](DELIVERY.md)).
 - **Reload**: a watcher on the config and secret directories (Java `WatchService` +
   10s hash poll, because kubelet updates volumes by symlink swap with up to ~1 min
   delay) plus `POST /actuator/reload`. The new tree is loaded with Spring's
@@ -461,7 +481,8 @@ agent all work. A changed secret file is picked up by the same reload path.
   production. `kafkafim_consumer_lag` is exported so this is a chart toggle later.
 - Scaling beyond partitions is wasted; repartitioning is a Kafka-side action.
 - Per-cluster knobs: `bulk.max-docs/max-bytes/max-age/in-flight`; per pipeline
-  `source.max-poll-records`, `max-in-flight-bytes` (memory bound).
+  `source.max-poll-records`, `source.max-in-flight-bytes` (memory bound), both shown
+  in section 5.2.
 
 ## 7. Backpressure and failure handling
 
@@ -472,13 +493,13 @@ agent all work. A changed secret file is picked up by the same reload path.
 | Bulk request rejected with 401 / 403 | Configuration failure, not data failure: the pipeline pauses, retries with backoff, `kafkafim_auth_failures_total` and an alert fire. Nothing goes to the DLQ. |
 | Bulk partial failure | Only failed items are retried; successful items are acked immediately. |
 | Non-retryable item error (400 family: `mapper_parsing_exception`, `strict_dynamic_mapping_exception`, `illegal_argument_exception`, `document_parsing_exception`) | DLQ immediately, partition continues. |
-| Retryable item error exceeding `max-attempts`/`max-elapsed` | DLQ, partition continues. This is the poison-message bound. |
-| Oversized document (413) | DLQ. |
+| Retryable **item** error (e.g. `es_rejected_execution_exception` inside a 200 bulk response) exceeding `max-attempts`/`max-elapsed` | DLQ, partition continues. This is the poison-message bound. Request-level failures (connection errors, 5xx, request-level 429, breaker open, 401/403) are retried indefinitely and never count toward it; an ES outage produces lag, never DLQ records. |
+| Bulk request rejected with 413 | The request is split and retried; a single-document bulk that still gets 413 sends that document to the DLQ with `error.type=too_large`. |
 | Undecodable record, non-object element, missing `_id`, bad timestamp, no matching route, unresolved index pattern | DLQ with the matching `error.type` (`decode`, `missing_id`, `bad_timestamp`, `no_route`, `unresolved_index`). |
 | Missing topic, DLQ topic, or failed authentication at pipeline start | Pipeline stays stopped (`failed_preflight`), clear log naming resource and identity, alert. Other pipelines unaffected. kafkafim never creates the resource. |
 | DLQ produce fails | Block the partition and alert. Losing data is worse than lag. |
 | Kafka unavailable | Reconnect with backoff; `kafkafim_kafka_connected` gauge drops, alert. |
-| Pod SIGTERM | Spring graceful shutdown: stop fetching, flush in-flight (bounded by `terminationGracePeriodSeconds`, default 60s), commit, leave group. |
+| Pod SIGTERM | Spring graceful shutdown: stop fetching, flush in-flight, commit, leave group, bounded by `spring.lifecycle.timeout-per-shutdown-phase` (60s, set in `application.yaml`) inside the pod's `terminationGracePeriodSeconds` (90s, chart default). |
 
 Error classification lives in one table (`sink/es/ErrorClassifier`) and is
 unit-tested against captured ES responses, because it decides data loss versus stall.
@@ -644,8 +665,9 @@ See [DELIVERY.md](DELIVERY.md) and [HELM.md](HELM.md). In one paragraph: GitHub
 Actions CI runs unit, integration (Testcontainers), architecture (ArchUnit), image
 and chart checks on every PR; a `v*` tag publishes a signed multi-arch image to
 `ghcr.io/matabar/kafkafim`, a signed OCI chart to `ghcr.io/matabar/charts/kafkafim`
-and an air-gap bundle (amd64 image archive, chart, SBOM, checksums, import
-instructions) on the GitHub Release. Production is air-gapped; the team imports the
+and an air-gap bundle (the signed multi-arch image saved by digest with `cosign
+save`, its digest file, chart, SBOM, checksums, import instructions) on the GitHub
+Release. Production is air-gapped; the team imports the
 bundle into the internal registry and installs one Helm release per Kubernetes
 cluster. The build is a single Maven module with CI-friendly `${revision}`
 versioning (ADR-0003, ADR-0022, ADR-0023).
@@ -654,7 +676,8 @@ versioning (ADR-0003, ADR-0022, ADR-0023).
 
 - **0.1** single pipeline end to end: bind config, preflight checks, consume, route,
   bulk, commit, metrics, DLQ. SCRAM-SHA-256 and basic auth identities. Compose stack.
-- **0.2** groups, Helm chart, configtree secrets, hot reload, `validate` profile.
+- **0.2** groups, Helm chart, configtree secrets, hot reload, `validate` profile for
+  the infrastructure repository's config checks.
 - **0.3** traces/logs, Grafana dashboards + alerts, breaker, versioning, data streams.
 - **1.0** runbook, load-test results, first production pipelines, Logstash
   config translator for the common 80%.

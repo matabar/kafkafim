@@ -12,7 +12,10 @@ production.
   records, checked with Bean Validation plus a cross-reference validator.
 - Helm renders `application-kafkafim.yaml` into one `ConfigMap` per group (shared
   cluster definitions + only that group's pipelines) and starts pods with
-  `SPRING_CONFIG_ADDITIONAL_LOCATION` pointing at the mount.
+  `SPRING_PROFILES_ACTIVE=kafkafim` and `SPRING_CONFIG_ADDITIONAL_LOCATION` pointing
+  at the mount. The profile is what makes Spring Boot load the profile-specific file,
+  and it disables the default `local` profile (`spring.profiles.default: local`) that
+  holds the development sample in `application-local.yaml`.
 - Secrets: Kubernetes `Secret`s mounted as directories and imported with
   `spring.config.import=configtree:...`; cluster definitions reference them with
   `${...}` placeholders. Literal secret values fail validation outside the local
@@ -31,8 +34,10 @@ production.
   `Binder` into a fresh model, validated whole, then diffed by pipeline; changed
   pipelines drain and restart, others are untouched. Invalid trees are rejected
   whole.
-- CI validation: run the image with `--spring.profiles.active=validate`; it binds,
-  validates, prints a summary and exits 0/1 without connecting anywhere.
+- `validate` profile: the image started with `--spring.profiles.active=validate,kafkafim`
+  binds, validates, prints a summary and exits 0/1 without connecting anywhere. It
+  serves the infrastructure repository's CI (where the values live); this
+  repository's CI smoke-tests the image with a liveness probe instead.
 
 ## Alternatives
 - Own YAML format + JSON Schema + CLI validator: a second config system next to

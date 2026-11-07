@@ -3,8 +3,9 @@
 Status: accepted · Date: 2026-11-07
 
 ## Decision
-1. Translate one Logstash pipeline into a kafkafim pipeline; the `validate` profile in CI.
-2. Deploy kafkafim with a **new** consumer group at `offset_reset: latest` while the
+1. Translate one Logstash pipeline into a `kafkafim.pipelines.<name>` block; validate it
+   with the `validate` profile in the infrastructure repository's CI.
+2. Deploy kafkafim with a **new** consumer group at `offset-reset: latest` while the
    Logstash pipeline keeps running. Same `_id`s → identical documents. Compare
    counts and DLQ rate for a day.
 3. Stop the Logstash pipeline. No gap, no duplicates.

@@ -14,7 +14,7 @@ Status: accepted · Date: 2026-11-07
   only; `route` and `decode` depend on nothing but the JDK and Jackson.
 - **CI-friendly versioning**: `<version>${revision}</version>` with default
   `0.1.0-SNAPSHOT`; releases pass `-Drevision=<tag>`. No version-bump commits.
-- **Surefire for `*Test`/`*Tests`, Failsafe for `*IntegrationTest`** so unit tests stay fast and
+- **Surefire defaults minus `*IntegrationTest`, Failsafe for `*IntegrationTest`** so unit tests stay fast and
   Testcontainers-based tests run in the `integration-test` phase.
 
 ## When to split
