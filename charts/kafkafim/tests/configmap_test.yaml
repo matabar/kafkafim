@@ -1,0 +1,139 @@
+suite: per-group ConfigMap carries shared clusters plus only the group's pipelines
+templates:
+  - templates/configmap.yaml
+release:
+  name: kafkafim
+tests:
+  - it: renders one ConfigMap per group, named kafkafim-<group>
+    values:
+      - ../ci/two-groups-values.yaml
+    asserts:
+      - hasDocuments:
+          count: 2
+      - isKind:
+          of: ConfigMap
+      - equal:
+          path: metadata.name
+          value: kafkafim-orders
+        documentIndex: 0
+      - equal:
+          path: metadata.name
+          value: kafkafim-small
+        documentIndex: 1
+
+  - it: renders exactly kafka + elasticsearch + the group's pipeline subset
+    set:
+      config:
+        kafkafim:
+          kafka:
+            clusters:
+              prod-a: { bootstrap-servers: [k1:9093] }
+          elasticsearch:
+            clusters:
+              search-eu: { uris: ["https://es:9200"] }
+          pipelines:
+            orders: { source: { cluster: prod-a, topics: [orders] } }
+            audit: { source: { cluster: prod-a, topics: [audit] } }
+            iam: { source: { cluster: prod-a, topics: [iam] } }
+      groups:
+        orders: { pipelines: [orders] }
+        small: { pipelines: [audit, iam] }
+    asserts:
+      - equal:
+          path: data["application-kafkafim.yaml"]
+          value: |
+            kafkafim:
+              elasticsearch:
+                clusters:
+                  search-eu:
+                    uris:
+                    - https://es:9200
+              kafka:
+                clusters:
+                  prod-a:
+                    bootstrap-servers:
+                    - k1:9093
+              pipelines:
+                orders:
+                  source:
+                    cluster: prod-a
+                    topics:
+                    - orders
+        documentSelector:
+          path: metadata.name
+          value: kafkafim-orders
+      - equal:
+          path: data["application-kafkafim.yaml"]
+          value: |
+            kafkafim:
+              elasticsearch:
+                clusters:
+                  search-eu:
+                    uris:
+                    - https://es:9200
+              kafka:
+                clusters:
+                  prod-a:
+                    bootstrap-servers:
+                    - k1:9093
+              pipelines:
+                audit:
+                  source:
+                    cluster: prod-a
+                    topics:
+                    - audit
+                iam:
+                  source:
+                    cluster: prod-a
+                    topics:
+                    - iam
+        documentSelector:
+          path: metadata.name
+          value: kafkafim-small
+
+  - it: never leaks another group's pipelines (two-groups CI values)
+    values:
+      - ../ci/two-groups-values.yaml
+    asserts:
+      - matchRegex:
+          path: data["application-kafkafim.yaml"]
+          pattern: "(?m)^  pipelines:\n    orders:\n"
+        documentSelector: { path: metadata.name, value: kafkafim-orders }
+      - notMatchRegex:
+          path: data["application-kafkafim.yaml"]
+          pattern: "(?m)^    (audit|iam):$"
+        documentSelector: { path: metadata.name, value: kafkafim-orders }
+      - matchRegex:
+          path: data["application-kafkafim.yaml"]
+          pattern: "(?m)^    audit:$"
+        documentSelector: { path: metadata.name, value: kafkafim-small }
+      - matchRegex:
+          path: data["application-kafkafim.yaml"]
+          pattern: "(?m)^    iam:$"
+        documentSelector: { path: metadata.name, value: kafkafim-small }
+      - notMatchRegex:
+          path: data["application-kafkafim.yaml"]
+          pattern: "(?m)^    orders:$"
+        documentSelector: { path: metadata.name, value: kafkafim-small }
+
+  - it: keeps configtree placeholders verbatim (no secret values in the ConfigMap)
+    values:
+      - ../ci/minimal-values.yaml
+    asserts:
+      - matchRegex:
+          path: data["application-kafkafim.yaml"]
+          pattern: 'password: \$\{kafka\.prod-a\.orders-reader\.password\}'
+
+  - it: rejects config.kafkafim keys other than kafka, elasticsearch and pipelines
+    values:
+      - ../ci/minimal-values.yaml
+    set:
+      config.kafkafim.allow-inline-secrets: true
+    asserts:
+      - failedTemplate:
+          errorPattern: "allow-inline-secrets"
+
+  - it: renders nothing without groups
+    asserts:
+      - hasDocuments:
+          count: 0

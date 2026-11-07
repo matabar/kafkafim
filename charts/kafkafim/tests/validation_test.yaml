@@ -1,0 +1,166 @@
+suite: template-time validation fails with a clear message
+# The ServiceAccount always renders; every template includes kafkafim.validate, and
+# helm-unittest attributes the render failure to the first template it reaches.
+templates:
+  - templates/serviceaccount.yaml
+release:
+  name: kafkafim
+values:
+  - ../ci/minimal-values.yaml
+tests:
+  - it: accepts the minimal CI values
+    asserts:
+      - notFailedTemplate: {}
+
+  - it: fails when a group names an undefined pipeline
+    set:
+      groups.orders.pipelines: [orders, payments]
+    asserts:
+      - failedTemplate:
+          errorMessage: 'groups.orders.pipelines names "payments", which is not defined in config.kafkafim.pipelines'
+
+  - it: fails when a pipeline is not assigned to any group
+    set:
+      config.kafkafim.pipelines.audit:
+        source: { cluster: prod-a, topics: [audit] }
+    asserts:
+      - failedTemplate:
+          errorMessage: 'pipeline "audit" is defined in config.kafkafim.pipelines but not listed in any group'
+
+  - it: fails when a pipeline is assigned to two groups
+    set:
+      groups.orders-copy:
+        pipelines: [orders]
+    asserts:
+      - failedTemplate:
+          errorMessage: 'pipeline "orders" is assigned to groups "orders" and "orders-copy"; every pipeline belongs to exactly one group'
+
+  - it: fails when a secret mountPath is outside /etc/kafkafim/secrets/
+    set:
+      secrets:
+        - { name: stray, mountPath: /etc/kafkafim/config/stray }
+    asserts:
+      - failedTemplate:
+          errorMessage: 'secrets[0] (stray): mountPath "/etc/kafkafim/config/stray" must be below /etc/kafkafim/secrets/ (the configtree import root)'
+
+  - it: fails when a secret mountPath escapes the root with ..
+    set:
+      secrets:
+        - { name: sneaky, mountPath: /etc/kafkafim/secrets/../config }
+    asserts:
+      - failedTemplate:
+          errorPattern: 'mountPath "/etc/kafkafim/secrets/../config" must be below /etc/kafkafim/secrets/'
+
+  - it: fails when a secret is mounted at the configtree root itself
+    set:
+      secrets:
+        - { name: root, mountPath: /etc/kafkafim/secrets/ }
+    asserts:
+      - failedTemplate:
+          errorPattern: 'must be below /etc/kafkafim/secrets/'
+
+  - it: fails when two secrets share a mountPath (trailing slash ignored)
+    set:
+      secrets:
+        - { name: a, mountPath: /etc/kafkafim/secrets/kafka/prod-a }
+        - { name: b, mountPath: /etc/kafkafim/secrets/kafka/prod-a/ }
+    asserts:
+      - failedTemplate:
+          errorMessage: 'secrets[1] (b): mountPath "/etc/kafkafim/secrets/kafka/prod-a/" is already used by secrets[0]'
+
+  - it: fails on replicas < 2 without allowSingleReplica
+    set:
+      groups.orders.replicas: 1
+    asserts:
+      - failedTemplate:
+          errorMessage: 'groups.orders.replicas is 1; at least 2 replicas keep every pipeline consumed on two pods (set groups.orders.allowSingleReplica: true to allow fewer)'
+
+  - it: accepts replicas 1 with allowSingleReplica
+    set:
+      groups.orders.replicas: 1
+      groups.orders.allowSingleReplica: true
+    asserts:
+      - notFailedTemplate: {}
+
+  - it: fails on autoscaling.minReplicas < 2 without allowSingleReplica
+    set:
+      groups.orders.autoscaling: { enabled: true, minReplicas: 1, maxReplicas: 4 }
+    asserts:
+      - failedTemplate:
+          errorMessage: 'groups.orders.autoscaling.minReplicas is 1; at least 2 replicas keep every pipeline consumed on two pods (set groups.orders.allowSingleReplica: true to allow fewer)'
+
+  - it: fails when autoscaling is enabled without maxReplicas
+    set:
+      groups.orders.autoscaling: { enabled: true }
+    asserts:
+      - failedTemplate:
+          errorMessage: 'groups.orders.autoscaling.maxReplicas is required when autoscaling is enabled (keep it <= the partition count)'
+
+  - it: fails when autoscaling.maxReplicas < minReplicas
+    set:
+      groups.orders.autoscaling: { enabled: true, minReplicas: 4, maxReplicas: 3 }
+    asserts:
+      - failedTemplate:
+          errorMessage: 'groups.orders.autoscaling.maxReplicas (3) is lower than minReplicas (4)'
+
+  - it: fails when autoscaling is enabled but the group has no CPU request
+    set:
+      resources.requests: null
+      groups.orders.autoscaling: { enabled: true, maxReplicas: 4 }
+    asserts:
+      - failedTemplate:
+          errorMessage: 'groups.orders.autoscaling is enabled but the group has no resources.requests.cpu; the CPU HPA needs a CPU request'
+
+  # helm-unittest treats an empty chart.appVersion override as "not set", so a blank
+  # one stands in for it (the chart trims the tag).
+  - it: fails when image.tag and the chart appVersion are both empty
+    chart:
+      appVersion: " "
+    set:
+      image.tag: ""
+    asserts:
+      - failedTemplate:
+          errorMessage: 'image.tag is empty and the chart has no appVersion; set image.tag'
+
+  - it: accepts an empty appVersion when image.tag is set
+    chart:
+      appVersion: " "
+    set:
+      image.tag: 1.2.3
+    asserts:
+      - notFailedTemplate: {}
+
+  - it: fails when a group's resource name exceeds 63 characters
+    set:
+      config.kafkafim.pipelines:
+        orders: {}
+      groups:
+        a-very-long-group-name-that-does-not-fit-into-a-kubernetes-label: { pipelines: [orders] }
+    asserts:
+      - failedTemplate:
+          errorPattern: 'resource name "kafkafim-a-very-long-group-name-that-does-not-fit-into-a-kubernetes-label" is longer than 63 characters'
+
+  - it: fails when extraEnv redefines a variable the chart sets
+    set:
+      extraEnv:
+        - { name: SPRING_PROFILES_ACTIVE, value: local }
+    asserts:
+      - failedTemplate:
+          errorMessage: 'extraEnv must not set SPRING_PROFILES_ACTIVE; the chart already sets it from values'
+
+  - it: fails when extraEnv sets OTEL_EXPORTER_OTLP_HEADERS while otel.headers is set
+    set:
+      otel.headers: { x-tenant: a }
+      extraEnv:
+        - { name: OTEL_EXPORTER_OTLP_HEADERS, value: x=y }
+    asserts:
+      - failedTemplate:
+          errorMessage: 'extraEnv must not set OTEL_EXPORTER_OTLP_HEADERS; the chart already sets it from values'
+
+  - it: allows OTEL_EXPORTER_OTLP_HEADERS from a Secret when otel.headers is empty
+    set:
+      extraEnv:
+        - name: OTEL_EXPORTER_OTLP_HEADERS
+          valueFrom: { secretKeyRef: { name: apm-token, key: headers } }
+    asserts:
+      - notFailedTemplate: {}

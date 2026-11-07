@@ -1,0 +1,54 @@
+# Smallest useful release: one cluster pair, one pipeline, one group, chart defaults.
+config:
+  kafkafim:
+    kafka:
+      clusters:
+        prod-a:
+          bootstrap-servers: [kafka-a-1:9093, kafka-a-2:9093]
+          security-protocol: SASL_SSL
+          ssl:
+            truststore-location: /etc/kafkafim/secrets/kafka/prod-a/truststore.p12
+            truststore-password: ${kafka.prod-a.truststore-password}
+          identities:
+            orders-reader:
+              sasl:
+                mechanism: SCRAM-SHA-256
+                username: ${kafka.prod-a.orders-reader.username}
+                password: ${kafka.prod-a.orders-reader.password}
+          default-identity: orders-reader
+    elasticsearch:
+      clusters:
+        search-eu:
+          uris: [https://es-eu-1:9200, https://es-eu-2:9200]
+          ssl:
+            ca-certificate: /etc/kafkafim/secrets/elasticsearch/search-eu/ca.crt
+          identities:
+            orders-writer:
+              username: ${elasticsearch.search-eu.orders-writer.username}
+              password: ${elasticsearch.search-eu.orders-writer.password}
+          default-identity: orders-writer
+    pipelines:
+      orders:
+        source:
+          cluster: prod-a
+          topics: [orders.v2]
+        document:
+          id-field: /order_id
+        routes:
+          - default: true
+            cluster: search-eu
+            index: "orders-%{+yyyy.MM}"
+
+secrets:
+  - name: kafka-prod-a-trust
+    mountPath: /etc/kafkafim/secrets/kafka/prod-a
+  - name: kafka-prod-a-orders-reader
+    mountPath: /etc/kafkafim/secrets/kafka/prod-a.orders-reader
+  - name: es-search-eu-trust
+    mountPath: /etc/kafkafim/secrets/elasticsearch/search-eu
+  - name: es-search-eu-orders-writer
+    mountPath: /etc/kafkafim/secrets/elasticsearch/search-eu.orders-writer
+
+groups:
+  orders:
+    pipelines: [orders]

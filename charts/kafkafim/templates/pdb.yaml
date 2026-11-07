@@ -1,0 +1,20 @@
+{{- include "kafkafim.validate" . -}}
+{{- range $g, $group := .Values.groups }}
+{{- $pdb := $group.pdb | default $.Values.pdb }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "kafkafim.groupName" (dict "root" $ "group" $g) }}
+  labels:
+    {{- include "kafkafim.groupLabels" (dict "root" $ "group" $g) | nindent 4 }}
+spec:
+  {{- if hasKey $pdb "maxUnavailable" }}
+  maxUnavailable: {{ $pdb.maxUnavailable }}
+  {{- else }}
+  minAvailable: {{ $pdb.minAvailable | default 1 }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "kafkafim.groupSelectorLabels" (dict "root" $ "group" $g) | nindent 6 }}
+{{- end }}

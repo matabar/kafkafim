@@ -1,0 +1,37 @@
+# One group autoscaled on CPU (no replicas in its Deployment), one static.
+config:
+  kafkafim:
+    kafka:
+      clusters:
+        prod-a:
+          bootstrap-servers: [kafka-a-1:9093]
+    elasticsearch:
+      clusters:
+        search-eu:
+          uris: [https://es-eu-1:9200]
+    pipelines:
+      orders:
+        source: { cluster: prod-a, topics: [orders.v2] }
+        routes:
+          - { default: true, cluster: search-eu, index: orders }
+      audit:
+        source: { cluster: prod-a, topics: [audit.events] }
+        routes:
+          - { default: true, cluster: search-eu, index: audit }
+
+groups:
+  orders:
+    pipelines: [orders]
+    resources:
+      requests: { cpu: "1", memory: 1Gi }
+      limits: { memory: 2Gi }
+    autoscaling:
+      enabled: true
+      minReplicas: 2
+      maxReplicas: 12
+      targetCPUUtilizationPercentage: 70
+  audit:
+    pipelines: [audit]
+    replicas: 3
+    pdb:
+      maxUnavailable: 1

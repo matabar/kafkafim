@@ -1,0 +1,22 @@
+{{- include "kafkafim.validate" . -}}
+{{- $kafkafim := .Values.config.kafkafim -}}
+{{- $all := $kafkafim.pipelines | default dict -}}
+{{- range $g, $group := .Values.groups }}
+{{- $subset := dict -}}
+{{- range $p := $group.pipelines -}}
+{{- $_ := set $subset $p (get $all $p) -}}
+{{- end -}}
+{{- $doc := dict "kafkafim" (dict "kafka" ($kafkafim.kafka | default dict) "elasticsearch" ($kafkafim.elasticsearch | default dict) "pipelines" $subset) }}
+---
+# Shared cluster definitions plus only this group's pipelines. Mounted as a
+# directory (not subPath) so kubelet updates it in place and the group hot-reloads.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "kafkafim.groupName" (dict "root" $ "group" $g) }}
+  labels:
+    {{- include "kafkafim.groupLabels" (dict "root" $ "group" $g) | nindent 4 }}
+data:
+  application-kafkafim.yaml: |
+    {{- toYaml $doc | nindent 4 }}
+{{- end }}

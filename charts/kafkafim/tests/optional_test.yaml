@@ -1,0 +1,73 @@
+suite: opt-in NetworkPolicy and ServiceMonitor
+release:
+  name: kafkafim
+  namespace: ingest
+tests:
+  - it: renders no NetworkPolicy by default
+    values:
+      - ../ci/minimal-values.yaml
+    template: templates/networkpolicy.yaml
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: renders one ingress-only NetworkPolicy for all groups when enabled
+    template: templates/networkpolicy.yaml
+    values:
+      - ../ci/network-policy-values.yaml
+    asserts:
+      - hasDocuments:
+          count: 1
+      - isKind:
+          of: NetworkPolicy
+      - equal:
+          path: spec.podSelector.matchLabels
+          value:
+            app.kubernetes.io/name: kafkafim
+            app.kubernetes.io/instance: kafkafim
+      - equal:
+          path: spec.policyTypes
+          value: [Ingress]
+      - equal:
+          path: spec.ingress
+          value:
+            - ports:
+                - { port: 8080, protocol: TCP }
+              from:
+                - podSelector: {}
+                - namespaceSelector:
+                    matchLabels:
+                      kubernetes.io/metadata.name: monitoring
+
+  - it: renders no ServiceMonitor by default (no CRDs)
+    values:
+      - ../ci/minimal-values.yaml
+    template: templates/servicemonitor.yaml
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: renders one ServiceMonitor scraping every group's Service when enabled
+    values:
+      - ../ci/minimal-values.yaml
+    template: templates/servicemonitor.yaml
+    set:
+      serviceMonitor.enabled: true
+      serviceMonitor.labels: { release: prometheus }
+    asserts:
+      - hasDocuments:
+          count: 1
+      - isKind:
+          of: ServiceMonitor
+      - isAPIVersion:
+          of: monitoring.coreos.com/v1
+      - equal:
+          path: metadata.labels.release
+          value: prometheus
+      - equal:
+          path: spec.namespaceSelector.matchNames
+          value: [ingest]
+      - equal:
+          path: spec.endpoints
+          value:
+            - { port: http, path: /actuator/prometheus, interval: 30s }
