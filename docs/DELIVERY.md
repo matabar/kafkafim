@@ -54,8 +54,10 @@ Dependabot (weekly, grouped) for Maven, GitHub Actions and the Docker base image
 1. `./mvnw -Drevision=<ver> verify` (tests run again on the exact tagged commit).
 2. Multi-arch image (`linux/amd64`, `linux/arm64`) built with Buildx and pushed to
    GHCR with the tags above and BuildKit provenance attestations.
-3. Image signed with Cosign (keyless, GitHub OIDC); signature stored in GHCR next to
-   the image.
+3. Image signed with Cosign (keyless, GitHub OIDC) in the classic `.sig`-tag format
+   (`--new-bundle-format=false`), because that is the format `cosign save` and
+   `cosign load` carry into and out of an OCI layout; `cosign verify` accepts it
+   without flags. The signature is stored in GHCR next to the image.
 4. SBOM (SPDX JSON, via Syft) generated from the pushed digest and attached to the
    release.
 5. The **exact pushed digest** is saved with `cosign save` into an OCI layout
@@ -97,11 +99,13 @@ cosign load --dir kafkafim-1.2.3-image registry.internal/kafkafim/kafkafim:1.2.3
 ```
 
 `cosign load` pushes the image and its signature and attestations together, so the
-internal registry holds the same signed artifact as GHCR. If the internal tooling
-has a Sigstore trust root available (`cosign initialize` run on the internet side
-and its `~/.sigstore` cache carried across), `cosign verify --offline` on the
-internal reference re-checks the signature without network access; otherwise the
-checksum file is the integrity check inside the air gap.
+internal registry holds the same signed artifact as GHCR. To re-check the signature
+inside the air gap, the importing machine needs `cosign` and a Sigstore trusted
+root obtained on the internet side (`cosign initialize`, then carry its
+`~/.sigstore` cache across, or pass `--trusted-root`); then
+`cosign verify --offline` on the internal reference works without network access.
+Without that, the checksum file is the integrity check inside the air gap. The SBOM
+describes the `linux/amd64` image, which is what production runs.
 
 ```bash
 helm push kafkafim-1.2.3.tgz oci://registry.internal/charts
