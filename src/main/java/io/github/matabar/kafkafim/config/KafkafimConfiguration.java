@@ -2,9 +2,11 @@ package io.github.matabar.kafkafim.config;
 
 import org.springframework.beans.factory.config.BeanDefinition;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.boot.context.properties.source.ConfigurationPropertySources;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Role;
+import org.springframework.core.env.Environment;
 
 /** Binds and validates {@code kafkafim.*}. */
 @Configuration(proxyBeanMethods = false)
@@ -20,7 +22,7 @@ public class KafkafimConfiguration {
    */
   @Bean
   @Role(BeanDefinition.ROLE_INFRASTRUCTURE)
-  static KafkafimPropertiesValidator configurationPropertiesValidator() {
-    return new KafkafimPropertiesValidator();
+  static KafkafimPropertiesValidator configurationPropertiesValidator(Environment environment) {
+    return new KafkafimPropertiesValidator(() -> ConfigurationPropertySources.get(environment));
   }
 }

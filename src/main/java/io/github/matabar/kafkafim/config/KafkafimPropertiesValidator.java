@@ -2,15 +2,17 @@ package io.github.matabar.kafkafim.config;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.Supplier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.boot.context.properties.source.ConfigurationPropertySource;
 import org.springframework.validation.Errors;
 import org.springframework.validation.Validator;
 
 /**
- * Spring {@link Validator} that runs {@link ConfigValidator} on the bound {@link
- * KafkafimProperties}. Registered as Boot's {@code configurationPropertiesValidator}, it runs
- * inside the same {@code ValidationBindHandler} as Bean Validation, so Bean Validation and
+ * Spring {@link Validator} that runs {@link ConfigValidator} and {@link InlineSecretCheck} on the
+ * bound {@link KafkafimProperties}. Registered as Boot's {@code configurationPropertiesValidator},
+ * it runs inside the same {@code ValidationBindHandler} as Bean Validation, so Bean Validation and
  * cross-reference errors are reported together in one {@code BindValidationException}. Warnings are
  * logged once per bind.
  */
@@ -20,6 +22,18 @@ public final class KafkafimPropertiesValidator implements Validator {
   public static final String ERROR_CODE = "kafkafim.invalid";
 
   private static final Logger LOG = LoggerFactory.getLogger(KafkafimPropertiesValidator.class);
+
+  private final Supplier<Iterable<ConfigurationPropertySource>> sources;
+
+  /**
+   * Creates a validator.
+   *
+   * @param sources the property sources the tree was bound from, consulted for raw (unresolved)
+   *     secret values
+   */
+  public KafkafimPropertiesValidator(Supplier<Iterable<ConfigurationPropertySource>> sources) {
+    this.sources = sources;
+  }
 
   @Override
   public boolean supports(Class<?> type) {
@@ -37,6 +51,10 @@ public final class KafkafimPropertiesValidator implements Validator {
   public List<String> problems(KafkafimProperties properties) {
     ConfigValidator.Result result = ConfigValidator.validate(properties);
     result.warnings().forEach(warning -> LOG.warn("kafkafim configuration: {}", warning));
-    return new ArrayList<>(result.errors());
+    List<String> problems = new ArrayList<>(result.errors());
+    if (!properties.allowInlineSecrets()) {
+      problems.addAll(InlineSecretCheck.errors(properties, sources.get()));
+    }
+    return problems;
   }
 }
