@@ -54,17 +54,24 @@ Dependabot (weekly, grouped) for Maven, GitHub Actions and the Docker base image
 1. `./mvnw -Drevision=<ver> verify` (tests run again on the exact tagged commit).
 2. Multi-arch image (`linux/amd64`, `linux/arm64`) built with Buildx and pushed to
    GHCR with the tags above and BuildKit provenance attestations.
-3. SBOM (SPDX JSON, via Syft) generated from the image and attached to the release.
-4. Image signed with Cosign (keyless, GitHub OIDC); signature stored in GHCR.
-5. Chart packaged with `--version <ver> --app-version <ver>`, pushed to
+3. Image signed with Cosign (keyless, GitHub OIDC); signature stored in GHCR next to
+   the image.
+4. SBOM (SPDX JSON, via Syft) generated from the pushed digest and attached to the
+   release.
+5. The **exact pushed digest** is saved with `cosign save` into an OCI layout
+   directory. This carries every platform manifest plus the Cosign signature and
+   attestations, so the bundle contains precisely the bytes that were signed. There
+   is no second build.
+6. Chart packaged with `--version <ver> --app-version <ver>`, pushed to
    `oci://ghcr.io/matabar/charts`, signed with Cosign.
-6. **Air-gap bundle** `kafkafim-<ver>-airgap.tar.gz` attached to the GitHub Release:
-   - `kafkafim-<ver>-image-amd64.tar` (OCI image archive; production is amd64)
+7. **Air-gap bundle** `kafkafim-<ver>-airgap.tar.gz` attached to the GitHub Release:
+   - `kafkafim-<ver>-image/` (OCI layout from `cosign save`: image, signature, attestations)
+   - `kafkafim-<ver>-image.digest` (the `ghcr.io/...@sha256:...` reference that was signed)
    - `kafkafim-<ver>.tgz` (the chart)
    - `kafkafim-<ver>.sbom.spdx.json`
-   - `SHA256SUMS`
+   - `SHA256SUMS` (every file in the bundle)
    - `IMPORT.md` (the procedure below, with the exact version filled in)
-7. GitHub Release created with auto-generated notes.
+8. GitHub Release created with auto-generated notes.
 
 ## Importing into the air-gapped environment
 
@@ -78,16 +85,23 @@ gh release download v1.2.3 --repo matabar/kafkafim --pattern 'kafkafim-1.2.3-air
 cosign verify ghcr.io/matabar/kafkafim:1.2.3 --certificate-identity-regexp 'https://github.com/matabar/kafkafim/' --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
 
-Signature verification happens here, before transfer, because keyless verification
-needs the transparency log. Then carry the bundle across and, inside the air gap:
+Keyless verification needs the Sigstore transparency log, so the authoritative check
+happens here, before transfer. Then carry the bundle across and, inside the air gap:
 
 ```bash
 sha256sum -c SHA256SUMS
 ```
 
 ```bash
-skopeo copy oci-archive:kafkafim-1.2.3-image-amd64.tar docker://registry.internal/kafkafim/kafkafim:1.2.3
+cosign load --dir kafkafim-1.2.3-image registry.internal/kafkafim/kafkafim:1.2.3
 ```
+
+`cosign load` pushes the image and its signature and attestations together, so the
+internal registry holds the same signed artifact as GHCR. If the internal tooling
+has a Sigstore trust root available (`cosign initialize` run on the internet side
+and its `~/.sigstore` cache carried across), `cosign verify --offline` on the
+internal reference re-checks the signature without network access; otherwise the
+checksum file is the integrity check inside the air gap.
 
 ```bash
 helm push kafkafim-1.2.3.tgz oci://registry.internal/charts
@@ -97,7 +111,7 @@ helm push kafkafim-1.2.3.tgz oci://registry.internal/charts
 helm upgrade --install kafkafim oci://registry.internal/charts/kafkafim --version 1.2.3 -f values-<cluster>.yaml --set image.registry=registry.internal/kafkafim
 ```
 
-`docker load` + `docker push` works where `skopeo` is unavailable.
+Where `cosign` is unavailable inside the air gap, `skopeo copy --all oci:kafkafim-1.2.3-image docker://registry.internal/kafkafim/kafkafim:1.2.3` pushes the image without its signature.
 
 ## Local developer loop
 
