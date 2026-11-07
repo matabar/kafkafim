@@ -84,6 +84,8 @@ jobs:
         run: test -f charts/kafkafim/Chart.yaml && echo "exists=true" >> "$GITHUB_OUTPUT" || echo "exists=false" >> "$GITHUB_OUTPUT"
       - if: steps.chart.outputs.exists == 'true'
         uses: azure/setup-helm@v5
+        with:
+          version: v4.3.1   # helm-unittest 1.2.1 supports Helm >= 4.3; keep ci.yml and release.yml in step
       - if: steps.chart.outputs.exists == 'true'
         run: helm lint charts/kafkafim
       - if: steps.chart.outputs.exists == 'true'
@@ -100,5 +102,7 @@ jobs:
       - if: steps.chart.outputs.exists == 'true'
         name: Chart unit tests
         run: |
-          helm plugin install https://github.com/helm-unittest/helm-unittest --version 1.2.1
+          # Helm 4 verifies plugin provenance and a git source carries none, so it must be
+          # skipped explicitly; the source is pinned to the v1.2.1 tag.
+          helm plugin install https://github.com/helm-unittest/helm-unittest --version 1.2.1 --verify=false
           helm unittest charts/kafkafim

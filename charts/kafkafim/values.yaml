@@ -1,0 +1,158 @@
+# kafkafim chart values. One release per Kubernetes cluster; see docs/HELM.md.
+# The per-cluster values files (real clusters, topics, Secret names) live in the
+# team's infrastructure repository, not here.
+
+nameOverride: ""
+fullnameOverride: ""
+
+image:
+  # Overridden to the internal registry in the air gap:
+  #   --set image.registry=registry.internal/kafkafim
+  registry: ghcr.io/matabar
+  repository: kafkafim
+  # Defaults to .Chart.AppVersion (set from the git tag at release time).
+  tag: ""
+  pullPolicy: IfNotPresent
+  # Names of existing image pull Secrets, e.g. [{name: internal-registry}].
+  pullSecrets: []
+
+# Rendered into each group's application-kafkafim.yaml. Only these three keys are
+# accepted (values.schema.json rejects any other key under config.kafkafim, such as
+# allow-inline-secrets, which is for local development only). Every group's
+# ConfigMap gets kafka + elasticsearch verbatim plus only its own pipelines.
+config:
+  kafkafim:
+    kafka:
+      clusters: {}
+    elasticsearch:
+      clusters: {}
+    pipelines: {}
+
+# Existing Secrets mounted read-only for Spring's configtree import. mountPath must
+# be below /etc/kafkafim/secrets/ and unique; the path relative to that root becomes
+# the property name, e.g. /etc/kafkafim/secrets/kafka/prod-a.orders-reader/password
+# -> ${kafka.prod-a.orders-reader.password}. Every group mounts every entry.
+#   - name: kafka-prod-a-orders-reader
+#     mountPath: /etc/kafkafim/secrets/kafka/prod-a.orders-reader
+secrets: []
+
+# One Deployment + ConfigMap + PodDisruptionBudget + Service (+ HPA) per group.
+# Group names are DNS labels; resources are named <fullname>-<group>.
+#   orders:
+#     pipelines: [orders]            # required, each pipeline in exactly one group
+#     replicas: 6                    # default 2; < 2 needs allowSingleReplica: true
+#     allowSingleReplica: false
+#     resources: {}                  # default: top-level resources
+#     autoscaling:                   # CPU HPA; replicas is then omitted from the Deployment
+#       enabled: false
+#       minReplicas: 2
+#       maxReplicas: 12              # keep <= partition count
+#       targetCPUUtilizationPercentage: 70
+#     pdb: {}                        # default: top-level pdb
+#     nodeSelector: {}               # default: top-level nodeSelector
+#     tolerations: []                # default: top-level tolerations
+#     affinity: {}                   # default: top-level affinity, else preferred hostname anti-affinity
+#     podAnnotations: {}             # merged over top-level podAnnotations
+groups: {}
+
+# Defaults for every group (a group's own value replaces these, it is not merged).
+resources:
+  requests:
+    cpu: 500m
+    memory: 1Gi
+  limits:
+    memory: 1Gi
+nodeSelector: {}
+tolerations: []
+# Empty means: preferred pod anti-affinity on kubernetes.io/hostname within the group.
+affinity: {}
+
+otel:
+  # OTLP/HTTP endpoint (Elastic APM Server today; a Collector later is just a new URL).
+  endpoint: http://apm-server.observability:8200
+  # Non-secret headers, rendered as OTEL_EXPORTER_OTLP_HEADERS (k=v,k2=v2). Secret
+  # headers come from a Secret through extraEnvFrom instead.
+  headers: {}
+
+jvm:
+  options: "-XX:MaxRAMPercentage=75 -XX:+ExitOnOutOfMemoryError"
+
+# Additional container env vars and envFrom sources (e.g. a Secret holding
+# OTEL_EXPORTER_OTLP_HEADERS). extraEnv must not redefine the variables the chart
+# sets (SPRING_PROFILES_ACTIVE, SPRING_CONFIG_ADDITIONAL_LOCATION, SPRING_CONFIG_IMPORT,
+# OTEL_EXPORTER_OTLP_ENDPOINT, JAVA_TOOL_OPTIONS, and OTEL_EXPORTER_OTLP_HEADERS when
+# otel.headers is set).
+extraEnv: []
+extraEnvFrom: []
+
+serviceAccount:
+  annotations: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: [ALL]
+
+# Must exceed the application's spring.lifecycle.timeout-per-shutdown-phase (60s).
+terminationGracePeriodSeconds: 90
+
+probes:
+  startup:
+    path: /actuator/health/liveness
+    periodSeconds: 2
+    failureThreshold: 30
+    timeoutSeconds: 2
+  liveness:
+    path: /actuator/health/liveness
+    periodSeconds: 10
+    failureThreshold: 3
+    timeoutSeconds: 2
+  readiness:
+    path: /actuator/health/readiness
+    periodSeconds: 5
+    failureThreshold: 3
+    timeoutSeconds: 2
+
+# PodDisruptionBudget per group. maxUnavailable, when set, wins over minAvailable (so
+# --set pdb.maxUnavailable=1 needs no null for the default). A single-replica group
+# (allowSingleReplica) should set maxUnavailable: 1, or minAvailable 1 blocks drains.
+pdb:
+  minAvailable: 1
+
+topologySpread:
+  enabled: true
+  topologyKey: topology.kubernetes.io/zone
+  maxSkew: 1
+  whenUnsatisfiable: ScheduleAnyway
+
+# Ingress-only NetworkPolicy for every kafkafim pod of this release: allows TCP 8080
+# (actuator, Prometheus scrape, /actuator/reload) from the listed peers only. Egress
+# is not restricted. The default allows pods in the release's namespace; add the
+# monitoring namespace if Prometheus scrapes from elsewhere. An empty list means any
+# source (Kubernetes semantics for an ingress rule without `from`).
+networkPolicy:
+  enabled: false
+  allowFrom:
+    - podSelector: {}
+
+# Needs the Prometheus Operator CRD (monitoring.coreos.com/v1). Off by default: the
+# production clusters have no CRDs; scrape annotations below are the default path.
+serviceMonitor:
+  enabled: false
+  interval: 30s
+  labels: {}
+
+# Extra pod labels; must not use the selector keys app.kubernetes.io/{name,instance,component}.
+podLabels: {}
+podAnnotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/path: /actuator/prometheus
+  prometheus.io/port: "8080"
