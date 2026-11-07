@@ -120,6 +120,15 @@ public final class SourceRecord {
   }
 
   /**
+   * Whether the record was abandoned: its partition was revoked or lost, or it arrived on a
+   * consumer that does not own its partition. Completing it is a harmless no-op, and the
+   * partition's owner re-reads it, so the supervisor may skip such a record.
+   */
+  public boolean isAbandoned() {
+    return remaining.get() == ABANDONED;
+  }
+
+  /**
    * Marks the record abandoned because its partition was revoked or lost.
    *
    * @return whether this call abandoned it (it was neither complete nor abandoned)

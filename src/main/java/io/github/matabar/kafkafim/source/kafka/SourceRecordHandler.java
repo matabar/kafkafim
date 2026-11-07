@@ -19,7 +19,9 @@ public interface SourceRecordHandler {
   /**
    * One poll's records, in offset order per partition. Every record must eventually be completed,
    * or its partition revoked; oversize records ({@link SourceRecord#oversize()}) must not be
-   * decoded.
+   * decoded. A record may already be {@linkplain SourceRecord#isAbandoned() abandoned} on arrival
+   * (it came from a consumer that no longer owns its partition); completing it is a no-op, and it
+   * may be skipped.
    *
    * @param records the records, unmodifiable
    */

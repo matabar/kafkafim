@@ -7,9 +7,13 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.common.TopicPartition;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Per-partition completion tracking for one pipeline (DESIGN §4.3, ADR-0008, ADR-0025).
@@ -29,7 +33,12 @@ import org.apache.kafka.common.TopicPartition;
  */
 final class OffsetTracker {
 
+  private static final Logger LOG = LoggerFactory.getLogger(OffsetTracker.class);
+  private static final long UNOWNED_WARN_INTERVAL_NANOS = TimeUnit.SECONDS.toNanos(10);
+
   private final ByteBudget budget;
+  private final AtomicLong lastUnownedWarn =
+      new AtomicLong(System.nanoTime() - UNOWNED_WARN_INTERVAL_NANOS);
   private final Map<TopicPartition, PartitionOffsets> partitions = new ConcurrentHashMap<>();
   private final Object idle = new Object();
   private long pending;
@@ -94,6 +103,7 @@ final class OffsetTracker {
       // completion ignored) and the partition's owner re-reads it.
       owner = new PartitionOffsets(tp, consumer);
       owner.close();
+      warnUnowned(tp);
     }
     SourceRecord handle =
         new SourceRecord(
@@ -106,6 +116,19 @@ final class OffsetTracker {
       finished(handle, false);
     }
     return handle;
+  }
+
+  /** At most one warning per interval; records keep being abandoned in between. */
+  private void warnUnowned(TopicPartition tp) {
+    long now = System.nanoTime();
+    long last = lastUnownedWarn.get();
+    if (now - last >= UNOWNED_WARN_INTERVAL_NANOS && lastUnownedWarn.compareAndSet(last, now)) {
+      LOG.warn(
+          "Records for {} arrived on a consumer that does not own it; abandoning them for the"
+              + " partition's owner to re-read (a stale consumer, or an assignment callback that"
+              + " failed)",
+          tp);
+    }
   }
 
   /**

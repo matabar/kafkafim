@@ -216,6 +216,8 @@ class OffsetTrackerTest {
     // C1 still believes it owns P0 and polls a buffered record for it.
     SourceRecord zombie = tracker.track(C1, record(P0, 101), 1_000);
     assertThat(zombie.isComplete()).isFalse();
+    assertThat(zombie.isAbandoned()).isTrue();
+    assertThat(owned.isAbandoned()).isFalse();
     zombie.complete(); // abandoned on arrival: ignored
     assertThat(tracker.pendingRecords()).as("only C2's record is in flight").isEqualTo(1);
     assertThat(budget.outstanding()).isEqualTo(10);
