@@ -621,7 +621,9 @@ secret is accepted when it is read straight from a `configtree` file, or when it
 unresolved text is exactly one `${name}` placeholder (no `:default`, which would be an
 inline fallback) whose chain of references ends in a `configtree` file. The check looks
 at the property source that wins for each name, before placeholder resolution, and
-reports the origin but never the value. A literal in YAML, an environment variable or a
+reports the origin but never the value; likewise the bound configuration records print
+every secret (passwords, API keys, keystore and key passwords, secret passthrough
+`properties` values) as `******` in `toString()`, while usernames stay readable. A literal in YAML, an environment variable or a
 system property is rejected, also when reached through a placeholder. A credential
 placeholder (secret or username) that nothing defines always fails startup, even with
 inline secrets allowed: Spring leaves unresolvable placeholders as literal text, so a

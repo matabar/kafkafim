@@ -75,6 +75,20 @@ public record ElasticsearchCluster(
     public boolean hasBasic() {
       return username != null || password != null;
     }
+
+    /** Masks the password and API key; the username stays (§5.5). */
+    @Override
+    public String toString() {
+      return "ElasticsearchIdentity[username="
+          + username
+          + ", password="
+          + Redaction.mask(password)
+          + ", apiKey="
+          + Redaction.mask(apiKey)
+          + ", ssl="
+          + ssl
+          + "]";
+    }
   }
 
   /**
@@ -85,7 +99,20 @@ public record ElasticsearchCluster(
    * @param keystoreType {@code PKCS12} (default when unset) or {@code JKS}
    */
   public record Keystore(
-      @NotBlank String keystoreLocation, String keystorePassword, String keystoreType) {}
+      @NotBlank String keystoreLocation, String keystorePassword, String keystoreType) {
+
+    /** Masks the password (§5.5). */
+    @Override
+    public String toString() {
+      return "Keystore[keystoreLocation="
+          + keystoreLocation
+          + ", keystorePassword="
+          + Redaction.mask(keystorePassword)
+          + ", keystoreType="
+          + keystoreType
+          + "]";
+    }
+  }
 
   /**
    * Bulk batching limits; a batch flushes on whichever is reached first.
