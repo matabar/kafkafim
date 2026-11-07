@@ -1,0 +1,472 @@
+package io.github.matabar.kafkafim.source.kafka;
+
+import io.github.matabar.kafkafim.config.Pipeline;
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import org.apache.kafka.clients.consumer.Consumer;
+import org.apache.kafka.clients.consumer.ConsumerRecord;
+import org.apache.kafka.clients.consumer.ConsumerRecords;
+import org.apache.kafka.clients.consumer.OffsetAndMetadata;
+import org.apache.kafka.common.KafkaException;
+import org.apache.kafka.common.PartitionInfo;
+import org.apache.kafka.common.TopicPartition;
+import org.jspecify.annotations.Nullable;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.context.SmartLifecycle;
+import org.springframework.kafka.core.ConsumerFactory;
+import org.springframework.kafka.listener.BatchConsumerAwareMessageListener;
+import org.springframework.kafka.listener.BatchInterceptor;
+import org.springframework.kafka.listener.CommonContainerStoppingErrorHandler;
+import org.springframework.kafka.listener.ConcurrentMessageListenerContainer;
+import org.springframework.kafka.listener.ConsumerAwareRebalanceListener;
+import org.springframework.kafka.listener.ContainerProperties;
+
+/**
+ * The Kafka source of one pipeline (DESIGN §4.2, §4.3; ADR-0004, ADR-0025): a programmatically
+ * created {@link ConcurrentMessageListenerContainer} with a batch listener, the cooperative-sticky
+ * assignor, concurrency capped at the partition count, kafkafim's own per-partition {@link
+ * OffsetTracker} and a pause/resume byte budget.
+ *
+ * <p>Commits happen only on consumer threads: every {@code commit-interval} before a poll (polls
+ * continue while paused, so completions during a pause are committed too), synchronously when
+ * partitions are revoked, and when the source stops. The container's own acknowledgement machinery
+ * is not used ({@code AckMode.MANUAL}, never acknowledged).
+ *
+ * <p>Stopping is graceful and bounded (DESIGN §7, SIGTERM): fetching pauses, in-flight records get
+ * {@link SourceOptions#drainTimeout()} to complete, then the container stops, which revokes every
+ * partition (committing what completed) and leaves the group. The source runs in lifecycle phase
+ * {@link #PHASE}.
+ */
+public final class KafkaPipelineSource implements SmartLifecycle {
+
+  /** Lifecycle phase: stops before the web server (DESIGN §7). */
+  public static final int PHASE = Integer.MAX_VALUE - 100;
+
+  /** Pause reason while in-flight bytes are at or above {@code max-in-flight-bytes}. */
+  public static final String BUDGET_REASON = "in-flight-bytes";
+
+  /** Pause reason after the handler threw. */
+  public static final String HANDLER_FAILURE_REASON = "handler-failure";
+
+  /** Pause reason while the source drains on stop. */
+  public static final String STOPPING_REASON = "stopping";
+
+  private static final Set<String> RESERVED_REASONS =
+      Set.of(BUDGET_REASON, HANDLER_FAILURE_REASON, STOPPING_REASON);
+
+  private static final Logger LOG = LoggerFactory.getLogger(KafkaPipelineSource.class);
+
+  private final String pipeline;
+  private final Pipeline.Source source;
+  private final ConsumerFactory<byte[], byte[]> consumerFactory;
+  private final SourceRecordHandler handler;
+  private final SourceOptions options;
+  private final String clientId;
+  private final Duration pollTimeout;
+  private final PauseReasons pauseReasons;
+  private final ByteBudget budget;
+  private final OffsetTracker tracker;
+  private final Map<Consumer<?, ?>, Long> lastCommitNanos = new ConcurrentHashMap<>();
+  private final Object lifecycle = new Object();
+  private volatile @Nullable ConcurrentMessageListenerContainer<byte[], byte[]> container;
+  private volatile int concurrency;
+
+  /**
+   * Creates a stopped source.
+   *
+   * @param pipeline the pipeline name (client ids are {@code kafkafim-<pipeline>-<n>})
+   * @param source the pipeline's resolved source block (group id and identity already defaulted)
+   * @param consumerFactory the factory for the source's {@code (cluster, identity)}, from {@link
+   *     ConsumerFactories}
+   * @param handler receives the records
+   * @param options runtime knobs
+   */
+  public KafkaPipelineSource(
+      String pipeline,
+      Pipeline.Source source,
+      ConsumerFactory<byte[], byte[]> consumerFactory,
+      SourceRecordHandler handler,
+      SourceOptions options) {
+    this.pipeline = pipeline;
+    this.source = source;
+    this.consumerFactory = consumerFactory;
+    this.handler = handler;
+    this.options = options;
+    this.clientId = "kafkafim-" + pipeline;
+    this.pollTimeout =
+        source.commitInterval().compareTo(options.maxPollTimeout()) < 0
+            ? source.commitInterval()
+            : options.maxPollTimeout();
+    this.pauseReasons = new PauseReasons(new ContainerTarget());
+    long max = source.maxInFlightBytes().toBytes();
+    this.budget =
+        new ByteBudget(
+            max,
+            (long) (max * options.resumeFraction()),
+            exhausted -> {
+              if (exhausted) {
+                pauseReasons.add(BUDGET_REASON);
+              } else {
+                pauseReasons.remove(BUDGET_REASON);
+              }
+            });
+    this.tracker = new OffsetTracker(budget);
+  }
+
+  /**
+   * The container concurrency for a desired value and a partition count: never above the partition
+   * count (DESIGN §4.1), never below one.
+   *
+   * @param desired consumers wanted
+   * @param partitions partitions of all the pipeline's topics together
+   * @return the concurrency to use
+   */
+  static int effectiveConcurrency(int desired, int partitions) {
+    return Math.max(1, Math.min(desired, partitions));
+  }
+
+  /**
+   * Reads topic metadata, sizes and starts the container.
+   *
+   * @throws MissingTopicsException if a source topic does not exist or is not visible
+   */
+  @Override
+  public void start() {
+    synchronized (lifecycle) {
+      if (isRunning()) {
+        return;
+      }
+      int partitions = partitionCount();
+      concurrency = effectiveConcurrency(options.desiredConcurrency(), partitions);
+      if (options.desiredConcurrency() > partitions) {
+        LOG.warn(
+            "Pipeline '{}': desired concurrency {} capped at the {} partitions of {}",
+            pipeline,
+            options.desiredConcurrency(),
+            partitions,
+            source.topics());
+      }
+      ConcurrentMessageListenerContainer<byte[], byte[]> created = createContainer();
+      pauseReasons.remove(HANDLER_FAILURE_REASON);
+      container = created;
+      pauseReasons.apply();
+      created.start();
+      LOG.info(
+          "Pipeline '{}': consuming {} as group '{}' with concurrency {}",
+          pipeline,
+          source.topics(),
+          source.groupId(),
+          concurrency);
+    }
+  }
+
+  /**
+   * Pauses fetching, waits up to the drain timeout for in-flight records, then stops the container
+   * (revoking, committing and leaving the group). Records still incomplete are re-delivered to the
+   * next owner.
+   */
+  @Override
+  public void stop() {
+    synchronized (lifecycle) {
+      ConcurrentMessageListenerContainer<byte[], byte[]> running = container;
+      if (running == null) {
+        return;
+      }
+      pauseReasons.add(STOPPING_REASON);
+      try {
+        if (!tracker.awaitIdle(options.drainTimeout())) {
+          LOG.warn(
+              "Pipeline '{}': {} records still in flight after {}; they will be re-delivered",
+              pipeline,
+              tracker.pendingRecords(),
+              options.drainTimeout());
+        }
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+      }
+      running.stop();
+      tracker.revokeAll();
+      lastCommitNanos.clear();
+      container = null;
+      pauseReasons.remove(STOPPING_REASON);
+      LOG.info("Pipeline '{}': stopped", pipeline);
+    }
+  }
+
+  @Override
+  public boolean isRunning() {
+    ConcurrentMessageListenerContainer<byte[], byte[]> running = container;
+    return running != null && running.isRunning();
+  }
+
+  @Override
+  public int getPhase() {
+    return PHASE;
+  }
+
+  /**
+   * Pauses fetching on all of the pipeline's partitions for a reason (e.g. a breaker or an auth
+   * failure). Fetching resumes once every reason is cleared. Commits continue while paused.
+   *
+   * @param reason a reason other than the reserved {@link #BUDGET_REASON}, {@link
+   *     #HANDLER_FAILURE_REASON} and {@link #STOPPING_REASON}
+   */
+  public void pause(String reason) {
+    pauseReasons.add(checkReason(reason));
+  }
+
+  /**
+   * Clears a pause reason set with {@link #pause(String)}.
+   *
+   * @param reason the reason
+   */
+  public void resume(String reason) {
+    pauseReasons.remove(checkReason(reason));
+  }
+
+  /** The active pause reasons, including the reserved ones. */
+  public Set<String> pauseReasons() {
+    return pauseReasons.active();
+  }
+
+  /** The pipeline name. */
+  public String pipeline() {
+    return pipeline;
+  }
+
+  /** The container concurrency chosen at the last start, or 0 before the first start. */
+  public int concurrency() {
+    return concurrency;
+  }
+
+  /** Partitions currently assigned to this source's consumers. */
+  public Collection<TopicPartition> assignedPartitions() {
+    ConcurrentMessageListenerContainer<byte[], byte[]> running = container;
+    if (running == null) {
+      return List.of();
+    }
+    Collection<TopicPartition> assigned = running.getAssignedPartitions();
+    return assigned == null ? List.of() : List.copyOf(assigned);
+  }
+
+  /** Bytes delivered to the handler and not yet completed or abandoned. */
+  public long inFlightBytes() {
+    return budget.outstanding();
+  }
+
+  /** Records delivered to the handler and not yet completed or abandoned. */
+  public long inFlightRecords() {
+    return tracker.pendingRecords();
+  }
+
+  /** Whether the container's consumers are actually paused (not just requested). */
+  public boolean isConsumerPaused() {
+    ConcurrentMessageListenerContainer<byte[], byte[]> running = container;
+    return running != null && running.isContainerPaused();
+  }
+
+  private static String checkReason(String reason) {
+    if (reason == null || reason.isBlank() || RESERVED_REASONS.contains(reason)) {
+      throw new IllegalArgumentException("Not a usable pause reason: " + reason);
+    }
+    return reason;
+  }
+
+  private int partitionCount() {
+    try (Consumer<byte[], byte[]> metadata =
+        consumerFactory.createConsumer(
+            null, clientId + "-metadata", null, ConsumerSettings.forPipeline(source))) {
+      int total = 0;
+      List<String> missing = new ArrayList<>();
+      for (String topic : source.topics()) {
+        List<PartitionInfo> infos = metadata.partitionsFor(topic, options.metadataTimeout());
+        if (infos == null || infos.isEmpty()) {
+          missing.add(topic);
+        } else {
+          total += infos.size();
+        }
+      }
+      if (!missing.isEmpty()) {
+        throw new MissingTopicsException(pipeline, missing);
+      }
+      return total;
+    }
+  }
+
+  private ConcurrentMessageListenerContainer<byte[], byte[]> createContainer() {
+    ContainerProperties properties =
+        new ContainerProperties(source.topics().toArray(String[]::new));
+    properties.setGroupId(source.groupId());
+    properties.setClientId(clientId);
+    properties.setAckMode(ContainerProperties.AckMode.MANUAL);
+    properties.setKafkaConsumerProperties(ConsumerSettings.forPipeline(source));
+    properties.setConsumerRebalanceListener(new Rebalance());
+    properties.setMessageListener(new Listener());
+    properties.setPollTimeout(pollTimeout.toMillis());
+    properties.setShutdownTimeout(options.shutdownTimeout().toMillis());
+    properties.setAuthExceptionRetryInterval(options.authRetryInterval());
+    ConcurrentMessageListenerContainer<byte[], byte[]> created =
+        new ConcurrentMessageListenerContainer<>(consumerFactory, properties);
+    created.setConcurrency(concurrency);
+    created.setBatchInterceptor(new CommitBeforePoll());
+    // The listener never throws to the container; if something still does, stop rather than skip.
+    created.setCommonErrorHandler(new CommonContainerStoppingErrorHandler());
+    created.setBeanName(clientId);
+    return created;
+  }
+
+  /** Commits what advanced, if {@code commit-interval} elapsed for this consumer. */
+  private void commitIfDue(Consumer<?, ?> consumer) {
+    long now = System.nanoTime();
+    Long last = lastCommitNanos.get(consumer);
+    if (last != null && now - last < source.commitInterval().toNanos()) {
+      return;
+    }
+    lastCommitNanos.put(consumer, now);
+    Map<TopicPartition, OffsetAndMetadata> offsets = tracker.committable(consumer.assignment());
+    if (offsets.isEmpty()) {
+      return;
+    }
+    consumer.commitAsync(
+        offsets,
+        (committed, exception) -> {
+          if (exception == null) {
+            tracker.committed(committed);
+          } else {
+            LOG.warn(
+                "Pipeline '{}': offset commit failed, retrying next interval: {}",
+                pipeline,
+                exception.toString());
+          }
+        });
+  }
+
+  /** Synchronously commits what completed for partitions about to be revoked. */
+  private void commitNow(Consumer<?, ?> consumer, Collection<TopicPartition> partitions) {
+    Map<TopicPartition, OffsetAndMetadata> offsets = tracker.committable(partitions);
+    if (offsets.isEmpty()) {
+      return;
+    }
+    try {
+      consumer.commitSync(offsets, options.commitTimeout());
+      tracker.committed(offsets);
+    } catch (KafkaException e) {
+      LOG.warn(
+          "Pipeline '{}': commit on revoke failed; the next owner re-reads from the last commit:"
+              + " {}",
+          pipeline,
+          e.toString());
+    }
+  }
+
+  private final class Listener implements BatchConsumerAwareMessageListener<byte[], byte[]> {
+
+    @Override
+    public void onMessage(
+        List<ConsumerRecord<byte[], byte[]>> data, @Nullable Consumer<?, ?> consumer) {
+      long maxRecordBytes = source.maxRecordBytes().toBytes();
+      List<SourceRecord> batch = new ArrayList<>(data.size());
+      for (ConsumerRecord<byte[], byte[]> record : data) {
+        batch.add(tracker.track(record, maxRecordBytes));
+      }
+      try {
+        handler.onBatch(Collections.unmodifiableList(batch));
+      } catch (RuntimeException e) {
+        LOG.error(
+            "Pipeline '{}': record handler failed; pausing until the pipeline is restarted",
+            pipeline,
+            e);
+        pauseReasons.add(HANDLER_FAILURE_REASON);
+      }
+    }
+  }
+
+  private final class Rebalance implements ConsumerAwareRebalanceListener {
+
+    @Override
+    public void onPartitionsAssigned(Consumer<?, ?> consumer, Collection<TopicPartition> assigned) {
+      tracker.assign(assigned);
+    }
+
+    @Override
+    public void onPartitionsRevokedBeforeCommit(
+        Consumer<?, ?> consumer, Collection<TopicPartition> partitions) {
+      List<TopicPartition> tracked = tracker.tracked(partitions);
+      if (tracked.isEmpty()) {
+        return;
+      }
+      try {
+        handler.onPartitionsRevoked(tracked);
+      } catch (RuntimeException e) {
+        LOG.error("Pipeline '{}': revoke handler failed", pipeline, e);
+      }
+      commitNow(consumer, tracked);
+      int abandoned = tracker.revoke(tracked);
+      LOG.info(
+          "Pipeline '{}': revoked {}, {} incomplete records left for the next owner",
+          pipeline,
+          tracked,
+          abandoned);
+    }
+
+    @Override
+    public void onPartitionsLost(Consumer<?, ?> consumer, Collection<TopicPartition> partitions) {
+      List<TopicPartition> tracked = tracker.tracked(partitions);
+      if (tracked.isEmpty()) {
+        return;
+      }
+      try {
+        handler.onPartitionsLost(tracked);
+      } catch (RuntimeException e) {
+        LOG.error("Pipeline '{}': lost-partitions handler failed", pipeline, e);
+      }
+      int abandoned = tracker.revoke(tracked);
+      LOG.warn(
+          "Pipeline '{}': lost {}, {} incomplete records left for the next owner",
+          pipeline,
+          tracked,
+          abandoned);
+    }
+  }
+
+  /** Runs before every poll on each consumer thread, including while paused or idle. */
+  private final class CommitBeforePoll implements BatchInterceptor<byte[], byte[]> {
+
+    @Override
+    public ConsumerRecords<byte[], byte[]> intercept(
+        ConsumerRecords<byte[], byte[]> records, Consumer<byte[], byte[]> consumer) {
+      return records;
+    }
+
+    @Override
+    public void setupThreadState(Consumer<?, ?> consumer) {
+      commitIfDue(consumer);
+    }
+  }
+
+  private final class ContainerTarget implements PauseReasons.Target {
+
+    @Override
+    public void pause() {
+      ConcurrentMessageListenerContainer<byte[], byte[]> running = container;
+      if (running != null) {
+        running.pause();
+      }
+    }
+
+    @Override
+    public void resume() {
+      ConcurrentMessageListenerContainer<byte[], byte[]> running = container;
+      if (running != null) {
+        running.resume();
+      }
+    }
+  }
+}
