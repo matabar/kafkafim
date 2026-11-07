@@ -152,6 +152,25 @@ action through a callback: `indexed`, `stale`, or `dlq` with an `error.type` and
 reason. The supervisor maps decoded and routed documents to actions, and outcomes to
 offset acks or DLQ records; the sink knows nothing about Kafka.
 
+The supervisor (`supervisor/`) owns one runtime per pipeline: the compiled decoder and
+router, one bulk sink per `(cluster, identity)` its routes use, its DLQ writer and its
+Kafka source. Per record it plans every part before dispatching any and declares their
+number (`SourceRecord.expectParts`): one part per routed copy of a decoded document
+(`route-mode: all` fan-out makes several), one per document that fails decoding or
+routing (`missing_id`, `bad_timestamp`, `decode` with `doc-index`, `no_route`,
+`unresolved_index` with the route's `target.cluster`), and exactly one for a record that
+fails as a whole (oversize, never decoded; undecodable; tombstone). A part completes on
+`indexed` or `stale`, or when the broker acknowledged its DLQ record (a sink `dlq` outcome
+or a decode/route failure); a DLQ send failed by shutdown leaves the record uncommitted.
+Outcomes for a record whose partition was revoked are ignored and not dead-lettered (the
+next owner re-reads it). On revoke the supervisor seals the open batches and waits for
+nothing. Ingest time is the record's Kafka timestamp (the wall clock for a record
+without one), except that a pipeline without `document.timestamp-field` reading a record
+that carries `kafkafim.source.timestamp` (a DLQ record being replayed, ADR-0027) uses that
+original timestamp. The supervisor also refuses to start a pipeline whose configuration
+would make Elasticsearch reject whole bulk requests (`op: create` with
+`document.version-field`, a blank ingest `pipeline`).
+
 - **Batching**: a batch is sealed at `bulk.max-docs`, at `bulk.max-bytes` (an action
   that would push it over seals it first, so only a single action larger than
   `max-bytes` makes a larger request), when its oldest action is `max-age` old
@@ -287,6 +306,28 @@ A failed check keeps the pipeline stopped, records
 missing resource and identity, and leaves the other pipelines in the pod running.
 Readiness stays green for the pod if at least one pipeline runs; the alert fires on
 the metric.
+
+How the supervisor runs it (`supervisor/Preflight`, `PipelineRuntime`): every pipeline
+starts on its own thread, so one slow check never delays another pipeline or the
+application context. The DLQ topic is described with the DLQ identity
+(`DlqProducers.checkTopic`); each `(cluster, identity)` sends one `GET
+/_security/_authenticate` (no privilege needed) through a client built like the sink's;
+then the source starts, which fails for a missing source topic. All DLQ and
+Elasticsearch checks run before a verdict, so one ERROR line names every problem.
+Missing or undescribable topics, a 401/403, an unknown identity or unreadable trust
+material, and a Kafka authentication or authorization error are **configuration**
+failures (`failed_preflight` until reload or restart). An unreachable broker or cluster
+(timeout, connection error, 5xx) is **transient**: the pipeline stays `starting` and
+retries (1s doubling to 30s), so a pod that starts during a short outage needs no
+restart. Elasticsearch answers 405 on that path when security is disabled; any status
+other than 401, 403 and 5xx passes. The consumer group's permission is not checked
+before the first join; a denied join is retried by the source every 10s and logged.
+
+Readiness (`pipelines` health contributor in the readiness group): up while at least one
+pipeline is `running` or `paused`; out of service while every pipeline is still
+`starting` or has failed, so a rollout of a broken configuration stops at the first
+pod; up with zero pipelines configured (valid, with a startup warning). A breaker or
+auth pause never affects readiness.
 
 ## 5. Configuration model
 
@@ -723,7 +764,7 @@ are reported together:
 | Situation | Behaviour |
 |---|---|
 | ES returns 429 / 5xx / connection error or timeout for a bulk request | Retried with the same documents **forever**, exponential backoff with jitter (100ms doubling to 30s, ±50%); counts as a breaker failure. The pipeline's container is paused when in-flight bytes (key + value of every delivered, incomplete record) reach `max-in-flight-bytes`, and resumes once they drop to half of it. A poll that crosses the budget is delivered whole, so the overshoot is at most one poll per consumer. Kafka lag grows. No local buffering. Never DLQ. |
-| Repeated cluster-level failures | Circuit breaker per ES cluster (Resilience4j, shared by all identities and pipelines): count window of 20 requests, opens at ≥50% failures after at least 10, stays open 10s, then lets 2 probes through. While it is open every sender for that cluster waits; pipelines routing to that cluster pause, others proceed. |
+| Repeated cluster-level failures | Circuit breaker per ES cluster (Resilience4j, shared by all identities and pipelines): count window of 20 requests, opens at ≥50% failures after at least 10, stays open 10s, then lets 2 probes through. While it is open every sender for that cluster waits; pipelines routing to that cluster pause (supervisor reason `es-breaker:<cluster>`, from open until the breaker is closed again; half-open keeps the pause), others proceed. |
 | Bulk request rejected with 401 / 403 | Configuration failure, not data failure: retried with backoff forever and reported through the sink listener (the supervisor pauses the pipeline; `kafkafim_auth_failures_total` and an alert fire). Not a breaker failure. Nothing goes to the DLQ. An **item** with 401/403 (the identity may not write that index) is handled the same way. |
 | Bulk request with any other unexpected status (a 400 for the whole request, a 404 from a proxy or a wrong path, a 3xx) or a 2xx body that is not a bulk response | Retried forever with backoff and logged with the body: it cannot be attributed to one document, so it never reaches the DLQ. An unexpected status is not a cluster-health signal and does not open the breaker; an unparsable 2xx body does. |
 | An action Elasticsearch would reject for the whole request (`op: create` with an external version, an empty ingest `pipeline` name, an `_id` outside 1 to 512 UTF-8 bytes) | Rejected when the action is built (`BulkAction`), because a whole-request 400 could only be retried forever. `op: create` together with `document.version-field` must therefore be rejected by config validation (follow-up); ES answers "create operations only support internal versioning". |
@@ -736,7 +777,7 @@ are reported together:
 | Missing topic, DLQ topic, or failed authentication at pipeline start | Pipeline stays stopped (`failed_preflight`), clear log naming resource and identity, alert. Other pipelines unaffected. kafkafim never creates the resource. |
 | DLQ produce fails | Block the partition and alert. Losing data is worse than lag. The send is retried forever (100ms doubling to 30s, ±25% jitter) and never completes the source offset until the broker acknowledged it (`acks=all`), so the committed offset stays put. The writer is *blocked* from its first failure until every failed send was acknowledged; the supervisor pauses the pipeline on `onBlocked` and resumes on `onUnblocked`. A missing DLQ topic, failed authentication or authorization, an invalid topic or a record larger than the producer or topic allows is a **configuration** failure (logged at `ERROR`, alert); anything else is **transient**. Both kinds are retried; neither drops the record. A producer error that kafka-clients makes fatal even for an idempotent producer (cluster authorization on `InitProducerId`, e.g. a missing `Write` ACL; authentication; unsupported version) replaces the shared producer, so fixing the ACL unblocks the next attempt without a restart. |
 | Kafka unavailable | Reconnect with backoff (kafka-clients); `kafkafim_kafka_connected` gauge drops, alert. A Kafka authentication or authorization failure after start is retried every 10s instead of stopping the consumer. |
-| Pod SIGTERM | Spring graceful shutdown, higher phases first: each pipeline's Kafka source (phase MAX-100, all pipelines in parallel) pauses fetching, gives in-flight records up to 30s to complete, then stops its container (10s), which commits what completed on revoke and leaves the group; records still incomplete are re-delivered to the next owner; then the DLQ producers (phase MAX-1000, so they outlive the source drain) flush for up to 10s and close, failing any send still unacknowledged so that its record is not committed; then the web server drains (phase MAX-1024, instant for actuator-only traffic). `spring.lifecycle.timeout-per-shutdown-phase` (60s, `application.yaml`) bounds each phase; the consumer phase must fit the pod's `terminationGracePeriodSeconds` (90s, chart default). |
+| Pod SIGTERM | Spring graceful shutdown, higher phases first: the pipeline supervisor (phase MAX-100) stops all pipelines in parallel; each pipeline's Kafka source pauses fetching, gives in-flight records up to 30s to complete (its bulk sinks and the DLQ writer are still open, so outcomes keep arriving), then stops its container (10s), which commits what completed on revoke and leaves the group; records still incomplete are re-delivered to the next owner; then the pipeline's bulk sinks close (up to 10s; outcomes after the revoke are ignored); then the DLQ producers (phase MAX-1000, so they outlive the source drain) flush for up to 10s and close, failing any send still unacknowledged so that its record is not committed; then the web server drains (phase MAX-1024, instant for actuator-only traffic). `spring.lifecycle.timeout-per-shutdown-phase` (60s, `application.yaml`) bounds each phase; the consumer phase must fit the pod's `terminationGracePeriodSeconds` (90s, chart default). |
 
 Error classification lives in one table (`sink/es/ErrorClassifier`) and is
 unit-tested against captured ES 8.19 responses (`src/test/resources/sink/es/`), because
@@ -795,8 +836,8 @@ Record details (`dlq/DlqRecordFormat`):
   the partition for a value kafkafim cannot change. The original timestamp travels in
   `kafkafim.source.timestamp` (omitted when the record had none). Because ingest time is
   the Kafka record timestamp (§4.5), a replay pipeline without `document.timestamp-field`
-  would put documents into the index of the replay date; reading ingest time from
-  `kafkafim.source.timestamp` when present is a follow-up.
+  would put documents into the index of the replay date, so such a pipeline reads ingest
+  time from `kafkafim.source.timestamp` when present (ADR-0027, §4.2).
 - No partition is set: the default partitioner spreads by key.
 
 Writer contract (`dlq/DlqWriter`): `send` never blocks and returns a future that completes
@@ -858,7 +899,9 @@ secrets are read at startup; rotating one needs a pod restart.
 - `kafkafim_e2e_latency_seconds` (ack time minus Kafka record timestamp)
 - `kafkafim_batch_flush_total{reason=docs|bytes|age}`
 - `kafkafim_in_flight_bytes`, `kafkafim_assigned_partitions`
-- `kafkafim_pipeline_state{pipeline,state=running|paused|failed_preflight|stopped}`
+- `kafkafim_pipeline_state{pipeline,state=starting|running|paused|failed_preflight|stopped}`
+  (1 for the current state, 0 for the others; `paused` means a supervisor reason: breaker
+  open, identity rejected or DLQ blocked, not the byte-budget backpressure)
 - `kafkafim_config_reload_total{result}`, `kafkafim_config_generation`
 - `kafkafim_dlq_records_total`
 
