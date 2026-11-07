@@ -125,10 +125,17 @@ so a tag moved or overwritten in the internal registry cannot change what runs.
 (`ghcr.io/matabar/kafkafim@sha256:...`); the chart takes only the `sha256:<64 hex>`
 part after `@` (the registry comes from `image.registry`), and its schema rejects
 anything else. `cosign load` and `skopeo copy --all --preserve-digests` push the same
-bytes, so the digest is the same in the internal registry (to check:
-`skopeo inspect --raw docker://registry.internal/kafkafim/kafkafim:1.2.3 | sha256sum`). The pod image is then `registry.internal/kafkafim/kafkafim@sha256:...`;
+bytes, so the digest is the same in the internal registry. To check (prints `OK`):
+
+```bash
+[ "sha256:$(skopeo inspect --raw docker://registry.internal/kafkafim/kafkafim:1.2.3 | sha256sum | cut -d' ' -f1)" = "$(cut -d@ -f2 kafkafim-1.2.3-image.digest)" ] && echo OK
+```
+
+The pod image is then `registry.internal/kafkafim/kafkafim@sha256:...`;
 the `app.kubernetes.io/version` label still reads `1.2.3` (the chart's appVersion).
-A per-cluster values file can carry `image.digest` instead of the `--set`. Leave
+Where the install runs without the extracted bundle (the infrastructure repository's
+CI), record the digest at import time in the per-cluster values files as
+`image.digest: sha256:...` instead of the `--set`. Leave
 `image.tag` empty, or set it to `1.2.3` for a `:1.2.3@sha256:...` reference; never put
 `1.2.3@sha256:...` in `image.tag` (the chart fails and points at `image.digest`).
 
