@@ -132,21 +132,18 @@ public final class DlqWriter {
 
   /** Logs at ERROR once per blocked period when a later failure is a configuration failure. */
   private void retryFailed(DlqFailure failure) {
-    synchronized (stateLock) {
-      if (failing == 0
-          || configurationReported
-          || failure.kind() != DlqFailure.Kind.CONFIGURATION) {
-        return;
-      }
-      configurationReported = true;
-      log.error(
-          "DLQ produce for pipeline '{}' to topic '{}' ({}) is still blocked, now by a"
-              + " configuration failure: {}",
-          pipeline,
-          topic,
-          producer.describeIdentity(),
-          describe(failure.cause()));
+    // Callers hold stateLock.
+    if (failing == 0 || configurationReported || failure.kind() != DlqFailure.Kind.CONFIGURATION) {
+      return;
     }
+    configurationReported = true;
+    log.error(
+        "DLQ produce for pipeline '{}' to topic '{}' ({}) is still blocked, now by a"
+            + " configuration failure: {}",
+        pipeline,
+        topic,
+        producer.describeIdentity(),
+        describe(failure.cause()));
   }
 
   private void recovered() {
@@ -257,7 +254,9 @@ public final class DlqWriter {
         failedBefore = true;
         blocked(failure);
       } else {
-        retryFailed(failure);
+        synchronized (stateLock) {
+          retryFailed(failure);
+        }
       }
       owner.schedule(this, retryIn);
     }

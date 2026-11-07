@@ -42,6 +42,7 @@ final class KafkaDlqClient implements DlqClient {
   private final Object adminLock = new Object();
   private @Nullable Admin admin;
   private volatile boolean closed;
+  private boolean replacing;
 
   KafkaDlqClient(Map<String, Object> producerSettings) {
     this(producerSettings, KafkaProducer::new);
@@ -80,27 +81,43 @@ final class KafkaDlqClient implements DlqClient {
     return producer;
   }
 
+  /**
+   * Replaces the producer after a fatal error. Any {@code AuthenticationException} counts, so a
+   * healthy producer that only saw a transient SASL failure is replaced too; its aborted batches
+   * are retried on the new one (possible duplicates, never loss), at most once per producer.
+   *
+   * <p>The old producer is closed before the new one is created, so the two never share the {@code
+   * client.id}'s app-info MBean. The close happens outside the lock: on the synchronous path it
+   * joins the old I/O thread, whose aborted-batch callbacks come back here and must not wait.
+   */
   private void replaceIfFatal(Producer<byte[], byte[]> failed, Throwable failure) {
     if (!DlqFailure.isFatalForProducer(failure)) {
       return;
     }
     synchronized (producerLock) {
-      if (closed || producer != failed) {
+      if (closed || replacing || producer != failed) {
         return;
       }
-      log.warn(
-          "DLQ producer {} is in a fatal state ({}); replacing it",
-          producerSettings.get("client.id"),
-          DlqFailure.unwrap(failure).getClass().getSimpleName());
+      replacing = true;
+    }
+    log.warn(
+        "DLQ producer {} is in a fatal state ({}); replacing it",
+        producerSettings.get("client.id"),
+        DlqFailure.unwrap(failure).getClass().getSimpleName());
+    // Possibly on the failed producer's own I/O thread, where kafka-clients forces a zero timeout.
+    failed.close(Duration.ZERO);
+    synchronized (producerLock) {
+      replacing = false;
+      if (closed) {
+        return;
+      }
       try {
         producer = producers.apply(producerSettings);
       } catch (RuntimeException e) {
-        log.warn("Recreating the DLQ producer failed; the next fatal error retries it", e);
-        return;
+        // Sends fail on the closed producer and are retried; the next fatal error tries again.
+        log.warn("Recreating the DLQ producer failed", e);
       }
     }
-    // Possibly on the failed producer's own I/O thread, where kafka-clients forces a zero timeout.
-    failed.close(Duration.ZERO);
   }
 
   @Override

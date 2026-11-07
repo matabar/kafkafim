@@ -150,9 +150,17 @@ public final class DlqProducers implements SmartLifecycle, AutoCloseable {
 
   private SharedProducer producerFor(Pipeline pipeline) {
     Key key = new Key(pipeline.source().cluster(), pipeline.dlq().identity());
-    SharedProducer producer = producers.computeIfAbsent(key, this::createProducer);
-    if (closed) {
-      // close() may have iterated before this producer was added; closing twice is harmless.
+    boolean[] created = {false};
+    SharedProducer producer =
+        producers.computeIfAbsent(
+            key,
+            k -> {
+              created[0] = true;
+              return createProducer(k);
+            });
+    if (closed && created[0]) {
+      // close() may have iterated before this producer was added. Only a producer created here is
+      // closed: an existing one is being flushed by close() itself.
       producer.client().close(Duration.ZERO);
       throw new IllegalStateException("DLQ producers are closed");
     }
