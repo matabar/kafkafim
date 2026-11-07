@@ -775,7 +775,8 @@ no extra credentials or network paths. Record layout:
   (ES item error JSON, truncated to 4 KiB), `kafkafim.source.topic`,
   `kafkafim.source.partition`, `kafkafim.source.offset`, `kafkafim.target.cluster`,
   `kafkafim.target.index`, `kafkafim.attempts`, `kafkafim.first-failure-ts`,
-  `kafkafim.doc-index` (position inside a JSON array record); original headers kept.
+  `kafkafim.doc-index` (position inside a JSON array record), `kafkafim.source.timestamp`;
+  original headers kept except incoming `kafkafim.*` ones (ADR-0027).
 
 Record details (`dlq/DlqRecordFormat`):
 
@@ -794,9 +795,10 @@ Record details (`dlq/DlqRecordFormat`):
   broker rejects timestamps outside its `message.timestamp.*` window, which would block
   the partition for a value kafkafim cannot change. The original timestamp travels in
   `kafkafim.source.timestamp` (omitted when the record had none). Because ingest time is
-  the Kafka record timestamp (§4.5), a replay pipeline without `document.timestamp-field`
-  would put documents into the index of the replay date; reading ingest time from
-  `kafkafim.source.timestamp` when present is a follow-up.
+  the Kafka record timestamp (§4.5), a pipeline consuming a DLQ topic uses
+  `kafkafim.source.timestamp` as the ingest time when `document.timestamp-field` is
+  unset, so replayed documents land in the original date's index (ADR-0027; not
+  implemented yet, it arrives with the supervisor, which wires sources to pipelines).
 - No partition is set: the default partitioner spreads by key.
 
 Writer contract (`dlq/DlqWriter`): `send` never blocks and returns a future that completes
