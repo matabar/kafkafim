@@ -6,6 +6,7 @@ import java.util.Map;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.function.Function;
 import org.apache.kafka.clients.admin.Admin;
 import org.apache.kafka.clients.admin.DescribeTopicsOptions;
 import org.apache.kafka.clients.producer.Callback;
@@ -23,26 +24,83 @@ import org.slf4j.LoggerFactory;
  * One {@link KafkaProducer} (thread-safe, shared by every pipeline that dead-letters through the
  * same {@code (cluster, identity)}) and one {@link Admin} for the topic check, created lazily on
  * the first check.
+ *
+ * <p>An idempotent producer that hits a fatal error ({@link DlqFailure#isFatalForProducer}, e.g.
+ * {@code CLUSTER_AUTHORIZATION_FAILED} on its first {@code InitProducerId} because the identity has
+ * no {@code Write} ACL yet) fails every later send, even after the ACL is fixed. Such a producer is
+ * closed and replaced, so the next attempt runs on a fresh one.
  */
 final class KafkaDlqClient implements DlqClient {
 
   private static final Logger log = LoggerFactory.getLogger(KafkaDlqClient.class);
 
-  private final Producer<byte[], byte[]> producer;
+  private final Map<String, Object> producerSettings;
+  private final Function<Map<String, Object>, Producer<byte[], byte[]>> producers;
+  private final Object producerLock = new Object();
+  private volatile Producer<byte[], byte[]> producer;
   private final Map<String, Object> adminSettings;
   private final Object adminLock = new Object();
   private @Nullable Admin admin;
-  private boolean closed;
+  private volatile boolean closed;
 
   KafkaDlqClient(Map<String, Object> producerSettings) {
+    this(producerSettings, KafkaProducer::new);
+  }
+
+  KafkaDlqClient(
+      Map<String, Object> producerSettings,
+      Function<Map<String, Object>, Producer<byte[], byte[]>> producers) {
     log.info("Creating DLQ producer with settings {}", ProducerSettings.redacted(producerSettings));
-    this.producer = new KafkaProducer<>(producerSettings);
+    this.producerSettings = producerSettings;
+    this.producers = producers;
+    this.producer = producers.apply(producerSettings);
     this.adminSettings = ProducerSettings.adminSettings(producerSettings);
   }
 
   @Override
   public void send(ProducerRecord<byte[], byte[]> record, Callback callback) {
-    producer.send(record, callback);
+    Producer<byte[], byte[]> current = producer;
+    try {
+      current.send(
+          record,
+          (metadata, exception) -> {
+            if (exception != null) {
+              replaceIfFatal(current, exception);
+            }
+            callback.onCompletion(metadata, exception);
+          });
+    } catch (RuntimeException e) {
+      replaceIfFatal(current, e);
+      throw e;
+    }
+  }
+
+  /** The producer in use; a new instance after a fatal error. */
+  Producer<byte[], byte[]> producer() {
+    return producer;
+  }
+
+  private void replaceIfFatal(Producer<byte[], byte[]> failed, Throwable failure) {
+    if (!DlqFailure.isFatalForProducer(failure)) {
+      return;
+    }
+    synchronized (producerLock) {
+      if (closed || producer != failed) {
+        return;
+      }
+      log.warn(
+          "DLQ producer {} is in a fatal state ({}); replacing it",
+          producerSettings.get("client.id"),
+          DlqFailure.unwrap(failure).getClass().getSimpleName());
+      try {
+        producer = producers.apply(producerSettings);
+      } catch (RuntimeException e) {
+        log.warn("Recreating the DLQ producer failed; the next fatal error retries it", e);
+        return;
+      }
+    }
+    // Possibly on the failed producer's own I/O thread, where kafka-clients forces a zero timeout.
+    failed.close(Duration.ZERO);
   }
 
   @Override
@@ -91,8 +149,10 @@ final class KafkaDlqClient implements DlqClient {
   public void close(Duration timeout) {
     Admin toClose;
     synchronized (adminLock) {
-      closed = true;
       toClose = admin;
+      synchronized (producerLock) {
+        closed = true;
+      }
     }
     try {
       producer.close(timeout);

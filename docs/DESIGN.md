@@ -359,8 +359,9 @@ then kafkafim's own settings. It owns, and rejects in the passthrough,
 `bootstrap.servers`, `security.protocol`, `client.id`, `acks` (always `all`),
 `enable.idempotence` (always `true`), `retries` (`MAX_VALUE`),
 `max.in.flight.requests.per.connection` (5, the idempotent bound), `delivery.timeout.ms`
-(120s; kafkafim resends after it), the key and value serializers (byte arrays) and
-`transactional.id` (never set), plus the same derived security keys as the consumer. A
+(120s; kafkafim resends after it), the key and value serializers (byte arrays),
+`transactional.id` (never set) and `interceptor.classes` (an interceptor could change DLQ
+records), plus the same derived security keys as the consumer. A
 DLQ record of an oversize source record can exceed `max.request.size`; raise it through
 `properties` and the DLQ topic's `max.message.bytes` together.
 
@@ -697,7 +698,7 @@ are reported together:
 | Bulk request rejected with 413 | The request is split and retried; a single-document bulk that still gets 413 sends that document to the DLQ with `error.type=too_large`. |
 | Undecodable record, non-object element, unusable version, missing `_id`, bad timestamp, no matching route, unresolved index pattern | DLQ with the matching `error.type` (`decode`, `missing_id`, `bad_timestamp`, `no_route`, `unresolved_index`; `too_large` from the 413 row). |
 | Missing topic, DLQ topic, or failed authentication at pipeline start | Pipeline stays stopped (`failed_preflight`), clear log naming resource and identity, alert. Other pipelines unaffected. kafkafim never creates the resource. |
-| DLQ produce fails | Block the partition and alert. Losing data is worse than lag. The send is retried forever (100ms doubling to 30s, ±25% jitter) and never completes the source offset until the broker acknowledged it (`acks=all`), so the committed offset stays put. The writer is *blocked* from its first failure until every failed send was acknowledged; the supervisor pauses the pipeline on `onBlocked` and resumes on `onUnblocked`. A missing DLQ topic, failed authentication or authorization, an invalid topic or a record larger than the producer or topic allows is a **configuration** failure (logged at `ERROR`, alert); anything else is **transient**. Both kinds are retried; neither drops the record. |
+| DLQ produce fails | Block the partition and alert. Losing data is worse than lag. The send is retried forever (100ms doubling to 30s, ±25% jitter) and never completes the source offset until the broker acknowledged it (`acks=all`), so the committed offset stays put. The writer is *blocked* from its first failure until every failed send was acknowledged; the supervisor pauses the pipeline on `onBlocked` and resumes on `onUnblocked`. A missing DLQ topic, failed authentication or authorization, an invalid topic or a record larger than the producer or topic allows is a **configuration** failure (logged at `ERROR`, alert); anything else is **transient**. Both kinds are retried; neither drops the record. A producer error that kafka-clients makes fatal even for an idempotent producer (cluster authorization on `InitProducerId`, e.g. a missing `Write` ACL; authentication; unsupported version) replaces the shared producer, so fixing the ACL unblocks the next attempt without a restart. |
 | Kafka unavailable | Reconnect with backoff (kafka-clients); `kafkafim_kafka_connected` gauge drops, alert. A Kafka authentication or authorization failure after start is retried every 10s instead of stopping the consumer. |
 | Pod SIGTERM | Spring graceful shutdown, higher phases first: each pipeline's Kafka source (phase MAX-100, all pipelines in parallel) pauses fetching, gives in-flight records up to 30s to complete, then stops its container (10s), which commits what completed on revoke and leaves the group; records still incomplete are re-delivered to the next owner; then the DLQ producers (phase MAX-1000, so they outlive the source drain) flush for up to 10s and close, failing any send still unacknowledged so that its record is not committed; then the web server drains (phase MAX-1024, instant for actuator-only traffic). `spring.lifecycle.timeout-per-shutdown-phase` (60s, `application.yaml`) bounds each phase; the consumer phase must fit the pod's `terminationGracePeriodSeconds` (90s, chart default). |
 
@@ -756,7 +757,10 @@ uncommitted. Before the first record to a topic the writer describes it
 (`Describe`, already required): the producer always lets the broker auto-create a topic
 it sends to, so producing blind would create a missing DLQ topic on a broker with
 `auto.create.topics.enable=true` (ADR-0021) and would otherwise only surface as a metadata
-timeout. A resend after `delivery.timeout.ms` can duplicate a DLQ record and resends are
+timeout. A topic once seen is only checked again after a send timeout, so a DLQ topic
+deleted while kafkafim runs can still be re-created by the producer's metadata refresh on
+such a broker; brokers should keep auto-creation off, and the writer identity never has
+`Create` (ADR-0021). A resend after `delivery.timeout.ms` can duplicate a DLQ record and resends are
 not ordered; both are harmless, since replay is idempotent by `_id`.
 
 **Replay is configuration.** After fixing a mapping, add a pipeline whose source is

@@ -46,6 +46,7 @@ public final class DlqWriter {
   private final DlqProducers owner;
   private final Object stateLock = new Object();
   private int failing;
+  private boolean configurationReported;
 
   DlqWriter(String pipeline, String topic, SharedProducer producer, DlqProducers owner) {
     this.pipeline = pipeline;
@@ -101,8 +102,10 @@ public final class DlqWriter {
   private void blocked(DlqFailure failure) {
     synchronized (stateLock) {
       if (failing++ > 0) {
+        retryFailed(failure);
         return;
       }
+      configurationReported = failure.kind() == DlqFailure.Kind.CONFIGURATION;
       String message =
           "DLQ produce for pipeline '{}' to topic '{}' ({}) failed ({}), blocking until it"
               + " succeeds: {}";
@@ -127,11 +130,31 @@ public final class DlqWriter {
     }
   }
 
+  /** Logs at ERROR once per blocked period when a later failure is a configuration failure. */
+  private void retryFailed(DlqFailure failure) {
+    synchronized (stateLock) {
+      if (failing == 0
+          || configurationReported
+          || failure.kind() != DlqFailure.Kind.CONFIGURATION) {
+        return;
+      }
+      configurationReported = true;
+      log.error(
+          "DLQ produce for pipeline '{}' to topic '{}' ({}) is still blocked, now by a"
+              + " configuration failure: {}",
+          pipeline,
+          topic,
+          producer.describeIdentity(),
+          describe(failure.cause()));
+    }
+  }
+
   private void recovered() {
     synchronized (stateLock) {
       if (--failing > 0) {
         return;
       }
+      configurationReported = false;
       log.info("DLQ produce for pipeline '{}' to topic '{}' recovered", pipeline, topic);
       owner.notify(listener -> listener.onUnblocked(pipeline));
     }
@@ -233,6 +256,8 @@ public final class DlqWriter {
       if (!failedBefore) {
         failedBefore = true;
         blocked(failure);
+      } else {
+        retryFailed(failure);
       }
       owner.schedule(this, retryIn);
     }

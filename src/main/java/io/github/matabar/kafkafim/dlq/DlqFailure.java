@@ -3,13 +3,18 @@ package io.github.matabar.kafkafim.dlq;
 import java.time.Duration;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ExecutionException;
+import org.apache.kafka.common.config.ConfigException;
 import org.apache.kafka.common.errors.AuthenticationException;
 import org.apache.kafka.common.errors.AuthorizationException;
+import org.apache.kafka.common.errors.ClusterAuthorizationException;
+import org.apache.kafka.common.errors.InvalidPidMappingException;
 import org.apache.kafka.common.errors.InvalidTopicException;
+import org.apache.kafka.common.errors.ProducerFencedException;
 import org.apache.kafka.common.errors.RecordBatchTooLargeException;
 import org.apache.kafka.common.errors.RecordTooLargeException;
 import org.apache.kafka.common.errors.UnknownTopicOrPartitionException;
 import org.apache.kafka.common.errors.UnsupportedVersionException;
+import org.jspecify.annotations.Nullable;
 
 /**
  * One failed DLQ send attempt. The send is retried after {@link #retryIn()}; it never completes
@@ -44,20 +49,45 @@ public record DlqFailure(Kind kind, Throwable cause, int attempt, Duration retry
    * @return its kind
    */
   public static Kind classify(Throwable failure) {
-    Throwable cause = unwrap(failure);
-    if (cause instanceof DlqTopicException topic) {
-      return topic.status().isConfigurationFailure() ? Kind.CONFIGURATION : Kind.TRANSIENT;
-    }
-    if (cause instanceof AuthorizationException
-        || cause instanceof AuthenticationException
-        || cause instanceof InvalidTopicException
-        || cause instanceof UnknownTopicOrPartitionException
-        || cause instanceof RecordTooLargeException
-        || cause instanceof RecordBatchTooLargeException
-        || cause instanceof UnsupportedVersionException) {
-      return Kind.CONFIGURATION;
+    // The whole cause chain: a producer in a fatal state throws a plain KafkaException whose cause
+    // is the authorization or authentication error that put it there.
+    for (Throwable cause = failure; cause != null; cause = next(cause)) {
+      if (cause instanceof DlqTopicException topic) {
+        return topic.status().isConfigurationFailure() ? Kind.CONFIGURATION : Kind.TRANSIENT;
+      }
+      if (cause instanceof AuthorizationException
+          || cause instanceof AuthenticationException
+          || cause instanceof InvalidTopicException
+          || cause instanceof UnknownTopicOrPartitionException
+          || cause instanceof RecordTooLargeException
+          || cause instanceof RecordBatchTooLargeException
+          || cause instanceof UnsupportedVersionException
+          || cause instanceof ConfigException) {
+        return Kind.CONFIGURATION;
+      }
     }
     return Kind.TRANSIENT;
+  }
+
+  /**
+   * Whether the failure leaves kafka-clients' idempotent producer unusable, so that it must be
+   * replaced: {@code TransactionManager} turns these into a fatal error state for idempotent
+   * producers too, after which every send fails with the original cause attached.
+   *
+   * @param failure a send failure
+   * @return whether the producer must be recreated
+   */
+  public static boolean isFatalForProducer(Throwable failure) {
+    for (Throwable cause = failure; cause != null; cause = next(cause)) {
+      if (cause instanceof ClusterAuthorizationException
+          || cause instanceof AuthenticationException
+          || cause instanceof UnsupportedVersionException
+          || cause instanceof ProducerFencedException
+          || cause instanceof InvalidPidMappingException) {
+        return true;
+      }
+    }
+    return false;
   }
 
   static Throwable unwrap(Throwable failure) {
@@ -67,5 +97,10 @@ public record DlqFailure(Kind kind, Throwable cause, int attempt, Duration retry
       cause = cause.getCause();
     }
     return cause;
+  }
+
+  private static @Nullable Throwable next(Throwable cause) {
+    Throwable parent = cause.getCause();
+    return parent == cause ? null : parent;
   }
 }

@@ -134,7 +134,8 @@ class ProducerSettingsTest {
         "delivery.timeout.ms",
         "key.serializer",
         "value.serializer",
-        "transactional.id"
+        "transactional.id",
+        "interceptor.classes"
       })
   void passthroughMayNotSetOwnedKeys(String key) {
     KafkaCluster cluster = cluster(null, null, Map.of(key, "secret-value"));

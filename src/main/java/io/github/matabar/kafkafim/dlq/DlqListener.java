@@ -7,8 +7,11 @@ import org.apache.kafka.clients.producer.RecordMetadata;
  * kafkafim_dlq_records_total{pipeline,error_type}} from {@link #onWritten}) and for the supervisor,
  * which pauses a pipeline while its writer is blocked and alerts.
  *
- * <p>Callbacks run on kafkafim's DLQ threads, never on the caller's or the producer's I/O thread;
- * they must be quick and must not throw (an exception is logged and ignored).
+ * <p>Callbacks run on kafkafim's DLQ threads, not on the caller's thread; only an acknowledgement
+ * arriving while the writers close may call {@link #onWritten} on the producer's I/O thread. {@link
+ * #onBlocked} and {@link #onUnblocked} are called under the writer's state lock, so that they
+ * always alternate. Callbacks must be quick and must not throw (an exception is logged and
+ * ignored).
  */
 public interface DlqListener {
 

@@ -45,7 +45,7 @@ public final class ProducerSettings {
    * Keys the passthrough can never set: durability, idempotence and serialization of DLQ records
    * depend on them, or kafkafim sets them per {@code (cluster, identity)}. {@code transactional.id}
    * is owned so that it stays unset: a transactional producer would need fencing kafkafim does not
-   * do.
+   * do; {@code interceptor.classes} likewise, since an interceptor could change DLQ records.
    */
   public static final Set<String> OWNED_KEYS =
       Set.of(
@@ -59,7 +59,8 @@ public final class ProducerSettings {
           ProducerConfig.DELIVERY_TIMEOUT_MS_CONFIG,
           ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG,
           ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG,
-          ProducerConfig.TRANSACTIONAL_ID_CONFIG);
+          ProducerConfig.TRANSACTIONAL_ID_CONFIG,
+          ProducerConfig.INTERCEPTOR_CLASSES_CONFIG);
 
   /**
    * Defaults the passthrough may override.
@@ -206,6 +207,7 @@ public final class ProducerSettings {
         || lower.contains("secret")
         || lower.contains("token")
         || lower.contains("credential")
+        || lower.contains("user.info")
         || lower.endsWith(".key");
   }
 
