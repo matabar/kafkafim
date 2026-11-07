@@ -736,7 +736,11 @@ lag under a replay pipeline is the unresolved-backlog number.
 Spring Boot's OpenTelemetry starter: Micrometer → OTLP (APM Server) plus
 `/actuator/prometheus`; Micrometer Tracing with the OTel bridge → OTLP. APM Server
 (or later an OpenTelemetry Collector) pre-exists in production; switching between
-them is only the `OTEL_EXPORTER_OTLP_ENDPOINT` value in the chart.
+them is only the `OTEL_EXPORTER_OTLP_ENDPOINT` value in the chart. Export headers reach
+both exporters: non-secret ones through `OTEL_EXPORTER_OTLP_HEADERS` (mapped by Spring
+Boot), secret ones (the APM Server token) as `configtree` files the chart mounts at the
+exporters' `headers` property paths (`otel.secretHeaders`, [HELM.md](HELM.md)). Header
+secrets are read at startup; rotating one needs a pod restart.
 
 ### Metrics (all with `pipeline`, `kafka_cluster`; `topic`/`es_cluster`/`route` where it applies)
 
@@ -787,7 +791,8 @@ pipeline it serves.
 ## 11. Security
 
 - Secrets only via mounted `Secret`s imported as `configtree`; inline secret values
-  fail validation outside local development.
+  fail validation outside local development. This includes the OTLP export token
+  (`otel.secretHeaders`, §10).
 - TLS everywhere, custom CA per cluster. Named identities (Kafka: SASL/mTLS;
   Elasticsearch: API key, basic, mTLS) referenced per consumer group, DLQ producer
   and route, so Kafka ACLs and ES roles can be scoped per pipeline and per role.

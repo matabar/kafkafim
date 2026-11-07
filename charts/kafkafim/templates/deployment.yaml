@@ -101,7 +101,8 @@ spec:
             {{- with $.Values.otel.headers }}
             {{- $pairs := list }}
             {{- range $k, $v := . }}
-            {{- $pairs = append $pairs (printf "%s=%s" $k $v) }}
+            {{- /* OTel's k=v,k2=v2 format percent-decodes values; keep "%" and "," literal. */}}
+            {{- $pairs = append $pairs (printf "%s=%s" $k ($v | replace "%" "%25" | replace "," "%2C")) }}
             {{- end }}
             - name: OTEL_EXPORTER_OTLP_HEADERS
               value: {{ join "," $pairs | quote }}
@@ -155,6 +156,14 @@ spec:
               mountPath: {{ include "kafkafim.secretMountPath" $s.mountPath | quote }}
               readOnly: true
             {{- end }}
+            {{- if $.Values.otel.secretHeaders }}
+            {{- /* configtree turns these files into the OTLP metrics and trace exporters' headers maps. */}}
+            {{- range $path := include "kafkafim.otelSecretHeaderMountPaths" $ | fromJsonArray }}
+            - name: otel-secret-headers
+              mountPath: {{ $path | quote }}
+              readOnly: true
+            {{- end }}
+            {{- end }}
       volumes:
         - name: config
           configMap:
@@ -166,5 +175,18 @@ spec:
         - name: secret-{{ $i }}
           secret:
             secretName: {{ $s.name | quote }}
+        {{- end }}
+        {{- with $.Values.otel.secretHeaders }}
+        # One file per header, named after it; only Secret names and keys are rendered.
+        - name: otel-secret-headers
+          projected:
+            sources:
+              {{- range $header, $ref := . }}
+              - secret:
+                  name: {{ $ref.secretName | quote }}
+                  items:
+                    - key: {{ $ref.key | quote }}
+                      path: {{ $header | quote }}
+              {{- end }}
         {{- end }}
 {{- end }}
