@@ -93,8 +93,8 @@ jvm:
 # Additional container env vars and envFrom sources (secret OTLP headers belong in
 # otel.secretHeaders, not here). extraEnv must not redefine the variables the chart
 # sets (SPRING_PROFILES_ACTIVE, SPRING_CONFIG_ADDITIONAL_LOCATION, SPRING_CONFIG_IMPORT,
-# OTEL_EXPORTER_OTLP_ENDPOINT, JAVA_TOOL_OPTIONS, and OTEL_EXPORTER_OTLP_HEADERS when
-# otel.headers is set).
+# OTEL_EXPORTER_OTLP_ENDPOINT, JAVA_TOOL_OPTIONS, and OTEL_EXPORTER_OTLP_HEADERS plus its
+# _METRICS_/_TRACES_ variants when otel.headers or otel.secretHeaders is set).
 extraEnv: []
 extraEnvFrom: []
 

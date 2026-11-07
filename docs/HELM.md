@@ -152,8 +152,11 @@ For each `groups.<g>`:
   `otel.secretHeaders` does not name one header twice (header names compare
   case-insensitively). Header names are letters, digits and `-` (schema).
 - `extraEnv` does not redefine a variable the chart sets (the `SPRING_*` triple,
-  `OTEL_EXPORTER_OTLP_ENDPOINT`, `JAVA_TOOL_OPTIONS`, and
-  `OTEL_EXPORTER_OTLP_HEADERS` when `otel.headers` is set).
+  `OTEL_EXPORTER_OTLP_ENDPOINT`, `JAVA_TOOL_OPTIONS`,
+  and `OTEL_EXPORTER_OTLP_HEADERS` / `_METRICS_HEADERS` / `_TRACES_HEADERS` when
+  `otel.headers` or `otel.secretHeaders` is set: Boot maps those variables into a
+  property source that wins over configtree, so they would silently replace the
+  chart's headers).
 
 `values.schema.json` checks the shape only (types, required keys, no unknown keys,
 group names are DNS labels); the cross-field rules above are `fail` calls in

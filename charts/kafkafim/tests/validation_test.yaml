@@ -157,6 +157,15 @@ tests:
       - failedTemplate:
           errorMessage: 'extraEnv must not set OTEL_EXPORTER_OTLP_HEADERS; the chart already sets it from values'
 
+  - it: fails when extraEnv sets a per-signal OTLP headers variable while otel.secretHeaders is set
+    set:
+      otel.secretHeaders: { Authorization: { secretName: apm, key: token } }
+      extraEnv:
+        - { name: OTEL_EXPORTER_OTLP_TRACES_HEADERS, value: x=y }
+    asserts:
+      - failedTemplate:
+          errorMessage: 'extraEnv must not set OTEL_EXPORTER_OTLP_TRACES_HEADERS; the chart already sets it from values'
+
   - it: allows OTEL_EXPORTER_OTLP_HEADERS from a Secret when otel.headers is empty
     set:
       extraEnv:
