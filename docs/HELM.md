@@ -102,7 +102,9 @@ For each `groups.<g>`:
 - Group defaults: top-level `resources`, `nodeSelector`, `tolerations`, `affinity` and
   `pdb` apply to every group that does not set its own (a group's value replaces the
   default, it is not merged); `podAnnotations` are merged, the group's winning.
-  `replicas` defaults to 2.
+  `replicas` defaults to 2. In a `pdb`, `maxUnavailable` wins over `minAvailable`
+  when both are set (so overriding the default `minAvailable: 1` needs no `null`);
+  a single-replica group should use `maxUnavailable: 1` so it does not block drains.
 - The ConfigMap is mounted as a directory, never with `subPath`, so kubelet updates
   the file in place and hot reload sees it. A `/tmp` `emptyDir` backs the read-only
   root filesystem.
@@ -120,6 +122,8 @@ For each `groups.<g>`:
 - Every `secrets[].mountPath` is under `/etc/kafkafim/secrets/` and unique. Paths are
   normalised first (trailing `/`, `.` and `..` resolved), so `…/prod-a` and
   `…/prod-a/` are the same mount and `…/secrets/../config` is outside the root.
+  Mounts must not nest (`…/kafka` and `…/kafka/prod-a`): a mount inside a read-only
+  Secret volume fails container creation and would garble configtree names.
 - `groups.<g>.replicas >= 2` unless `allowSingleReplica: true` is set on the group.
   Under autoscaling the same floor applies to `autoscaling.minReplicas` (default 2);
   `autoscaling.maxReplicas` is then required, must be `>= minReplicas`, and the
@@ -128,6 +132,8 @@ For each `groups.<g>`:
 - `image.tag` or `.Chart.AppVersion` is non-empty.
 - `<fullname>-<group>` fits in 63 characters (Service names are DNS labels; the
   chart fails rather than truncate, which could make two groups collide).
+- `podLabels` does not set a selector label (`app.kubernetes.io/name`, `instance`,
+  `component`).
 - `extraEnv` does not redefine a variable the chart sets (the `SPRING_*` triple,
   `OTEL_EXPORTER_OTLP_ENDPOINT`, `JAVA_TOOL_OPTIONS`, and
   `OTEL_EXPORTER_OTLP_HEADERS` when `otel.headers` is set).
@@ -139,7 +145,8 @@ group names are DNS labels); the cross-field rules above are `fail` calls in
 `config.kafkafim` accepts exactly `kafka`, `elasticsearch` and `pipelines`; the
 schema rejects any other key (for example `allow-inline-secrets`, which is for local
 development only and must never reach a production ConfigMap) instead of silently
-dropping it. Application-wide settings that are not per-group belong in the image's
+dropping it. Helm reads values numbers as float64, so integers above 2^53 in
+`config` lose precision: quote them. Application-wide settings that are not per-group belong in the image's
 `application.yaml` or in `extraEnv`.
 
 Semantic validation of the kafkafim config itself (cluster and identity references,
