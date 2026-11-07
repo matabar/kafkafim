@@ -96,15 +96,51 @@ For each `groups.<g>`:
   anti-affinity on hostname; topology spread across zones when enabled.
 - `HorizontalPodAutoscaler` (autoscaling/v2, CPU) when `autoscaling.enabled`;
   `replicas` is omitted from the Deployment in that case so Helm and the HPA do not fight.
+- Names: a group's resources are `<fullname>-<group>`; with the conventional release
+  name `kafkafim` that is `kafkafim-<group>`. The ServiceAccount (and the opt-in
+  `NetworkPolicy` / `ServiceMonitor`) are named `<fullname>` and select every group.
+- Group defaults: top-level `resources`, `nodeSelector`, `tolerations`, `affinity` and
+  `pdb` apply to every group that does not set its own (a group's value replaces the
+  default, it is not merged); `podAnnotations` are merged, the group's winning.
+  `replicas` defaults to 2.
+- The ConfigMap is mounted as a directory, never with `subPath`, so kubelet updates
+  the file in place and hot reload sees it. A `/tmp` `emptyDir` backs the read-only
+  root filesystem.
+- `NetworkPolicy` (opt-in) is ingress-only: TCP 8080 from `networkPolicy.allowFrom`
+  (default: pods in the release namespace). Egress is not restricted. An empty
+  `allowFrom` list means any source, as in Kubernetes.
+- `otel.headers` (non-secret) render as `OTEL_EXPORTER_OTLP_HEADERS=k=v,…`; secret
+  headers come from a Secret through `extraEnv[].valueFrom` or `extraEnvFrom`.
 
 ## Template-time validation (`fail` in templates, plus `values.schema.json`)
 
 - Every pipeline named in a group exists in `config.kafkafim.pipelines`.
 - Every pipeline in `config.kafkafim.pipelines` belongs to exactly one group
   (unassigned or duplicated pipelines are the most likely human error).
-- Every `secrets[].mountPath` is under `/etc/kafkafim/secrets/` and unique.
+- Every `secrets[].mountPath` is under `/etc/kafkafim/secrets/` and unique. Paths are
+  normalised first (trailing `/`, `.` and `..` resolved), so `…/prod-a` and
+  `…/prod-a/` are the same mount and `…/secrets/../config` is outside the root.
 - `groups.<g>.replicas >= 2` unless `allowSingleReplica: true` is set on the group.
+  Under autoscaling the same floor applies to `autoscaling.minReplicas` (default 2);
+  `autoscaling.maxReplicas` is then required, must be `>= minReplicas`, and the
+  group must have a `resources.requests.cpu` (the CPU HPA has nothing to scale on
+  otherwise).
 - `image.tag` or `.Chart.AppVersion` is non-empty.
+- `<fullname>-<group>` fits in 63 characters (Service names are DNS labels; the
+  chart fails rather than truncate, which could make two groups collide).
+- `extraEnv` does not redefine a variable the chart sets (the `SPRING_*` triple,
+  `OTEL_EXPORTER_OTLP_ENDPOINT`, `JAVA_TOOL_OPTIONS`, and
+  `OTEL_EXPORTER_OTLP_HEADERS` when `otel.headers` is set).
+
+`values.schema.json` checks the shape only (types, required keys, no unknown keys,
+group names are DNS labels); the cross-field rules above are `fail` calls in
+`templates/_helpers.tpl`, each with its own unit test.
+
+`config.kafkafim` accepts exactly `kafka`, `elasticsearch` and `pipelines`; the
+schema rejects any other key (for example `allow-inline-secrets`, which is for local
+development only and must never reach a production ConfigMap) instead of silently
+dropping it. Application-wide settings that are not per-group belong in the image's
+`application.yaml` or in `extraEnv`.
 
 Semantic validation of the kafkafim config itself (cluster and identity references,
 route rules, patterns) is the application's job. The infrastructure repository that
