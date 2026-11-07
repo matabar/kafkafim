@@ -54,7 +54,7 @@ into ~20 Elasticsearch 8.x clusters.
   reload; the infrastructure repository's CI can validate rendered configuration by
   booting the image with the `validate` profile (section 5.6). DLQ inspection uses
   standard Kafka tooling; replay is a pipeline (section 9).
-- A UI. GitOps + Grafana is the UI.
+- A UI. The infrastructure repository (git) + Grafana is the UI.
 - Non-JSON payloads, Avro, Schema Registry.
 - `update`/`delete` operations (model leaves room; MVP implements `index`/`create`).
 - Multi-tenancy, RBAC, audit log of config changes (git history is the audit log).
@@ -296,7 +296,8 @@ defaults to CE, so `yyyy` works and `02-30` fails). A pattern without an offset 
 zone is read as **UTC**, one without any time field as midnight; a time that cannot
 resolve (`hh` without `a`) or a pattern that yields no date fails. Era text is
 `CE`/`BCE` under `Locale.ROOT`. Every format rejects instants outside years 1 to 9999. "Ingest time" is the
-Kafka record timestamp.
+Kafka record timestamp (for a replayed DLQ record, its `kafkafim.source.timestamp`; §9,
+ADR-0027).
 
 ### 4.6 No provisioning, fail-fast verification
 
@@ -521,9 +522,9 @@ for mTLS, or both.
 **Elasticsearch identity**: exactly one of `username`+`password` (production
 default), `api-key`, or an `ssl` keystore block (PKI realm); a keystore may be
 combined with basic or `api-key` when the cluster requires client certificates on
-top of user auth. Trust (CA) is per cluster. Production today is basic auth with the
-cluster CA for trust only; client certificates are modelled but not exercised in
-the MVP tests.
+top of user auth. Trust (CA) is per cluster. Production uses basic auth (or an API
+key) with the cluster CA for trust only; client certificates stay modelled but are
+not used in production and not exercised in the MVP tests.
 
 - `routes[].identity`: the identity used for that route's bulk items → falls back to
   the cluster's `default-identity` → validation fails if the cluster uses `https`
@@ -665,8 +666,10 @@ definitions reference those properties with `${...}` placeholders, so the render
 ConfigMap never contains a secret. Startup validation refuses literal values in `password`,
 `api-key` and `*-password` fields (and in passthrough `properties` keys ending in
 `password`, containing `secret`, `sasl.jaas.config`, `ssl.keystore.key` or
-`user.info`) unless `kafkafim.allow-inline-secrets=true` (local development only; on
-`CloudPlatform.KUBERNETES` the flag itself stops startup, §5.4). A
+`user.info`) unless `kafkafim.allow-inline-secrets=true`. That switch is for local
+development outside Kubernetes (`./mvnw spring-boot:run` with Compose): on
+`CloudPlatform.KUBERNETES` the flag itself stops startup (§5.4), so the Docker Desktop
+Kubernetes demo mounts its secrets as files, like production. A
 secret is accepted when it is read straight from a `configtree` file, or when its raw,
 unresolved text is exactly one `${name}` placeholder (no `:default`, which would be an
 inline fallback) whose chain of references ends in a `configtree` file. The check looks
@@ -834,7 +837,8 @@ no extra credentials or network paths. Record layout:
   (ES item error JSON, truncated to 4 KiB), `kafkafim.source.topic`,
   `kafkafim.source.partition`, `kafkafim.source.offset`, `kafkafim.target.cluster`,
   `kafkafim.target.index`, `kafkafim.attempts`, `kafkafim.first-failure-ts`,
-  `kafkafim.doc-index` (position inside a JSON array record); original headers kept.
+  `kafkafim.doc-index` (position inside a JSON array record), `kafkafim.source.timestamp`;
+  original headers kept except incoming `kafkafim.*` ones (ADR-0027).
 
 Record details (`dlq/DlqRecordFormat`):
 
@@ -853,9 +857,11 @@ Record details (`dlq/DlqRecordFormat`):
   broker rejects timestamps outside its `message.timestamp.*` window, which would block
   the partition for a value kafkafim cannot change. The original timestamp travels in
   `kafkafim.source.timestamp` (omitted when the record had none). Because ingest time is
-  the Kafka record timestamp (§4.5), a replay pipeline without `document.timestamp-field`
-  would put documents into the index of the replay date, so such a pipeline reads ingest
-  time from `kafkafim.source.timestamp` when present (ADR-0027, §4.2).
+  the Kafka record timestamp (§4.5), a pipeline consuming a DLQ topic uses
+  `kafkafim.source.timestamp` as the ingest time when `document.timestamp-field` is
+  unset, so replayed documents land in the original date's index (ADR-0027; the
+  supervisor reads it, §4.2). Records without the header, or with one that is not an
+  ISO-8601 instant, keep the Kafka record timestamp.
 - No partition is set: the default partitioner spreads by key.
 
 Writer contract (`dlq/DlqWriter`): `send` never blocks and returns a future that completes
@@ -1025,9 +1031,10 @@ and chart checks on every PR; a `v*` tag publishes a signed multi-arch image to
 and an air-gap bundle (the signed multi-arch image saved by digest with `cosign
 save`, its digest file, chart, SBOM, checksums, import instructions) on the GitHub
 Release. Production is air-gapped; the team imports the
-bundle into the internal registry and installs one Helm release per Kubernetes
-cluster. The build is a single Maven module with CI-friendly `${revision}`
-versioning (ADR-0003, ADR-0022, ADR-0023).
+bundle into the internal registry and applies one Helm release per Kubernetes
+cluster with plain `helm upgrade --install`, run from the infrastructure repository's
+CI inside the air gap (no Argo CD or Flux). The build is a single Maven module with
+CI-friendly `${revision}` versioning (ADR-0003, ADR-0022, ADR-0023).
 
 ## 16. Roadmap
 
@@ -1044,7 +1051,7 @@ versioning (ADR-0003, ADR-0022, ADR-0023).
 
 ## 17. Open questions
 
-- Elasticsearch TLS: confirm the certificate in production is a CA for trust only
-  (assumed), not a client certificate presented with basic auth.
-- GitOps tool used to apply the per-cluster Helm release inside the air gap (Argo CD,
-  Flux, plain `helm upgrade`)? Affects documentation only.
+None open. The questions listed in v0.4 were answered on 2026-11-08: production
+Elasticsearch uses the cluster CA for trust only, with basic auth or an API key
+(§5.2.1), and the per-cluster release is applied with plain `helm upgrade --install`
+from the infrastructure repository (§15).
