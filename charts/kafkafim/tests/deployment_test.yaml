@@ -170,6 +170,56 @@ tests:
           path: spec.template.spec.containers[0].image
           value: kafkafim:1.2.3
 
+  - it: image.digest without image.tag pins <registry>/<repository>@<digest>
+    values:
+      - ../ci/digest-values.yaml
+    chart:
+      appVersion: 4.5.6
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: registry.internal/kafkafim/kafkafim@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+      - equal:
+          path: metadata.labels["app.kubernetes.io/version"]
+          value: 4.5.6
+
+  - it: image.digest with image.tag pins <registry>/<repository>:<tag>@<digest>
+    values:
+      - ../ci/two-groups-values.yaml
+    set:
+      image.digest: sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: registry.internal/kafkafim/kafkafim:1.2.3@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+      - equal:
+          path: metadata.labels["app.kubernetes.io/version"]
+          value: 1.2.3
+
+  - it: the version label is a valid label value for a long tag (63 chars, alphanumeric ends)
+    values:
+      - ../ci/minimal-values.yaml
+    set:
+      # 62 characters, then "-" (would end the truncated value), then more.
+      image.tag: 1.2.3-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-rc.1
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: ghcr.io/matabar/kafkafim:1.2.3-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-rc.1
+      - equal:
+          path: metadata.labels["app.kubernetes.io/version"]
+          value: 1.2.3-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+
+  - it: the version label maps "+" in appVersion to "_" and strips a leading "_"
+    values:
+      - ../ci/minimal-values.yaml
+    chart:
+      appVersion: _1.2.3+build.7
+    asserts:
+      - equal:
+          path: metadata.labels["app.kubernetes.io/version"]
+          value: 1.2.3_build.7
+
   - it: mounts the group's ConfigMap as a directory and every secret read-only
     values:
       - ../ci/two-groups-values.yaml

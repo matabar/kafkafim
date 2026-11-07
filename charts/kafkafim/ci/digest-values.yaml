@@ -1,0 +1,25 @@
+# Air-gap install pinned by digest (docs/DELIVERY.md): internal registry, image.digest
+# from the release bundle, no image.tag (the version label comes from appVersion).
+image:
+  registry: registry.internal/kafkafim
+  digest: sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+
+config:
+  kafkafim:
+    kafka:
+      clusters:
+        prod-a:
+          bootstrap-servers: [kafka-a-1:9093]
+    elasticsearch:
+      clusters:
+        search-eu:
+          uris: [https://es-eu-1:9200]
+    pipelines:
+      orders:
+        source: { cluster: prod-a, topics: [orders.v2] }
+        routes:
+          - { default: true, cluster: search-eu, index: orders }
+
+groups:
+  orders:
+    pipelines: [orders]
