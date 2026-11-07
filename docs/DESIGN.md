@@ -146,6 +146,29 @@ pipeline, because a bulk request carries exactly one `Authorization` header. A
 pipeline reading 64 low-traffic partitions still produces full-size bulks because
 batching is per target, not per partition.
 
+The sink (`sink/es/`) takes `BulkAction`s (index, `_id` or none, op, external version,
+ingest pipeline, source bytes, an opaque completion handle) and reports one outcome per
+action through a callback: `indexed`, `stale`, or `dlq` with an `error.type` and the ES
+reason. The supervisor maps decoded and routed documents to actions, and outcomes to
+offset acks or DLQ records; the sink knows nothing about Kafka.
+
+- **Batching**: a batch is sealed at `bulk.max-docs`, at `bulk.max-bytes` (an action
+  that would push it over seals it first, so only a single action larger than
+  `max-bytes` makes a larger request), when its oldest action is `max-age` old
+  (`latency.max-age` when the pipeline sets it, else `bulk.max-age`), or on an explicit
+  flush. Sizes count the uncompressed NDJSON body byte for byte.
+- **Sending**: each sealed batch gets a virtual thread; at most `bulk.in-flight`
+  requests are outstanding per stream, and batches start in the order they were sealed.
+- **Backpressure**: `submit` never blocks, because the consumer thread must keep
+  polling. Everything the sink holds is an action without an outcome, so it is already
+  inside the pipeline's `max-in-flight-bytes` budget, at which the container pauses
+  (ADR-0010). While ES is down or the breaker is open, outcomes stop, the budget
+  fills, and the pipeline pauses; nothing is dropped.
+- **Lifecycle**: `flush()` seals the open batch; `close(timeout)` rejects new actions,
+  sends what is batched (retries are sealed at once from then on) and waits for every
+  outcome. Actions still unresolved at the timeout get no outcome, so their offsets are
+  not committed and the records are re-delivered (idempotent by `_id`).
+
 ### 4.3 Offsets and delivery guarantee
 
 - Offsets are committed only after every document from that record has been acked by
@@ -406,8 +429,13 @@ the MVP tests.
   and none resolves; plain `http` with no identity binds with a startup warning (local
   development only). Whether the cluster actually enforces security is not knowable
   at bind time; a 401 at runtime is handled as a configuration failure (section 7).
-- One `RestClient` per `(cluster, identity)`, since the low-level client fixes the
-  `Authorization` header (or client certificate) at construction. Batching and bulk
+- One low-level client (`Rest5Client`) per `(cluster, identity)`, since it fixes the
+  `Authorization` header (`Basic` or `ApiKey`, sent preemptively) or client certificate
+  at construction. It round-robins over the cluster's `uris`, skips nodes that just
+  failed and tries the next node on a connection error or 502/503/504. With
+  `ssl.ca-certificate` the cluster CA is the only trust anchor (hostnames are
+  verified); without it the JVM default trust applies. `compression: true` gzips
+  request bodies. Clients are shared by every pipeline using the same pair. Batching and bulk
   senders are therefore per `(cluster, identity)`; a pipeline whose routes use two
   identities on one cluster produces two bulk streams to it.
 - The circuit breaker stays per **cluster**: a 5xx or connection failure says
@@ -644,21 +672,36 @@ are reported together:
 
 | Situation | Behaviour |
 |---|---|
-| ES returns 429 / 503 / connection error | Exponential backoff with jitter per cluster; the pipeline's container is paused when in-flight bytes hit the budget. Kafka lag grows. No local buffering. |
-| Repeated cluster-level failures | Circuit breaker per ES cluster (Resilience4j). Pipelines routing to that cluster pause; others proceed. |
-| Bulk request rejected with 401 / 403 | Configuration failure, not data failure: the pipeline pauses, retries with backoff, `kafkafim_auth_failures_total` and an alert fire. Nothing goes to the DLQ. |
+| ES returns 429 / 5xx / connection error or timeout for a bulk request | Retried with the same documents **forever**, exponential backoff with jitter (100ms doubling to 30s, ±50%); counts as a breaker failure. The pipeline's container is paused when in-flight bytes hit the budget. Kafka lag grows. No local buffering. Never DLQ. |
+| Repeated cluster-level failures | Circuit breaker per ES cluster (Resilience4j, shared by all identities and pipelines): count window of 20 requests, opens at ≥50% failures after at least 10, stays open 10s, then lets 2 probes through. While it is open every sender for that cluster waits; pipelines routing to that cluster pause, others proceed. |
+| Bulk request rejected with 401 / 403 | Configuration failure, not data failure: retried with backoff forever and reported through the sink listener (the supervisor pauses the pipeline; `kafkafim_auth_failures_total` and an alert fire). Not a breaker failure. Nothing goes to the DLQ. An **item** with 401/403 (the identity may not write that index) is handled the same way. |
+| Bulk request with any other unexpected status (a 400 for the whole request, a 404 from a proxy or a wrong path, a 3xx) or a 2xx body that is not a bulk response | Retried forever with backoff and logged with the body: it cannot be attributed to one document, so it never reaches the DLQ. An unexpected status is not a cluster-health signal and does not open the breaker; an unparsable 2xx body does. |
 | Bulk partial failure | Only failed items are retried; successful items are acked immediately. |
-| Non-retryable item error (400 family: `mapper_parsing_exception`, `strict_dynamic_mapping_exception`, `illegal_argument_exception`, `document_parsing_exception`) | DLQ immediately, partition continues. |
-| Retryable **item** error (e.g. `es_rejected_execution_exception` inside a 200 bulk response) exceeding `max-attempts`/`max-elapsed` | DLQ, partition continues. This is the poison-message bound. Request-level failures (connection errors, 5xx, request-level 429, breaker open, 401/403) are retried indefinitely and never count toward it; an ES outage produces lag, never DLQ records. |
-| Bulk request rejected with 413 | The request is split and retried; a single-document bulk that still gets 413 sends that document to the DLQ with `error.type=too_large`. |
-| Undecodable record, non-object element, unusable version, missing `_id`, bad timestamp, no matching route, unresolved index pattern | DLQ with the matching `error.type` (`decode`, `missing_id`, `bad_timestamp`, `no_route`, `unresolved_index`; `too_large` from the 413 row). |
+| Non-retryable item error: the 400 family (`mapper_parsing_exception`, `document_parsing_exception`, `strict_dynamic_mapping_exception`, `illegal_argument_exception` such as a missing ingest pipeline) and any other 4xx item not listed here | DLQ immediately with `error.type=es_error`, partition continues. |
+| Item 409 `version_conflict_engine_exception` | With an external version: `stale` (success) under `on-version-conflict: ignore`, DLQ `version_conflict` under `dlq`. For `op: create` without a version: an earlier attempt landed, so success. Otherwise `es_error`. |
+| Retryable **item** error (item 429 `es_rejected_execution_exception`, item 5xx, item 404 `index_not_found_exception`, any other unexpected item status) exceeding `max-attempts`/`max-elapsed` | The item goes back into the batcher after a backoff and travels in a later bulk; once it has failed `max-attempts` times, or `max-elapsed` after its first retryable failure, DLQ with `error.type=es_retries_exhausted`, partition continues. This is the poison-message bound. A missing index is a provisioning gap (ADR-0021) or a race with whoever creates the index, so it gets the bounded retry rather than an immediate DLQ or an unbounded stall. Request-level failures (connection errors, 5xx, request-level 429, breaker open, 401/403, unexpected statuses) are retried indefinitely and never count toward the bound; an ES outage produces lag, never DLQ records. |
+| Bulk request rejected with 413 | The request is split in halves and each half retried (recursively); a single-document bulk that still gets 413 sends that document to the DLQ with `error.type=too_large`. |
+| Undecodable record, non-object element, unusable version, missing `_id`, bad timestamp, no matching route, unresolved index pattern | DLQ with the matching `error.type` (`decode`, `missing_id`, `bad_timestamp`, `no_route`, `unresolved_index`). |
 | Missing topic, DLQ topic, or failed authentication at pipeline start | Pipeline stays stopped (`failed_preflight`), clear log naming resource and identity, alert. Other pipelines unaffected. kafkafim never creates the resource. |
 | DLQ produce fails | Block the partition and alert. Losing data is worse than lag. |
 | Kafka unavailable | Reconnect with backoff; `kafkafim_kafka_connected` gauge drops, alert. |
 | Pod SIGTERM | Spring graceful shutdown, higher phases first: Spring Kafka containers stop fetching, flush in-flight, commit and leave the group (phase MAX-100), then the web server drains (phase MAX-1024, instant for actuator-only traffic). `spring.lifecycle.timeout-per-shutdown-phase` (60s, `application.yaml`) bounds each phase; the consumer phase must fit the pod's `terminationGracePeriodSeconds` (90s, chart default). |
 
 Error classification lives in one table (`sink/es/ErrorClassifier`) and is
-unit-tested against captured ES responses, because it decides data loss versus stall.
+unit-tested against captured ES 8.19 responses (`src/test/resources/sink/es/`), because
+it decides data loss versus stall. The retry loop around it is the sink's own
+(ADR-0025); Resilience4j provides the breaker and the backoff intervals.
+
+**HTTP client defaults** (per `(cluster, identity)` client, not configurable in the MVP):
+connect timeout 5s; response (socket inactivity) timeout 60s, so a `max-bytes` bulk must
+be answered within it, and a timeout is a request-level retry; 30s to lease a pooled
+connection; 32 connections per node, 128 per client. Bulk requests carry
+`filter_path=errors,items.*.status,items.*.error`, so a successful response is a few
+bytes per item and parsing stops at `"errors": false`.
+
+**Ordering.** Retries can reorder writes of the same `_id` (an item retried after a
+later write of the same id succeeded, or two bulks in flight). Pipelines that need
+last-writer-wins use `document.version-field` (external versions).
 
 ## 8. No transformations
 
@@ -675,7 +718,9 @@ no extra credentials or network paths. Record layout:
 
 - key: original key
 - value: original value, byte-for-byte
-- headers: `kafkafim.pipeline`, `kafkafim.error.type`, `kafkafim.error.reason`
+- headers: `kafkafim.pipeline`, `kafkafim.error.type` (`decode`, `missing_id`,
+  `bad_timestamp`, `no_route`, `unresolved_index`, `es_error`, `es_retries_exhausted`,
+  `version_conflict`, `too_large`; section 7), `kafkafim.error.reason`
   (ES item error JSON, truncated to 4 KiB), `kafkafim.source.topic`,
   `kafkafim.source.partition`, `kafkafim.source.offset`, `kafkafim.target.cluster`,
   `kafkafim.target.index`, `kafkafim.attempts`, `kafkafim.first-failure-ts`,
@@ -777,7 +822,8 @@ Summary; see [TECH_STACK.md](TECH_STACK.md) and the ADRs.
   batch listener, manual out-of-order acks, cooperative-sticky, pause/resume.
 - **Elasticsearch low-level REST client** (ADR-0005): HTTP only, version-agnostic
   across the 8.x fleet; we build `_bulk` bodies and parse per-item results.
-- **Resilience4j** core for breaker and retry (ADR-0016). **Jackson 3** for JSON.
+- **Resilience4j** core for the breaker and backoff intervals (ADR-0016, ADR-0025).
+  **Jackson 3** for JSON.
 - Tests: JUnit 5 + Testcontainers (Kafka, Elasticsearch, Grafana LGTM); chaos cases
   (ADR-0019).
 
@@ -792,7 +838,7 @@ src/main/java/io/github/matabar/kafkafim/
   source/kafka/   consumer factories per cluster, container per pipeline, offset tracker
   decode/         object / array-of-objects decoding, field extraction (JSON pointer), timestamp parsing
   route/          condition evaluation, index pattern resolution
-  sink/es/        RestClient per cluster, bulk builder, item parser, error table, breaker
+  sink/es/        Rest5Client per (cluster, identity), batcher, bulk sender, body builder, item parser, error table, breaker
   dlq/            producer, record format
   telemetry/      meters, spans, health indicators, reload endpoint
 src/main/resources/application.yaml   defaults + local-dev sample pipeline

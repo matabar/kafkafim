@@ -15,7 +15,7 @@ Versions are the ones pinned at project creation (2026-11-07). Everything marked
 | Elasticsearch | `co.elastic.clients:elasticsearch-rest5-client` (low-level, HttpClient 5) | BOM (9.4.x). HTTP-only, no compatibility headers, works with 8.x | Version-agnostic; own bulk builder and per-item parsing | [0005](decisions/0005-elasticsearch-low-level-rest-client.md) |
 | JSON | Jackson 3 (`tools.jackson`) | BOM | Record decoding, array explosion, JSON-pointer field extraction, bulk item parsing | — |
 | Routing | Declarative rules + Logstash-style index patterns (own code, `DateTimeFormatter`) | — | No expression language in the MVP | [0009](decisions/0009-declarative-routing-no-expression-language.md) |
-| Resilience | `resilience4j-circuitbreaker`, `resilience4j-retry` | 2.3.0 | Per-ES-cluster breaker, per-item retry | [0016](decisions/0016-resilience4j-for-breaker-and-retry.md) |
+| Resilience | `resilience4j-circuitbreaker`, `resilience4j-retry` | 2.3.0 | Per-ES-cluster breaker and backoff intervals; the bulk retry loop itself is in the sink | [0016](decisions/0016-resilience4j-for-breaker-and-retry.md), [0025](decisions/0025-bulk-retry-loop-in-the-sink.md) |
 | Metrics | Micrometer → OTLP + Prometheus registry | BOM | OTLP to Elastic APM Server; `/actuator/prometheus` for free | [0013](decisions/0013-observability-otel-via-spring-boot.md) |
 | Tracing | Micrometer Tracing + OpenTelemetry bridge → OTLP | BOM (OTel 1.62) | Bulk-level spans, span links from Kafka headers | [0013](decisions/0013-observability-otel-via-spring-boot.md) |
 | Logs | Spring Boot structured logging (ECS JSON) | BOM | Native to the Elastic stack | [0013](decisions/0013-observability-otel-via-spring-boot.md) |
@@ -52,7 +52,7 @@ io.github.matabar.kafkafim
 ├── source/kafka/   consumer factories per cluster, container per pipeline, offset tracker
 ├── decode/         object / array-of-objects decoding, JSON-pointer field extraction, timestamp parsing
 ├── route/          condition evaluation, index pattern resolution
-├── sink/es/        RestClient per cluster, bulk body builder, item parser, error table, breaker
+├── sink/es/        Rest5Client per (cluster, identity), batcher + bulk sender, NDJSON body builder, item parser, error table, breaker per cluster
 ├── dlq/            producer, record format
 └── telemetry/      meters, spans, health indicators, reload endpoint
 ```
