@@ -138,3 +138,17 @@ tests:
           value: 1
       - notExists:
           path: spec.minAvailable
+
+  - it: falls back to the top-level pdb when a group sets an empty pdb
+    template: templates/pdb.yaml
+    values:
+      - ../ci/minimal-values.yaml
+    set:
+      pdb: { minAvailable: null, maxUnavailable: 1 }
+      groups.orders.pdb: {}
+    asserts:
+      - equal:
+          path: spec.maxUnavailable
+          value: 1
+      - notExists:
+          path: spec.minAvailable
