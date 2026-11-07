@@ -428,7 +428,17 @@ SPRING_CONFIG_IMPORT=configtree:/etc/kafkafim/secrets/
 
 `application-kafkafim.yaml` is a profile-specific file, so the `kafkafim` profile
 must be active for Spring Boot to load it; activating it also switches off the
-default `local` profile that carries the development sample.
+default `local` profile that carries the development sample. Two guards back this:
+the chart's unit tests assert that every rendered `Deployment` sets
+`SPRING_PROFILES_ACTIVE`, and the application refuses to start with the `local`
+profile active when `KUBERNETES_SERVICE_HOST` is set (a pod that lost its profile env
+would otherwise silently run the compose sample with inline secrets allowed).
+
+Config location failure mode: the image's default is
+`SPRING_CONFIG_ADDITIONAL_LOCATION=optional:/etc/kafkafim/config/` so that local runs
+and the CI smoke test start without a mount; the chart overrides it with the
+non-optional form, so a pod whose ConfigMap mount is missing fails at startup with
+`ConfigDataLocationNotFoundException` instead of running without pipelines.
 
 The pod template carries **no** config checksum annotation, so a `helm upgrade`
 that only changes pipelines updates the ConfigMap and pods hot-reload. Image,
@@ -454,7 +464,8 @@ agent all work. A changed secret file is picked up by the same reload path.
 ### 5.6 Validation and hot reload
 
 - **Startup**: binding failure or validation failure stops the pod with a clear
-  message; readiness never goes green.
+  message; readiness never goes green. The `local` profile active inside Kubernetes
+  (`KUBERNETES_SERVICE_HOST` set) is a validation failure.
 - **`validate` profile** (application feature, roadmap 0.2): started with
   `--spring.profiles.active=validate,kafkafim` and a rendered ConfigMap mounted, the
   application binds and validates, logs the pipeline summary, and exits 0/1 without

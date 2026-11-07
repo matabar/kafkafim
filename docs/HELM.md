@@ -83,7 +83,9 @@ For each `groups.<g>`:
   `SPRING_PROFILES_ACTIVE=kafkafim` (required: `application-kafkafim.yaml` is a
   profile-specific file, and the active profile also disables the default `local`
   profile that carries the development sample),
-  `SPRING_CONFIG_ADDITIONAL_LOCATION=/etc/kafkafim/config/`,
+  `SPRING_CONFIG_ADDITIONAL_LOCATION=/etc/kafkafim/config/` (deliberately **not**
+  `optional:`, overriding the image default, so a missing mount fails the pod at
+  startup rather than starting it without pipelines),
   `SPRING_CONFIG_IMPORT=configtree:/etc/kafkafim/secrets/`,
   `OTEL_EXPORTER_OTLP_ENDPOINT`, `JAVA_TOOL_OPTIONS`.
 - **No checksum annotation** on the pod template for the ConfigMap: pipeline edits
@@ -132,7 +134,8 @@ configtree secrets; the application's own properties all live under `kafkafim.*`
 
 - `charts/kafkafim/ci/*-values.yaml`: minimal, two-groups, hpa, network-policy.
 - `helm lint`, `helm template` + `kubeconform -strict`, `helm unittest` asserting the
-  pipeline-subset rendering and every `fail` condition.
+  pipeline-subset rendering, every `fail` condition, and that each `Deployment` sets
+  `SPRING_PROFILES_ACTIVE=kafkafim` and the non-optional config location.
 - Chart version and appVersion are set at release time from the git tag; in the repo
   they are `0.0.0-dev`.
 
