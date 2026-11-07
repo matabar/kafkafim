@@ -1,5 +1,7 @@
 package io.github.matabar.kafkafim;
 
+import static com.tngtech.archunit.core.domain.JavaClass.Predicates.resideInAPackage;
+import static com.tngtech.archunit.core.domain.JavaClass.Predicates.resideOutsideOfPackages;
 import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.classes;
 import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.noClasses;
 import static com.tngtech.archunit.library.dependencies.SlicesRuleDefinition.slices;
@@ -28,7 +30,7 @@ class ArchitectureTest {
   private static final String SINK = ROOT + ".sink..";
   private static final String SOURCE = ROOT + ".source..";
   private static final String DLQ = ROOT + ".dlq..";
-  private static final String SUPERVISOR = ROOT + ".supervisor..";
+  private static final String TELEMETRY = ROOT + ".telemetry..";
 
   /** The JDK and Jackson (data path), plus nullness annotations. */
   private static final String[] JDK_AND_JACKSON = {
@@ -87,38 +89,31 @@ class ArchitectureTest {
           .allowEmptyShould(true);
 
   @ArchTest
-  static final ArchRule sinkIsIndependentOfSourceDlqAndSupervisor =
-      noClasses()
-          .that()
-          .resideInAPackage(SINK)
-          .should()
-          .dependOnClassesThat()
-          .resideInAnyPackage(SOURCE, DLQ, SUPERVISOR)
-          .allowEmptyShould(true);
+  static final ArchRule sinkDependsOnlyOnConfigAndTelemetry = onlyConfigAndTelemetry(SINK);
 
   @ArchTest
-  static final ArchRule sourceIsIndependentOfSinkDlqAndSupervisor =
-      noClasses()
-          .that()
-          .resideInAPackage(SOURCE)
-          .should()
-          .dependOnClassesThat()
-          .resideInAnyPackage(SINK, DLQ, SUPERVISOR)
-          .allowEmptyShould(true);
+  static final ArchRule sourceDependsOnlyOnConfigAndTelemetry = onlyConfigAndTelemetry(SOURCE);
 
-  @ArchTest
-  static final ArchRule dlqIsIndependentOfSinkSourceAndSupervisor =
-      noClasses()
-          .that()
-          .resideInAPackage(DLQ)
-          .should()
-          .dependOnClassesThat()
-          .resideInAnyPackage(SINK, SOURCE, SUPERVISOR)
-          .allowEmptyShould(true);
+  @ArchTest static final ArchRule dlqDependsOnlyOnConfigAndTelemetry = onlyConfigAndTelemetry(DLQ);
 
   @ArchTest
   static final ArchRule topLevelPackagesAreFreeOfCycles =
       slices().matching(ROOT + ".(*)..").should().beFreeOfCycles().allowEmptyShould(true);
+
+  /**
+   * ADR-0003: {@code sink.es}, {@code source.kafka} and {@code dlq} use no kafkafim package but
+   * their own, {@code config} and {@code telemetry} (so not each other, {@code supervisor}, {@code
+   * route} or {@code decode}). Third-party libraries are unrestricted.
+   */
+  private static ArchRule onlyConfigAndTelemetry(String layer) {
+    return noClasses()
+        .that()
+        .resideInAPackage(layer)
+        .should()
+        .dependOnClassesThat(
+            resideInAPackage(ROOT + "..").and(resideOutsideOfPackages(layer, CONFIG, TELEMETRY)))
+        .allowEmptyShould(true);
+  }
 
   private static String[] concat(String[]... groups) {
     return Arrays.stream(groups).flatMap(Arrays::stream).toArray(String[]::new);
