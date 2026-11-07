@@ -28,4 +28,5 @@ One file per decision, MADR-style. Supersede with a new ADR rather than editing 
 | [0022](0022-delivery-github-actions-ghcr-airgap.md) | Delivery via GitHub Actions and GHCR; signed, versioned air-gap bundles |
 | [0023](0023-helm-chart-one-release-per-cluster.md) | One Helm chart, one release per Kubernetes cluster, groups rendered as Deployments |
 | [0024](0024-google-java-style.md) | Google Java Style, enforced by Spotless and Checkstyle |
-| [0025](0025-bulk-retry-loop-in-the-sink.md) | Bulk retries are a small loop in the sink; Resilience4j supplies the breaker and the backoff (refines 0016) |
+| [0025](0025-own-offset-tracker-instead-of-async-acks.md) | Own per-partition offset tracker instead of spring-kafka `asyncAcks` (supersedes that part of 0004) |
+| [0026](0026-bulk-retry-loop-in-the-sink.md) | Bulk retries are a small loop in the sink; Resilience4j supplies the breaker and the backoff (refines 0016) |

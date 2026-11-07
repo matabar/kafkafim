@@ -124,7 +124,7 @@ preferred anti-affinity across nodes and zones, `maxSurge: 1, maxUnavailable: 0`
 
 ```
  for each pipeline in the group:
-   spring-kafka listener container (batch listener, manual out-of-order acks,
+   spring-kafka listener container (batch listener, own out-of-order offset tracker,
    cooperative-sticky, concurrency ≤ partitions)
       │ batches of records (bounded by max in-flight bytes)
       ▼
@@ -179,14 +179,27 @@ offset acks or DLQ records; the sink knows nothing about Kafka.
 - Offsets are committed only after every document from that record has been acked by
   ES or written to the DLQ. A record that explodes into 50 documents is committed
   when all 50 are done.
-- Per-partition tracker: completed offsets are recorded as they ack (bulks complete
-  out of order); the container's out-of-order acknowledgement mode commits the
-  highest offset such that all lower offsets are complete. Commit cadence: every
-  `commit-interval` (default 1s) and on revoke/shutdown.
-- Rebalance safety: cooperative-sticky assignor; on revoke we flush or abandon
-  in-flight batches for the revoked partitions and commit what completed. Anything
+- Per-partition tracker (`source/kafka/OffsetTracker`, ADR-0025): completed records are
+  recorded as they ack (bulks complete out of order); the committed offset is the lowest
+  incomplete offset of the partition, or one past the highest delivered offset when none
+  is incomplete. spring-kafka's `asyncAcks` is not used: it pauses the consumer after
+  every poll until that poll is fully acked. A multi-document record declares its part
+  count (`SourceRecord.expectParts`) and is complete when every part is; an empty array
+  declares zero parts and is committable at once.
+- Commit cadence: before a poll once `commit-interval` (default 1s) elapsed, also while
+  paused or idle (the poll timeout is at most `commit-interval`); synchronously on
+  revoke; and on shutdown. Commits run only on the consumer thread that owns the
+  partition.
+- Rebalance safety: cooperative-sticky assignor; on revoke the supervisor is told first
+  (to flush or abandon in-flight batches for the revoked partitions), then what completed
+  is committed and the partition's remaining records are abandoned: their late
+  completions are ignored. On partition loss nothing is committed. Tracker state belongs to
+  one consumer's assignment, so a late loss callback on a consumer that was replaced by
+  another consumer of the same pod never drops the new owner's state. Anything
   uncommitted is re-delivered to the new owner. Because `_id` is deterministic,
   re-delivery is harmless.
+- Records whose value exceeds `max-record-bytes` are handed over flagged as oversize and
+  are never decoded; the supervisor sends them to the DLQ.
 - `offset-reset`: `latest` by default (production migration), `earliest` configurable.
 
 ### 4.4 Idempotence details
@@ -322,7 +335,7 @@ kafkafim:
               keystore-location: /etc/kafkafim/secrets/kafka/prod-a.platform-cert/keystore.p12
               keystore-password: ${kafka.prod-a.platform-cert.keystore-password}
         default-identity: platform-cert      # optional; used when a pipeline names none
-        properties: {}                       # passthrough to kafka-clients
+        properties: {}                       # passthrough to kafka-clients (keys kafkafim owns are rejected)
   elasticsearch:
     clusters:
       search-eu:
@@ -347,6 +360,23 @@ kafkafim:
           in-flight: 4
         compression: true
 ```
+
+A Kafka cluster's `properties` are passed to kafka-clients under kafkafim's own
+consumer settings (`source/kafka/ConsumerSettings`). A key kafkafim owns is rejected when
+the pipeline's consumer factory is built, naming the key but never its value:
+`bootstrap.servers`, `security.protocol`, `group.id`, `group.instance.id`,
+`group.protocol` (always `classic`, which the cooperative-sticky assignor needs),
+`client.id` (`kafkafim-<pipeline>-<n>`), `enable.auto.commit` (always `false`),
+`auto.offset.reset` and `max.poll.records` (from the `source` block), the key and value
+deserializers (always byte arrays), `partition.assignment.strategy` (always
+`CooperativeStickyAssignor`) and `allow.auto.create.topics` (always `false`, ADR-0021).
+The security keys kafkafim derives from the cluster's `ssl` block and the identity's
+`sasl`/`ssl` blocks (`ssl.truststore.*`, `ssl.keystore.*`, `ssl.key.password`,
+`sasl.mechanism`, and `sasl.jaas.config` for `PLAIN`/`SCRAM-*`) are rejected only when
+that block sets them, so GSSAPI or OAUTHBEARER can still bring their JAAS settings
+through `properties`. Everything else (fetch sizes, timeouts, `isolation.level`, …)
+passes through. Consumer factories are cached per `(cluster, identity)`; every
+pipeline's container creates its own consumers.
 
 ### 5.2 Pipelines
 
@@ -677,7 +707,7 @@ are reported together:
 
 | Situation | Behaviour |
 |---|---|
-| ES returns 429 / 5xx / connection error or timeout for a bulk request | Retried with the same documents **forever**, exponential backoff with jitter (100ms doubling to 30s, ±50%); counts as a breaker failure. The pipeline's container is paused when in-flight bytes hit the budget. Kafka lag grows. No local buffering. Never DLQ. |
+| ES returns 429 / 5xx / connection error or timeout for a bulk request | Retried with the same documents **forever**, exponential backoff with jitter (100ms doubling to 30s, ±50%); counts as a breaker failure. The pipeline's container is paused when in-flight bytes (key + value of every delivered, incomplete record) reach `max-in-flight-bytes`, and resumes once they drop to half of it. A poll that crosses the budget is delivered whole, so the overshoot is at most one poll per consumer. Kafka lag grows. No local buffering. Never DLQ. |
 | Repeated cluster-level failures | Circuit breaker per ES cluster (Resilience4j, shared by all identities and pipelines): count window of 20 requests, opens at ≥50% failures after at least 10, stays open 10s, then lets 2 probes through. While it is open every sender for that cluster waits; pipelines routing to that cluster pause, others proceed. |
 | Bulk request rejected with 401 / 403 | Configuration failure, not data failure: retried with backoff forever and reported through the sink listener (the supervisor pauses the pipeline; `kafkafim_auth_failures_total` and an alert fire). Not a breaker failure. Nothing goes to the DLQ. An **item** with 401/403 (the identity may not write that index) is handled the same way. |
 | Bulk request with any other unexpected status (a 400 for the whole request, a 404 from a proxy or a wrong path, a 3xx) or a 2xx body that is not a bulk response | Retried forever with backoff and logged with the body: it cannot be attributed to one document, so it never reaches the DLQ. An unexpected status is not a cluster-health signal and does not open the breaker; an unparsable 2xx body does. |
@@ -690,13 +720,13 @@ are reported together:
 | Undecodable record, non-object element, unusable version, missing `_id`, bad timestamp, no matching route, unresolved index pattern | DLQ with the matching `error.type` (`decode`, `missing_id`, `bad_timestamp`, `no_route`, `unresolved_index`). |
 | Missing topic, DLQ topic, or failed authentication at pipeline start | Pipeline stays stopped (`failed_preflight`), clear log naming resource and identity, alert. Other pipelines unaffected. kafkafim never creates the resource. |
 | DLQ produce fails | Block the partition and alert. Losing data is worse than lag. |
-| Kafka unavailable | Reconnect with backoff; `kafkafim_kafka_connected` gauge drops, alert. |
-| Pod SIGTERM | Spring graceful shutdown, higher phases first: Spring Kafka containers stop fetching, flush in-flight, commit and leave the group (phase MAX-100), then the web server drains (phase MAX-1024, instant for actuator-only traffic). `spring.lifecycle.timeout-per-shutdown-phase` (60s, `application.yaml`) bounds each phase; the consumer phase must fit the pod's `terminationGracePeriodSeconds` (90s, chart default). |
+| Kafka unavailable | Reconnect with backoff (kafka-clients); `kafkafim_kafka_connected` gauge drops, alert. A Kafka authentication or authorization failure after start is retried every 10s instead of stopping the consumer. |
+| Pod SIGTERM | Spring graceful shutdown, higher phases first: each pipeline's Kafka source (phase MAX-100, all pipelines in parallel) pauses fetching, gives in-flight records up to 30s to complete, then stops its container (10s), which commits what completed on revoke and leaves the group; records still incomplete are re-delivered to the next owner, then the web server drains (phase MAX-1024, instant for actuator-only traffic). `spring.lifecycle.timeout-per-shutdown-phase` (60s, `application.yaml`) bounds each phase; the consumer phase must fit the pod's `terminationGracePeriodSeconds` (90s, chart default). |
 
 Error classification lives in one table (`sink/es/ErrorClassifier`) and is
 unit-tested against captured ES 8.19 responses (`src/test/resources/sink/es/`), because
 it decides data loss versus stall. The retry loop around it is the sink's own
-(ADR-0025); Resilience4j provides the breaker and the backoff intervals.
+(ADR-0026); Resilience4j provides the breaker and the backoff intervals.
 
 **HTTP client defaults** (per `(cluster, identity)` client, not configurable in the MVP):
 connect timeout 5s; response (socket inactivity) timeout 60s, so a `max-bytes` bulk must
@@ -757,7 +787,11 @@ lag under a replay pipeline is the unresolved-backlog number.
 Spring Boot's OpenTelemetry starter: Micrometer → OTLP (APM Server) plus
 `/actuator/prometheus`; Micrometer Tracing with the OTel bridge → OTLP. APM Server
 (or later an OpenTelemetry Collector) pre-exists in production; switching between
-them is only the `OTEL_EXPORTER_OTLP_ENDPOINT` value in the chart.
+them is only the `OTEL_EXPORTER_OTLP_ENDPOINT` value in the chart. Export headers reach
+both exporters: non-secret ones through `OTEL_EXPORTER_OTLP_HEADERS` (mapped by Spring
+Boot), secret ones (the APM Server token) as `configtree` files the chart mounts at the
+exporters' `headers` property paths (`otel.secretHeaders`, [HELM.md](HELM.md)). Header
+secrets are read at startup; rotating one needs a pod restart.
 
 ### Metrics (all with `pipeline`, `kafka_cluster`; `topic`/`es_cluster`/`route` where it applies)
 
@@ -808,7 +842,8 @@ pipeline it serves.
 ## 11. Security
 
 - Secrets only via mounted `Secret`s imported as `configtree`; inline secret values
-  fail validation outside local development.
+  fail validation outside local development. This includes the OTLP export token
+  (`otel.secretHeaders`, §10).
 - TLS everywhere, custom CA per cluster. Named identities (Kafka: SASL/mTLS;
   Elasticsearch: API key, basic, mTLS) referenced per consumer group, DLQ producer
   and route, so Kafka ACLs and ES roles can be scoped per pipeline and per role.
@@ -825,10 +860,11 @@ Summary; see [TECH_STACK.md](TECH_STACK.md) and the ADRs.
   Actuator probes, OpenTelemetry starter, Kafka integration, graceful shutdown,
   Docker Compose and Testcontainers support.
 - **spring-kafka programmatic listener containers** (ADR-0004): one per pipeline,
-  batch listener, manual out-of-order acks, cooperative-sticky, pause/resume.
+  batch listener, cooperative-sticky, pause/resume; kafkafim's own out-of-order offset
+  tracker (ADR-0025).
 - **Elasticsearch low-level REST client** (ADR-0005): HTTP only, version-agnostic
   across the 8.x fleet; we build `_bulk` bodies and parse per-item results.
-- **Resilience4j** core for the breaker and backoff intervals (ADR-0016, ADR-0025).
+- **Resilience4j** core for the breaker and backoff intervals (ADR-0016, ADR-0026).
   **Jackson 3** for JSON.
 - Tests: JUnit 5 + Testcontainers (Kafka, Elasticsearch, Grafana LGTM); chaos cases
   (ADR-0019).

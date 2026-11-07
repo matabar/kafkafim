@@ -27,6 +27,9 @@ management:
         enabled: true
       show-components: always
       show-details: when-authorized
+  # OTLP export headers are not set here. Spring Boot maps OTEL_EXPORTER_OTLP_HEADERS onto
+  # both exporters' headers maps, and the chart mounts secret headers (otel.secretHeaders)
+  # as configtree files at those maps' property paths (docs/HELM.md).
   otlp:
     metrics:
       export:

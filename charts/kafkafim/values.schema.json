@@ -9,6 +9,11 @@
       "type": "object",
       "additionalProperties": { "type": "string" }
     },
+    "httpHeaderName": {
+      "description": "Letters, digits and '-': a valid HTTP header name that is also a safe file name and configtree property key.",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9-]*$"
+    },
     "resources": {
       "type": "object",
       "additionalProperties": false,
@@ -142,7 +147,26 @@
       "required": ["endpoint"],
       "properties": {
         "endpoint": { "type": "string", "minLength": 1 },
-        "headers": { "$ref": "#/definitions/stringMap" }
+        "headers": {
+          "description": "Non-secret OTLP export headers, header name -> value.",
+          "type": "object",
+          "propertyNames": { "$ref": "#/definitions/httpHeaderName" },
+          "additionalProperties": { "type": "string" }
+        },
+        "secretHeaders": {
+          "description": "Secret OTLP export headers, header name -> key of an existing Secret.",
+          "type": "object",
+          "propertyNames": { "$ref": "#/definitions/httpHeaderName" },
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["secretName", "key"],
+            "properties": {
+              "secretName": { "type": "string", "minLength": 1 },
+              "key": { "type": "string", "minLength": 1 }
+            }
+          }
+        }
       }
     },
     "jvm": {

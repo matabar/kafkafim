@@ -1,4 +1,4 @@
-# ADR-0025: Bulk retries are a small loop in the sink; Resilience4j supplies the breaker and the backoff
+# ADR-0026: Bulk retries are a small loop in the sink; Resilience4j supplies the breaker and the backoff
 
 Status: accepted · Date: 2026-11-07 · Refines [ADR-0016](0016-resilience4j-for-breaker-and-retry.md)
 

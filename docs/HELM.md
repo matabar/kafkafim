@@ -55,7 +55,8 @@ groups:
 
 otel:
   endpoint: http://apm-server.observability:8200   # OTLP/HTTP; a Collector later is just a new URL
-  headers: {}                                       # e.g. Authorization from a Secret via envFrom
+  headers: {}                                       # non-secret, e.g. { x-tenant: kafkafim }
+  secretHeaders: {}                                 # e.g. { Authorization: { secretName: apm-server-token, key: authorization } }
 
 jvm:
   options: "-XX:MaxRAMPercentage=75 -XX:+ExitOnOutOfMemoryError"
@@ -111,8 +112,19 @@ For each `groups.<g>`:
 - `NetworkPolicy` (opt-in) is ingress-only: TCP 8080 from `networkPolicy.allowFrom`
   (default: pods in the release namespace). Egress is not restricted. An empty
   `allowFrom` list means any source, as in Kubernetes.
-- `otel.headers` (non-secret) render as `OTEL_EXPORTER_OTLP_HEADERS=k=v,…`; secret
-  headers come from a Secret through `extraEnv[].valueFrom` or `extraEnvFrom`.
+- OTLP export headers reach both the metrics and the trace exporter:
+  - `otel.headers` (non-secret) render as `OTEL_EXPORTER_OTLP_HEADERS=k=v,…`, with `%`
+    and `,` in values percent-encoded. Spring Boot 4.1 maps that variable itself to
+    `management.otlp.metrics.export.headers.*` and
+    `management.opentelemetry.tracing.export.otlp.headers.*` (and the OTLP logging
+    headers); the application adds no code for it.
+  - `otel.secretHeaders` (header name → `secretName` + `key` of an existing Secret)
+    render one projected volume `otel-secret-headers`, one file per header named after
+    it, mounted read-only at both
+    `/etc/kafkafim/secrets/management/otlp/metrics/export/headers/` and
+    `/etc/kafkafim/secrets/management/opentelemetry/tracing/export/otlp/headers/`. The
+    configtree import turns each file into an entry of the exporter's headers map. Only
+    the Secret name and key appear in the rendered manifests.
 
 ## Template-time validation (`fail` in templates, plus `values.schema.json`)
 
@@ -134,9 +146,19 @@ For each `groups.<g>`:
   chart fails rather than truncate, which could make two groups collide).
 - `podLabels` does not set a selector label (`app.kubernetes.io/name`, `instance`,
   `component`).
+- No `secrets[].mountPath` is at or below `/etc/kafkafim/secrets/management`, which is
+  reserved for `otel.secretHeaders`.
+- No OTLP header is in both `otel.headers` and `otel.secretHeaders`, and
+  `otel.secretHeaders` does not name one header twice (header names compare
+  case-insensitively). Header names are letters, digits and `-` (schema).
 - `extraEnv` does not redefine a variable the chart sets (the `SPRING_*` triple,
-  `OTEL_EXPORTER_OTLP_ENDPOINT`, `JAVA_TOOL_OPTIONS`, and
-  `OTEL_EXPORTER_OTLP_HEADERS` when `otel.headers` is set).
+  `OTEL_EXPORTER_OTLP_ENDPOINT`, `JAVA_TOOL_OPTIONS`,
+  and `OTEL_EXPORTER_OTLP_HEADERS` / `_METRICS_HEADERS` / `_TRACES_HEADERS` when
+  `otel.headers` or `otel.secretHeaders` is set: Boot maps those variables into a
+  property source that wins over configtree, so they would silently replace the
+  chart's headers).
+  `extraEnvFrom` cannot be checked (the chart does not see inside the referenced
+  Secret or ConfigMap): do not put these variables there either.
 
 `values.schema.json` checks the shape only (types, required keys, no unknown keys,
 group names are DNS labels); the cross-field rules above are `fail` calls in
@@ -172,6 +194,37 @@ through `configtree:/etc/kafkafim/secrets/`. Identity definitions reference them
 
 The top-level `kafka.*` and `elasticsearch.*` property namespaces are reserved for
 configtree secrets; the application's own properties all live under `kafkafim.*`.
+`/etc/kafkafim/secrets/management/` belongs to the chart's `otel.secretHeaders`
+mounts (below).
+
+### Secret OTLP headers (APM Server token)
+
+APM Server authenticates OTLP with `Authorization: Bearer <secret_token>` or
+`Authorization: ApiKey <base64 id:key>`. Store the **whole header value** in a Secret
+and point `otel.secretHeaders` at it:
+
+```bash
+kubectl create secret generic apm-server-token \
+  --from-literal=authorization="Bearer $APM_SECRET_TOKEN"
+```
+
+```yaml
+otel:
+  endpoint: https://apm-server.observability:8200
+  secretHeaders:
+    Authorization:
+      secretName: apm-server-token
+      key: authorization
+```
+
+Both the OTLP metrics and trace export requests then carry the header. The value is
+read once at startup: after rotating the Secret, restart the pods
+(`kubectl rollout restart deployment -l app.kubernetes.io/instance=<release>`). Do not
+put a token in `otel.headers`, which renders into the Deployment, and prefer
+`otel.secretHeaders` over an `extraEnv` `OTEL_EXPORTER_OTLP_HEADERS` from a
+`secretKeyRef` (DESIGN §11: secrets arrive as mounted files, not environment
+variables). `OtlpExportHeadersIntegrationTest` proves the contract
+against the real application.
 
 ## Chart testing
 
@@ -190,3 +243,4 @@ configtree secrets; the application's own properties all live under `kafkafim.*`
 - Moving a pipeline between groups changes nothing in Kafka (same `group-id`).
 - Secret rotation: update the `Secret`; kubelet refreshes the mounted files; the
   application reloads the identities that changed and restarts only their pipelines.
+  OTLP header Secrets (`otel.secretHeaders`) are the exception: restart the pods.

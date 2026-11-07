@@ -84,6 +84,60 @@ tests:
           value:
             - secretRef: { name: apm-token }
 
+  - it: percent-encodes "%" and "," in otel.headers values
+    values:
+      - ../ci/two-groups-values.yaml
+    set:
+      otel.headers: { x-tenant: "a,b%c" }
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content: { name: OTEL_EXPORTER_OTLP_HEADERS, value: "x-tenant=a%2Cb%25c" }
+
+  - it: mounts otel.secretHeaders as one projected volume at both exporter header paths
+    values:
+      - ../ci/two-groups-values.yaml
+    set:
+      otel.secretHeaders:
+        Authorization: { secretName: apm-server-token, key: authorization }
+        X-Api-Key: { secretName: other-secret, key: api-key }
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: otel-secret-headers
+            mountPath: /etc/kafkafim/secrets/management/otlp/metrics/export/headers
+            readOnly: true
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: otel-secret-headers
+            mountPath: /etc/kafkafim/secrets/management/opentelemetry/tracing/export/otlp/headers
+            readOnly: true
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: otel-secret-headers
+            projected:
+              sources:
+                - secret:
+                    name: apm-server-token
+                    items:
+                      - { key: authorization, path: Authorization }
+                - secret:
+                    name: other-secret
+                    items:
+                      - { key: api-key, path: X-Api-Key }
+
+  - it: renders no otel-secret-headers volume when otel.secretHeaders is empty
+    values:
+      - ../ci/two-groups-values.yaml
+    asserts:
+      - notContains:
+          path: spec.template.spec.volumes
+          content: { name: otel-secret-headers }
+          any: true
+
   - it: image reference uses image.registry
     values:
       - ../ci/two-groups-values.yaml
