@@ -56,4 +56,5 @@ are dead-lettered late or replayed:
 - The DLQ writer already implements the timestamp and header rules
   (`dlq/DlqRecordFormat`). Reading `kafkafim.source.timestamp` as the ingest time of a
   replay pipeline is not implemented yet; it belongs to the supervisor slice, which
-  wires sources to pipelines.
+  wires sources to pipelines. That slice also settles how a pipeline is recognised as
+  consuming a DLQ topic (for example, per record by the presence of the header).

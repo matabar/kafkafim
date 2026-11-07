@@ -267,7 +267,8 @@ defaults to CE, so `yyyy` works and `02-30` fails). A pattern without an offset 
 zone is read as **UTC**, one without any time field as midnight; a time that cannot
 resolve (`hh` without `a`) or a pattern that yields no date fails. Era text is
 `CE`/`BCE` under `Locale.ROOT`. Every format rejects instants outside years 1 to 9999. "Ingest time" is the
-Kafka record timestamp.
+Kafka record timestamp (for a replayed DLQ record, its `kafkafim.source.timestamp`; §9,
+ADR-0027).
 
 ### 4.6 No provisioning, fail-fast verification
 
