@@ -1,0 +1,154 @@
+suite: PodDisruptionBudget, Service, HPA, ServiceAccount
+release:
+  name: kafkafim
+tests:
+  - it: renders a PodDisruptionBudget per group (minAvailable 1 by default)
+    values:
+      - ../ci/hpa-values.yaml
+    template: templates/pdb.yaml
+    asserts:
+      - hasDocuments:
+          count: 2
+      - isKind:
+          of: PodDisruptionBudget
+      - isAPIVersion:
+          of: policy/v1
+      - equal:
+          path: spec.minAvailable
+          value: 1
+        documentSelector: { path: metadata.name, value: kafkafim-orders }
+      - equal:
+          path: spec.maxUnavailable
+          value: 1
+        documentSelector: { path: metadata.name, value: kafkafim-audit }
+      - notExists:
+          path: spec.minAvailable
+        documentSelector: { path: metadata.name, value: kafkafim-audit }
+      - equal:
+          path: spec.selector.matchLabels["app.kubernetes.io/component"]
+          value: orders
+        documentSelector: { path: metadata.name, value: kafkafim-orders }
+
+  - it: renders an actuator Service per group on port 8080
+    values:
+      - ../ci/hpa-values.yaml
+    template: templates/service.yaml
+    asserts:
+      - hasDocuments:
+          count: 2
+      - isKind:
+          of: Service
+      - equal:
+          path: spec.ports
+          value:
+            - { name: http, port: 8080, targetPort: http, protocol: TCP }
+      - equal:
+          path: spec.selector
+          value:
+            app.kubernetes.io/name: kafkafim
+            app.kubernetes.io/instance: kafkafim
+            app.kubernetes.io/component: audit
+        documentIndex: 0
+
+  - it: renders an autoscaling/v2 CPU HPA only for groups that enable it
+    values:
+      - ../ci/hpa-values.yaml
+    template: templates/hpa.yaml
+    asserts:
+      - hasDocuments:
+          count: 1
+      - isKind:
+          of: HorizontalPodAutoscaler
+      - isAPIVersion:
+          of: autoscaling/v2
+      - equal:
+          path: metadata.name
+          value: kafkafim-orders
+      - equal:
+          path: spec.scaleTargetRef
+          value: { apiVersion: apps/v1, kind: Deployment, name: kafkafim-orders }
+      - equal:
+          path: spec.minReplicas
+          value: 2
+      - equal:
+          path: spec.maxReplicas
+          value: 12
+      - equal:
+          path: spec.metrics
+          value:
+            - type: Resource
+              resource:
+                name: cpu
+                target: { type: Utilization, averageUtilization: 70 }
+
+  - it: renders no HPA when no group enables autoscaling
+    template: templates/hpa.yaml
+    values:
+      - ../ci/two-groups-values.yaml
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: renders one ServiceAccount without token automount
+    values:
+      - ../ci/hpa-values.yaml
+    template: templates/serviceaccount.yaml
+    asserts:
+      - hasDocuments:
+          count: 1
+      - equal:
+          path: metadata.name
+          value: kafkafim
+      - equal:
+          path: automountServiceAccountToken
+          value: false
+
+  - it: names resources after the release when it is not called kafkafim
+    values:
+      - ../ci/hpa-values.yaml
+    template: templates/deployment.yaml
+    release:
+      name: ingest
+    asserts:
+      - equal:
+          path: metadata.name
+          value: ingest-kafkafim-audit
+        documentIndex: 0
+
+  - it: keeps a group minAvailable of 0
+    template: templates/pdb.yaml
+    values:
+      - ../ci/minimal-values.yaml
+    set:
+      groups.orders.pdb: { minAvailable: 0 }
+    asserts:
+      - equal:
+          path: spec.minAvailable
+          value: 0
+
+  - it: uses a top-level maxUnavailable without nulling the default minAvailable
+    template: templates/pdb.yaml
+    values:
+      - ../ci/minimal-values.yaml
+    set:
+      pdb.maxUnavailable: 1
+    asserts:
+      - equal:
+          path: spec.maxUnavailable
+          value: 1
+      - notExists:
+          path: spec.minAvailable
+
+  - it: falls back to the top-level pdb when a group sets an empty pdb
+    template: templates/pdb.yaml
+    values:
+      - ../ci/minimal-values.yaml
+    set:
+      pdb: { minAvailable: null, maxUnavailable: 1 }
+      groups.orders.pdb: {}
+    asserts:
+      - equal:
+          path: spec.maxUnavailable
+          value: 1
+      - notExists:
+          path: spec.minAvailable

@@ -1,0 +1,32 @@
+# NetworkPolicy on, scrape allowed from the monitoring namespace; topology spread off.
+config:
+  kafkafim:
+    kafka:
+      clusters:
+        prod-a:
+          bootstrap-servers: [kafka-a-1:9093]
+    elasticsearch:
+      clusters:
+        search-eu:
+          uris: [https://es-eu-1:9200]
+    pipelines:
+      orders:
+        source: { cluster: prod-a, topics: [orders.v2] }
+        routes:
+          - { default: true, cluster: search-eu, index: orders }
+
+groups:
+  orders:
+    pipelines: [orders]
+    replicas: 2
+
+networkPolicy:
+  enabled: true
+  allowFrom:
+    - podSelector: {}
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: monitoring
+
+topologySpread:
+  enabled: false

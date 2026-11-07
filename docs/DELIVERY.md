@@ -44,7 +44,7 @@ Helm distribution model and is what `helm pull`/`helm push` and `skopeo` underst
 |---|---|
 | `build` | `./mvnw verify`: compile, unit tests (Surefire defaults minus `*IntegrationTest`), integration tests (Failsafe, `*IntegrationTest`, Testcontainers Kafka + Elasticsearch), ArchUnit package-boundary tests. Uploads test reports and the jar. |
 | `image` | The Dockerfile builds from the tested jar (no push); `hadolint` on the Dockerfile; the container starts read-only and answers `/actuator/health/liveness` within 60 s. |
-| `helm` | `helm lint`, `helm template` with every `charts/kafkafim/ci/*-values.yaml`, `kubeconform` against Kubernetes schemas, `helm unittest` for the group-rendering logic. Skipped until the chart exists. |
+| `helm` | `helm lint`, `helm template` with every `charts/kafkafim/ci/*-values.yaml`, `kubeconform -strict` (v0.8.0) against Kubernetes schemas, `helm unittest` (helm-unittest 1.2.1) for the group-rendering logic and every template-time `fail`. Helm is pinned (`azure/setup-helm` `version:`, currently v4.3.1, the same in `release.yml`); Helm 4 refuses unsigned plugin sources, so the git-tag install of helm-unittest passes `--verify=false`. Skipped until the chart exists. |
 
 Branch protection on `main`: PR required, all three jobs required, squash merge.
 Dependabot (weekly, grouped) for Maven, GitHub Actions and the Docker base image.

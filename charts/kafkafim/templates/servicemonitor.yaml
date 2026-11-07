@@ -1,0 +1,24 @@
+{{- include "kafkafim.validate" . -}}
+{{- if .Values.serviceMonitor.enabled }}
+# Opt-in: needs the Prometheus Operator CRD. Selects every group's Service.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "kafkafim.fullname" . }}
+  labels:
+    {{- include "kafkafim.labels" . | nindent 4 }}
+    {{- with .Values.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "kafkafim.selectorLabels" . | nindent 6 }}
+  namespaceSelector:
+    matchNames:
+      - {{ .Release.Namespace }}
+  endpoints:
+    - port: http
+      path: /actuator/prometheus
+      interval: {{ .Values.serviceMonitor.interval }}
+{{- end }}

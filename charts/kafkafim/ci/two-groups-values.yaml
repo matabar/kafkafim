@@ -1,0 +1,77 @@
+# A dedicated group for a big topic and a shared group for small ones; each group's
+# ConfigMap must carry only its own pipelines.
+image:
+  registry: registry.internal/kafkafim
+  tag: 1.2.3
+  pullSecrets:
+    - name: internal-registry
+
+config:
+  kafkafim:
+    kafka:
+      clusters:
+        prod-a:
+          bootstrap-servers: [kafka-a-1:9093]
+          security-protocol: SASL_SSL
+          identities:
+            orders-reader:
+              sasl:
+                mechanism: SCRAM-SHA-256
+                username: ${kafka.prod-a.orders-reader.username}
+                password: ${kafka.prod-a.orders-reader.password}
+            platform-reader:
+              sasl:
+                mechanism: SCRAM-SHA-256
+                username: ${kafka.prod-a.platform-reader.username}
+                password: ${kafka.prod-a.platform-reader.password}
+    elasticsearch:
+      clusters:
+        search-eu:
+          uris: [https://es-eu-1:9200]
+          identities:
+            ingest-api-key:
+              api-key: ${elasticsearch.search-eu.ingest-api-key.api-key}
+          default-identity: ingest-api-key
+    pipelines:
+      orders:
+        source: { cluster: prod-a, topics: [orders.v2], identity: orders-reader }
+        routes:
+          - { default: true, cluster: search-eu, index: "orders-%{+yyyy.MM}" }
+      audit:
+        source: { cluster: prod-a, topics: [audit.events], identity: platform-reader }
+        routes:
+          - { default: true, cluster: search-eu, index: "audit-%{+yyyy.MM.dd}" }
+      iam:
+        source: { cluster: prod-a, topics: [iam.changes], identity: platform-reader }
+        routes:
+          - { default: true, cluster: search-eu, index: iam }
+
+secrets:
+  - name: kafka-prod-a-orders-reader
+    mountPath: /etc/kafkafim/secrets/kafka/prod-a.orders-reader
+  - name: kafka-prod-a-platform-reader
+    mountPath: /etc/kafkafim/secrets/kafka/prod-a.platform-reader/
+  - name: es-search-eu-ingest-api-key
+    mountPath: /etc/kafkafim/secrets/elasticsearch/search-eu.ingest-api-key
+
+groups:
+  orders:
+    pipelines: [orders]
+    replicas: 6
+    resources:
+      requests: { cpu: "1", memory: 1Gi }
+      limits: { memory: 2Gi }
+    nodeSelector:
+      workload: ingest
+    tolerations:
+      - { key: dedicated, operator: Equal, value: ingest, effect: NoSchedule }
+  small:
+    pipelines: [audit, iam]
+    replicas: 2
+    podAnnotations:
+      team: platform
+
+otel:
+  endpoint: http://otel-collector.observability:4318
+  headers:
+    x-tenant: kafkafim

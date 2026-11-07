@@ -1,0 +1,338 @@
+suite: per-group Deployment
+templates:
+  - templates/deployment.yaml
+release:
+  name: kafkafim
+tests:
+  - it: renders one Deployment per group, named kafkafim-<group>
+    values:
+      - ../ci/two-groups-values.yaml
+    asserts:
+      - hasDocuments:
+          count: 2
+      - isKind:
+          of: Deployment
+      - equal:
+          path: metadata.name
+          value: kafkafim-orders
+        documentIndex: 0
+      - equal:
+          path: metadata.name
+          value: kafkafim-small
+        documentIndex: 1
+
+  - it: every Deployment activates the kafkafim profile
+    values:
+      - ../ci/two-groups-values.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: SPRING_PROFILES_ACTIVE
+            value: kafkafim
+
+  - it: every Deployment sets the non-optional config location
+    values:
+      - ../ci/two-groups-values.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: SPRING_CONFIG_ADDITIONAL_LOCATION
+            value: /etc/kafkafim/config/
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: SPRING_CONFIG_ADDITIONAL_LOCATION
+            value: optional:/etc/kafkafim/config/
+
+  - it: sets the configtree import, OTLP endpoint/headers and JVM options
+    values:
+      - ../ci/two-groups-values.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content: { name: SPRING_CONFIG_IMPORT, value: "configtree:/etc/kafkafim/secrets/" }
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content: { name: OTEL_EXPORTER_OTLP_ENDPOINT, value: "http://otel-collector.observability:4318" }
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content: { name: OTEL_EXPORTER_OTLP_HEADERS, value: "x-tenant=kafkafim" }
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content: { name: JAVA_TOOL_OPTIONS, value: "-XX:MaxRAMPercentage=75 -XX:+ExitOnOutOfMemoryError" }
+
+  - it: omits OTEL_EXPORTER_OTLP_HEADERS when otel.headers is empty, appends extraEnv and extraEnvFrom
+    values:
+      - ../ci/two-groups-values.yaml
+    set:
+      otel.headers: null
+      extraEnv:
+        - { name: LOGGING_LEVEL_IO_KAFKAFIM, value: DEBUG }
+      extraEnvFrom:
+        - secretRef: { name: apm-token }
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content: { name: OTEL_EXPORTER_OTLP_HEADERS, value: "x-tenant=kafkafim" }
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content: { name: LOGGING_LEVEL_IO_KAFKAFIM, value: DEBUG }
+      - equal:
+          path: spec.template.spec.containers[0].envFrom
+          value:
+            - secretRef: { name: apm-token }
+
+  - it: image reference uses image.registry
+    values:
+      - ../ci/two-groups-values.yaml
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: registry.internal/kafkafim/kafkafim:1.2.3
+      - equal:
+          path: spec.template.spec.imagePullSecrets
+          value:
+            - name: internal-registry
+
+  - it: image defaults to ghcr.io/matabar and the chart appVersion
+    values:
+      - ../ci/minimal-values.yaml
+    chart:
+      appVersion: 4.5.6
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: ghcr.io/matabar/kafkafim:4.5.6
+
+  - it: image without a registry is the bare repository
+    values:
+      - ../ci/two-groups-values.yaml
+    set:
+      image.registry: ""
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: kafkafim:1.2.3
+
+  - it: mounts the group's ConfigMap as a directory and every secret read-only
+    values:
+      - ../ci/two-groups-values.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content: { name: config, mountPath: /etc/kafkafim/config, readOnly: true }
+      - contains:
+          path: spec.template.spec.volumes
+          content: { name: config, configMap: { name: kafkafim-orders } }
+        documentIndex: 0
+      - contains:
+          path: spec.template.spec.volumes
+          content: { name: config, configMap: { name: kafkafim-small } }
+        documentIndex: 1
+      - notExists:
+          path: spec.template.spec.containers[0].volumeMounts[0].subPath
+      - equal:
+          path: spec.template.spec.containers[0].volumeMounts
+          value:
+            - { name: config, mountPath: /etc/kafkafim/config, readOnly: true }
+            - { name: tmp, mountPath: /tmp }
+            - { name: secret-0, mountPath: /etc/kafkafim/secrets/kafka/prod-a.orders-reader, readOnly: true }
+            - { name: secret-1, mountPath: /etc/kafkafim/secrets/kafka/prod-a.platform-reader, readOnly: true }
+            - { name: secret-2, mountPath: /etc/kafkafim/secrets/elasticsearch/search-eu.ingest-api-key, readOnly: true }
+      - contains:
+          path: spec.template.spec.volumes
+          content: { name: secret-1, secret: { secretName: kafka-prod-a-platform-reader } }
+      - contains:
+          path: spec.template.spec.volumes
+          content: { name: tmp, emptyDir: {} }
+
+  - it: carries no ConfigMap checksum annotation (pipeline edits hot-reload)
+    values:
+      - ../ci/two-groups-values.yaml
+    asserts:
+      - equal:
+          path: spec.template.metadata.annotations
+          value:
+            prometheus.io/scrape: "true"
+            prometheus.io/path: /actuator/prometheus
+            prometheus.io/port: "8080"
+        documentIndex: 0
+      - equal:
+          path: spec.template.metadata.annotations
+          value:
+            prometheus.io/scrape: "true"
+            prometheus.io/path: /actuator/prometheus
+            prometheus.io/port: "8080"
+            team: platform
+        documentIndex: 1
+      - notExists:
+          path: spec.template.metadata.annotations["checksum/config"]
+
+  - it: sets replicas per group when autoscaling is off
+    values:
+      - ../ci/two-groups-values.yaml
+    asserts:
+      - equal:
+          path: spec.replicas
+          value: 6
+        documentIndex: 0
+      - equal:
+          path: spec.replicas
+          value: 2
+        documentIndex: 1
+
+  - it: defaults replicas to 2
+    values:
+      - ../ci/minimal-values.yaml
+    asserts:
+      - equal:
+          path: spec.replicas
+          value: 2
+
+  - it: omits replicas when the group's HPA is enabled
+    values:
+      - ../ci/hpa-values.yaml
+    asserts:
+      - notExists:
+          path: spec.replicas
+        documentSelector: { path: metadata.name, value: kafkafim-orders }
+      - equal:
+          path: spec.replicas
+          value: 3
+        documentSelector: { path: metadata.name, value: kafkafim-audit }
+
+  - it: probes hit the actuator health groups
+    values:
+      - ../ci/two-groups-values.yaml
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].startupProbe
+          value:
+            httpGet: { path: /actuator/health/liveness, port: http }
+            periodSeconds: 2
+            failureThreshold: 30
+            timeoutSeconds: 2
+      - equal:
+          path: spec.template.spec.containers[0].livenessProbe.httpGet
+          value: { path: /actuator/health/liveness, port: http }
+      - equal:
+          path: spec.template.spec.containers[0].readinessProbe.httpGet
+          value: { path: /actuator/health/readiness, port: http }
+
+  - it: rolls one extra pod at a time and never drops below the desired count
+    values:
+      - ../ci/two-groups-values.yaml
+    asserts:
+      - equal:
+          path: spec.strategy
+          value:
+            type: RollingUpdate
+            rollingUpdate: { maxSurge: 1, maxUnavailable: 0 }
+
+  - it: prefers spreading over hosts and zones
+    values:
+      - ../ci/two-groups-values.yaml
+    asserts:
+      - equal:
+          path: spec.template.spec.affinity.podAntiAffinity.preferredDuringSchedulingIgnoredDuringExecution[0].podAffinityTerm
+          value:
+            topologyKey: kubernetes.io/hostname
+            labelSelector:
+              matchLabels:
+                app.kubernetes.io/name: kafkafim
+                app.kubernetes.io/instance: kafkafim
+                app.kubernetes.io/component: orders
+        documentIndex: 0
+      - equal:
+          path: spec.template.spec.topologySpreadConstraints[0].topologyKey
+          value: topology.kubernetes.io/zone
+      - equal:
+          path: spec.template.spec.topologySpreadConstraints[0].whenUnsatisfiable
+          value: ScheduleAnyway
+
+  - it: drops the zone spread when disabled and honours an explicit affinity
+    values:
+      - ../ci/two-groups-values.yaml
+    set:
+      topologySpread.enabled: false
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions: [{ key: pool, operator: In, values: [ingest] }]
+    asserts:
+      - notExists:
+          path: spec.template.spec.topologySpreadConstraints
+      - notExists:
+          path: spec.template.spec.affinity.podAntiAffinity
+      - exists:
+          path: spec.template.spec.affinity.nodeAffinity
+
+  - it: applies hardened pod and container security contexts and a 90s grace period
+    values:
+      - ../ci/two-groups-values.yaml
+    asserts:
+      - equal:
+          path: spec.template.spec.securityContext
+          value:
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            fsGroup: 65532
+            seccompProfile: { type: RuntimeDefault }
+      - equal:
+          path: spec.template.spec.containers[0].securityContext
+          value:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+      - equal:
+          path: spec.template.spec.terminationGracePeriodSeconds
+          value: 90
+      - equal:
+          path: spec.template.spec.automountServiceAccountToken
+          value: false
+      - equal:
+          path: spec.template.spec.serviceAccountName
+          value: kafkafim
+
+  - it: per-group resources, nodeSelector and tolerations override the defaults
+    values:
+      - ../ci/two-groups-values.yaml
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].resources
+          value:
+            requests: { cpu: "1", memory: 1Gi }
+            limits: { memory: 2Gi }
+        documentIndex: 0
+      - equal:
+          path: spec.template.spec.containers[0].resources
+          value:
+            requests: { cpu: 500m, memory: 1Gi }
+            limits: { memory: 1Gi }
+        documentIndex: 1
+      - equal:
+          path: spec.template.spec.nodeSelector
+          value: { workload: ingest }
+        documentIndex: 0
+      - notExists:
+          path: spec.template.spec.nodeSelector
+        documentIndex: 1
+      - exists:
+          path: spec.template.spec.tolerations
+        documentIndex: 0
+
+  - it: selects only its own group's pods
+    values:
+      - ../ci/two-groups-values.yaml
+    asserts:
+      - equal:
+          path: spec.selector.matchLabels
+          value:
+            app.kubernetes.io/name: kafkafim
+            app.kubernetes.io/instance: kafkafim
+            app.kubernetes.io/component: small
+        documentIndex: 1

@@ -1,0 +1,170 @@
+{{- include "kafkafim.validate" . -}}
+{{- range $g, $group := .Values.groups }}
+{{- $name := include "kafkafim.groupName" (dict "root" $ "group" $g) }}
+{{- $selector := include "kafkafim.groupSelectorLabels" (dict "root" $ "group" $g) }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "kafkafim.groupLabels" (dict "root" $ "group" $g) | nindent 4 }}
+spec:
+  {{- if not (include "kafkafim.autoscalingEnabled" $group) }}
+  replicas: {{ include "kafkafim.replicas" $group }}
+  {{- end }}
+  revisionHistoryLimit: 5
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      {{- $selector | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- $selector | nindent 8 }}
+        {{- with $.Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- /* Deliberately no checksum of the ConfigMap: pipeline edits hot-reload. */}}
+      {{- with merge (deepCopy ($group.podAnnotations | default dict)) $.Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "kafkafim.serviceAccountName" $ }}
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: {{ $.Values.terminationGracePeriodSeconds }}
+      {{- with $.Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $.Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      affinity:
+        {{- with ($group.affinity | default $.Values.affinity) }}
+        {{- toYaml . | nindent 8 }}
+        {{- else }}
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    {{- $selector | nindent 20 }}
+        {{- end }}
+      {{- if $.Values.topologySpread.enabled }}
+      topologySpreadConstraints:
+        - maxSkew: {{ $.Values.topologySpread.maxSkew | default 1 }}
+          topologyKey: {{ $.Values.topologySpread.topologyKey | quote }}
+          whenUnsatisfiable: {{ $.Values.topologySpread.whenUnsatisfiable | default "ScheduleAnyway" }}
+          labelSelector:
+            matchLabels:
+              {{- $selector | nindent 14 }}
+          matchLabelKeys:
+            - pod-template-hash
+      {{- end }}
+      {{- with ($group.nodeSelector | default $.Values.nodeSelector) }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with ($group.tolerations | default $.Values.tolerations) }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: kafkafim
+          image: {{ include "kafkafim.image" $ | quote }}
+          imagePullPolicy: {{ $.Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          env:
+            # Activates application-kafkafim.yaml and disables the default `local`
+            # profile (development sample). Required; asserted by the chart tests.
+            - name: SPRING_PROFILES_ACTIVE
+              value: kafkafim
+            # Not `optional:` (the image default): a missing mount fails startup.
+            - name: SPRING_CONFIG_ADDITIONAL_LOCATION
+              value: /etc/kafkafim/config/
+            - name: SPRING_CONFIG_IMPORT
+              value: configtree:/etc/kafkafim/secrets/
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ $.Values.otel.endpoint | quote }}
+            {{- with $.Values.otel.headers }}
+            {{- $pairs := list }}
+            {{- range $k, $v := . }}
+            {{- $pairs = append $pairs (printf "%s=%s" $k $v) }}
+            {{- end }}
+            - name: OTEL_EXPORTER_OTLP_HEADERS
+              value: {{ join "," $pairs | quote }}
+            {{- end }}
+            - name: JAVA_TOOL_OPTIONS
+              value: {{ $.Values.jvm.options | quote }}
+            {{- with $.Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with $.Values.extraEnvFrom }}
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          startupProbe:
+            httpGet:
+              path: {{ $.Values.probes.startup.path | quote }}
+              port: http
+            periodSeconds: {{ $.Values.probes.startup.periodSeconds }}
+            failureThreshold: {{ $.Values.probes.startup.failureThreshold }}
+            timeoutSeconds: {{ $.Values.probes.startup.timeoutSeconds }}
+          livenessProbe:
+            httpGet:
+              path: {{ $.Values.probes.liveness.path | quote }}
+              port: http
+            periodSeconds: {{ $.Values.probes.liveness.periodSeconds }}
+            failureThreshold: {{ $.Values.probes.liveness.failureThreshold }}
+            timeoutSeconds: {{ $.Values.probes.liveness.timeoutSeconds }}
+          readinessProbe:
+            httpGet:
+              path: {{ $.Values.probes.readiness.path | quote }}
+              port: http
+            periodSeconds: {{ $.Values.probes.readiness.periodSeconds }}
+            failureThreshold: {{ $.Values.probes.readiness.failureThreshold }}
+            timeoutSeconds: {{ $.Values.probes.readiness.timeoutSeconds }}
+          {{- with ($group.resources | default $.Values.resources) }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with $.Values.containerSecurityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/kafkafim/config
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+            {{- range $i, $s := $.Values.secrets }}
+            - name: secret-{{ $i }}
+              mountPath: {{ include "kafkafim.secretMountPath" $s.mountPath | quote }}
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ $name }}
+        # readOnlyRootFilesystem: Tomcat and the JVM need a writable /tmp.
+        - name: tmp
+          emptyDir: {}
+        {{- range $i, $s := $.Values.secrets }}
+        - name: secret-{{ $i }}
+          secret:
+            secretName: {{ $s.name | quote }}
+        {{- end }}
+{{- end }}
