@@ -770,6 +770,27 @@ class ConfigValidationTest {
     }
 
     @Test
+    void acceptsAnExternalVersionWithOpIndex() {
+      assertValid(MINIMAL, P + ".document.version-field=/version", P + ".document.op=index");
+    }
+
+    @Test
+    void acceptsOpCreateWithoutAnExternalVersion() {
+      assertValid(MINIMAL, P + ".document.op=create");
+    }
+
+    @Test
+    void rejectsOpCreateWithAnExternalVersion() {
+      assertThat(
+              ConfigTestSupport.errors(
+                  MINIMAL, P + ".document.version-field=/version", P + ".document.op=create"))
+          .containsExactly(
+              P
+                  + ".document.op: op create does not support external versions; remove"
+                  + " document.version-field or use document.op: index");
+    }
+
+    @Test
     void warnsOnAutoIds() {
       ConfigValidator.Result result =
           ConfigValidator.validate(

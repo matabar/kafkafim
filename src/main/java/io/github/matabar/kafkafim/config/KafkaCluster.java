@@ -34,6 +34,24 @@ public record KafkaCluster(
     properties = Defaults.map(properties);
   }
 
+  /** Masks the values of secret passthrough {@code properties} (§5.5). */
+  @Override
+  public String toString() {
+    return "KafkaCluster[bootstrapServers="
+        + bootstrapServers
+        + ", securityProtocol="
+        + securityProtocol
+        + ", ssl="
+        + ssl
+        + ", identities="
+        + identities
+        + ", defaultIdentity="
+        + defaultIdentity
+        + ", properties="
+        + Redaction.passthrough(properties)
+        + "]";
+  }
+
   /** Kafka {@code security.protocol} values. */
   public enum SecurityProtocol {
     /** No TLS, no authentication. */
@@ -65,7 +83,20 @@ public record KafkaCluster(
    *     JKS}/{@code PEM}
    */
   public record Trust(
-      @NotBlank String truststoreLocation, String truststorePassword, String truststoreType) {}
+      @NotBlank String truststoreLocation, String truststorePassword, String truststoreType) {
+
+    /** Masks the password (§5.5). */
+    @Override
+    public String toString() {
+      return "Trust[truststoreLocation="
+          + truststoreLocation
+          + ", truststorePassword="
+          + Redaction.mask(truststorePassword)
+          + ", truststoreType="
+          + truststoreType
+          + "]";
+    }
+  }
 
   /**
    * A named Kafka credential set: SASL, a client-certificate keystore, or both (§5.2.1).
@@ -92,6 +123,18 @@ public record KafkaCluster(
     public boolean needsUsernameAndPassword() {
       return mechanism != null && PASSWORD_MECHANISMS.contains(mechanism);
     }
+
+    /** Masks the password; the username stays (§5.5). */
+    @Override
+    public String toString() {
+      return "Sasl[mechanism="
+          + mechanism
+          + ", username="
+          + username
+          + ", password="
+          + Redaction.mask(password)
+          + "]";
+    }
   }
 
   /**
@@ -106,5 +149,20 @@ public record KafkaCluster(
       @NotBlank String keystoreLocation,
       String keystorePassword,
       String keyPassword,
-      String keystoreType) {}
+      String keystoreType) {
+
+    /** Masks both passwords (§5.5). */
+    @Override
+    public String toString() {
+      return "Keystore[keystoreLocation="
+          + keystoreLocation
+          + ", keystorePassword="
+          + Redaction.mask(keystorePassword)
+          + ", keyPassword="
+          + Redaction.mask(keyPassword)
+          + ", keystoreType="
+          + keystoreType
+          + "]";
+    }
+  }
 }

@@ -218,9 +218,10 @@ offset acks or DLQ records; the sink knows nothing about Kafka.
   unversioned write could overwrite a newer document.
   On `version_conflict_engine_exception` the item is counted as `stale` and treated
   as success (`document.on-version-conflict: ignore|dlq`).
-- Data streams require `op: create`. A retried item that already landed returns 409;
-  for `op: create` a 409 is treated as success. No current pipeline targets a data
-  stream; the path is supported and covered by an integration test from 0.3.
+- Data streams require `op: create`, which takes no `version-field` (§5.7). A retried
+  item that already landed returns 409; for `op: create` a 409 is treated as success.
+  No current pipeline targets a data stream; the path is supported and covered by an
+  integration test from 0.3.
 
 ### 4.5 Decoding
 
@@ -587,7 +588,9 @@ explicitly) when it detects Kubernetes (`CloudPlatform.KUBERNETES`, which reads
 `KUBERNETES_SERVICE_HOST`/`_PORT` and honours `spring.main.cloud-platform` for tests;
 `config/LocalProfileGuard`, which runs before any bean is created).
 A pod that lost its profile env would otherwise silently run the compose sample with
-inline secrets allowed.
+inline secrets allowed. As a second application-side check, the same guard refuses `kafkafim.allow-inline-secrets=true` on
+Kubernetes in any profile (for example set by hand next to `kafkafim`): there, secrets
+must come from mounted `Secret` files imported with `configtree` (§5.5).
 
 Config location failure mode: the image's default is
 `SPRING_CONFIG_ADDITIONAL_LOCATION=optional:/etc/kafkafim/config/` so that local runs
@@ -614,15 +617,18 @@ ConfigMap never contains a secret. Startup validation refuses literal values in 
 `api-key` and `*-password` fields (and in passthrough `properties` keys ending in
 `password`, containing `secret`, `sasl.jaas.config`, `ssl.keystore.key` or
 `user.info`) unless `kafkafim.allow-inline-secrets=true`. That switch is for local
-development outside Kubernetes (`./mvnw spring-boot:run` with Compose): startup fails
-when it is set and the application detects Kubernetes (`CloudPlatform.KUBERNETES`), so
-the Docker Desktop Kubernetes demo mounts its secrets as files, like production. A
+development outside Kubernetes (`./mvnw spring-boot:run` with Compose): on
+`CloudPlatform.KUBERNETES` the flag itself stops startup (§5.4), so the Docker Desktop
+Kubernetes demo mounts its secrets as files, like production. A
 secret is accepted when it is read straight from a `configtree` file, or when its raw,
 unresolved text is exactly one `${name}` placeholder (no `:default`, which would be an
 inline fallback) whose chain of references ends in a `configtree` file. The check looks
 at the property source that wins for each name, before placeholder resolution, and
-reports the origin but never the value. A literal in YAML, an environment variable or a
-system property is rejected, also when reached through a placeholder. A credential
+reports the origin but never the value; likewise the bound configuration records print
+every secret (passwords, API keys, keystore and key passwords, secret passthrough
+`properties` values) as `******` in `toString()`, while usernames stay readable. A
+literal in YAML, an environment variable or a system property is rejected, also when
+reached through a placeholder. A credential
 placeholder (secret or username) that nothing defines always fails startup, even with
 inline secrets allowed: Spring leaves unresolvable placeholders as literal text, so a
 missing secret file would otherwise become the password. A value with a placeholder embedded in
@@ -636,8 +642,8 @@ agent all work. A changed secret file is picked up by the same reload path.
 - **Startup**: binding failure or validation failure stops the pod with a clear
   message that lists every violation at once (Bean Validation and the rules of section
   5.7 run in the same pass), each as `<property path>: <problem>`; readiness never goes
-  green. The `local` profile active on `CloudPlatform.KUBERNETES` stops startup before
-  binding (section 5.4).
+  green. The `local` profile active, or `kafkafim.allow-inline-secrets=true` set, on
+  `CloudPlatform.KUBERNETES` stops startup before binding (section 5.4).
 - **`validate` profile** (application feature, roadmap 0.2): started with
   `--spring.profiles.active=validate,kafkafim` and a rendered ConfigMap mounted, the
   application binds and validates, logs the pipeline summary, and exits 0/1 without
@@ -706,6 +712,8 @@ are reported together:
   date pattern is a warning.
 - **Timestamps**: `timestamp-format` is `iso-8601`, `epoch-millis`, `epoch-seconds` or
   `pattern:<DateTimeFormatter>` that compiles.
+- **Document**: `op: create` takes no `version-field`; Elasticsearch accepts external
+  versions only on `index` ("create operations only support internal versioning", §4.4).
 - **Warnings** (bind, log at `WARN`): no pipelines, `id-missing: auto`, an http route
   without identity, week-based year, `allow-inline-secrets=true`.
 
@@ -730,7 +738,7 @@ are reported together:
 | Repeated cluster-level failures | Circuit breaker per ES cluster (Resilience4j, shared by all identities and pipelines): count window of 20 requests, opens at ≥50% failures after at least 10, stays open 10s, then lets 2 probes through. While it is open every sender for that cluster waits; pipelines routing to that cluster pause, others proceed. |
 | Bulk request rejected with 401 / 403 | Configuration failure, not data failure: retried with backoff forever and reported through the sink listener (the supervisor pauses the pipeline; `kafkafim_auth_failures_total` and an alert fire). Not a breaker failure. Nothing goes to the DLQ. An **item** with 401/403 (the identity may not write that index) is handled the same way. |
 | Bulk request with any other unexpected status (a 400 for the whole request, a 404 from a proxy or a wrong path, a 3xx) or a 2xx body that is not a bulk response | Retried forever with backoff and logged with the body: it cannot be attributed to one document, so it never reaches the DLQ. An unexpected status is not a cluster-health signal and does not open the breaker; an unparsable 2xx body does. |
-| An action Elasticsearch would reject for the whole request (`op: create` with an external version, an empty ingest `pipeline` name, an `_id` outside 1 to 512 UTF-8 bytes) | Rejected when the action is built (`BulkAction`), because a whole-request 400 could only be retried forever. `op: create` together with `document.version-field` must therefore be rejected by config validation (follow-up); ES answers "create operations only support internal versioning". |
+| An action Elasticsearch would reject for the whole request (`op: create` with an external version, an empty ingest `pipeline` name, an `_id` outside 1 to 512 UTF-8 bytes) | Rejected when the action is built (`BulkAction`), because a whole-request 400 could only be retried forever. `op: create` together with `document.version-field` is therefore rejected by config validation (§5.7); ES answers "create operations only support internal versioning". |
 | Bulk partial failure | Only failed items are retried; successful items are acked immediately. |
 | Non-retryable item error: the 400 family (`mapper_parsing_exception`, `document_parsing_exception`, `strict_dynamic_mapping_exception`, `illegal_argument_exception` such as a missing ingest pipeline) and any other 4xx item not listed here | DLQ immediately with `error.type=es_error`, partition continues. |
 | Item 409 `version_conflict_engine_exception` | With an external version: `stale` (success) under `on-version-conflict: ignore`, DLQ `version_conflict` under `dlq`. For `op: create` without a version: an earlier attempt landed, so success. Otherwise `es_error`. |
