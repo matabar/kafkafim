@@ -467,13 +467,17 @@ application properties live under `kafkafim.*`. Cluster trust settings and ident
 definitions reference those properties with `${...}` placeholders, so the rendered
 ConfigMap never contains a secret. Startup validation refuses literal values in `password`,
 `api-key` and `*-password` fields (and in passthrough `properties` keys ending in
-`password`, containing `secret`, or `sasl.jaas.config`) unless
-`kafkafim.allow-inline-secrets=true` (local development only). A value counts as
-non-literal when its raw, unresolved text is exactly one `${name}` placeholder (no
-`:default`, which would be an inline fallback) or when it is read straight from a
-`configtree` file; the check inspects the property source that wins for that name,
-before placeholder resolution, and reports its origin but never the value. A literal
-in YAML, an environment variable or a system property is rejected. Secret provisioning stays outside the chart
+`password`, containing `secret`, `sasl.jaas.config`, `ssl.keystore.key` or
+`user.info`) unless `kafkafim.allow-inline-secrets=true` (local development only). A
+secret is accepted when it is read straight from a `configtree` file, or when its raw,
+unresolved text is exactly one `${name}` placeholder (no `:default`, which would be an
+inline fallback) whose chain of references ends in a `configtree` file. The check looks
+at the property source that wins for each name, before placeholder resolution, and
+reports the origin but never the value. A literal in YAML, an environment variable or a
+system property is rejected, also when reached through a placeholder. A credential
+placeholder (secret or username) that nothing defines always fails startup, even with
+inline secrets allowed: Spring leaves unresolvable placeholders as literal text, so a
+missing secret file would otherwise become the password. Secret provisioning stays outside the chart
 (`existingSecret` names): plain Secrets, Sealed Secrets, External Secrets or a Vault
 agent all work. A changed secret file is picked up by the same reload path.
 
@@ -516,8 +520,11 @@ are reported together:
   (`[a-z0-9-]`, no leading/trailing `-`): they appear in group ids, metric labels and
   configtree paths (`kafka/<cluster>.<identity>/password`).
 - **References**: every `cluster` and `identity` (including `default-identity`) names an
-  existing entry; identity names are unique per cluster (duplicate YAML keys fail).
-- **Kafka**: `bootstrap-servers` are `host:port`. `SASL_PLAINTEXT`/`SASL_SSL` require a
+  existing entry; identity names are unique per cluster (duplicate YAML keys fail). An
+  invalid `default-identity` is reported once, on the cluster, not again on every
+  pipeline or route that would have used it.
+- **Kafka**: `bootstrap-servers` are `host:port` (IPv6 in brackets; an optional
+  `PROTOCOL://` prefix is tolerated, as kafka-clients does). `SASL_PLAINTEXT`/`SASL_SSL` require a
   resolved identity with a `sasl` block for the consumer and the DLQ producer; `SSL` and
   `PLAINTEXT` need none (client certificates are the broker's choice). A `sasl` block is
   only allowed on a `SASL_*` cluster, a keystore and cluster `ssl` trust only on a TLS
@@ -541,9 +548,11 @@ are reported together:
   the pipeline's source topics. Every `field` and document pointer is an RFC 6901 JSON
   pointer starting with `/`.
 - **Index patterns**: `%{field}` (JSON pointer or top-level name) and
-  `%{+<DateTimeFormatter>}` must be terminated and parse; literal parts must not contain
-  characters Elasticsearch rejects (`\ / * ? " < > | , #` and space) nor start with
-  `-`, `_` or `+`. A `Y` (week-based year) in a date pattern is a warning.
+  `%{+<DateTimeFormatter>}` must be terminated and parse; literal parts, and what each
+  date pattern produces (so `%{+yyyy/MM}` or `%{+HH:mm}` fail), must not contain
+  characters Elasticsearch rejects (`\ / * ? " < > | , # :` and space); a name must not
+  start with `-`, `_` or `+`, nor be `.` or `..`. An unquoted `Y` (week-based year) in a
+  date pattern is a warning.
 - **Timestamps**: `timestamp-format` is `iso-8601`, `epoch-millis`, `epoch-seconds` or
   `pattern:<DateTimeFormatter>` that compiles.
 - **Warnings** (bind, log at `WARN`): no pipelines, `id-missing: auto`, an http route
