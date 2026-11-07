@@ -407,11 +407,35 @@ A route matches when **all** of its `when` conditions hold. Condition types:
 | `header: name, equals: v` | Kafka record header equality |
 | `topic: name` | source topic equality (for multi-topic pipelines) |
 
-`field` is a JSON pointer (`/a/b/0`). Index patterns use the Logstash syntax the
-team already knows: `%{field}` (a JSON pointer or a top-level name) and
-`%{+yyyy.MM.dd}` (Java `DateTimeFormatter` pattern over `document.timestamp-field`,
-or ingest time if unset). Resolved index names are lower-cased; a pattern whose field
-is missing routes the document to the DLQ with `error.type=unresolved_index`.
+`field` is a JSON pointer (`/a/b/0`). Comparison semantics:
+
+- `equals`/`in`: a JSON string equals `v` when the text is identical; a JSON number
+  equals `v` when `v` parses as a decimal of the same value (`1`, `1.0`, `1e0` are
+  equal; a double compares by its shortest decimal form, so `0.1` equals `0.1`; NaN
+  and infinities equal nothing); a JSON boolean equals `true`/`false` exactly. A
+  string never equals a number (`"1"` in the document does not match `equals: 1.0`);
+  objects, arrays, `null` and a missing field match nothing.
+- `prefix`/`matches` apply to string fields only; any other type does not match.
+- `header` compares the UTF-8 bytes of `v` with the value of the **last** header of
+  that name (Kafka allows repeats); a missing header or a null value does not match.
+
+Route selection: in `route-mode: first` the first non-default route (in order) whose
+conditions all hold, else the default route. In `all`, every non-default route whose
+conditions hold, in order; the default route only when none did. No match and no
+default (possible only in `all`) sends the document to the DLQ with
+`error.type=no_route`.
+
+Index patterns use the Logstash syntax the team already knows: `%{field}` (a JSON
+pointer or a top-level name, taken literally, so `%{a.b}` is the property `"a.b"`)
+and `%{+yyyy.MM.dd}` (Java `DateTimeFormatter` pattern over `document.timestamp-field`,
+or ingest time if unset, formatted in UTC with `Locale.ROOT`). A reference runs from
+`%{` to the next `}`; everything else is literal, with no escapes. A string field
+contributes its text, a number or boolean its JSON text (`42`, `1.5`, `true`).
+Resolved index names are lower-cased with `Locale.ROOT`. A pattern whose field is
+missing, `null`, an object or an array, or whose result Elasticsearch would reject
+(forbidden character, leading `-`/`_`/`+`, `.`/`..`, empty, more than 255 UTF-8
+bytes), routes the document to the DLQ with `error.type=unresolved_index` and the
+cause in `error.reason`.
 
 This covers: static indices, daily/monthly indices from event time, per-region or
 per-tenant clusters, topic-to-index merging, and fan-out. It deliberately cannot do
