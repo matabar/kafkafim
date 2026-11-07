@@ -92,7 +92,7 @@ final class PipelineRuntime {
   private @Nullable String failure; // guarded by lock
   private final Set<String> pauseReasons = new TreeSet<>(); // guarded by lock
   private @Nullable Thread starter; // guarded by lock
-  private boolean stopping; // guarded by lock
+  private int stops; // stops in progress, guarded by lock
   private @Nullable CountDownLatch stopSignal; // guarded by lock
   private @Nullable KafkaPipelineSource source; // guarded by lock
   private Map<RouteTarget.StreamKey, BulkSink<RecordProcessor.DocumentRef>> sinks =
@@ -153,7 +153,7 @@ final class PipelineRuntime {
   /** Starts the pipeline in the background; no-op while starting or started. */
   void start() {
     synchronized (lock) {
-      if (stopping) {
+      if (stops > 0) {
         throw new IllegalStateException("Pipeline '" + name + "' is stopping; start it afterwards");
       }
       if (starter != null || state.isStarted()) {
@@ -365,37 +365,45 @@ final class PipelineRuntime {
   void stop() {
     Thread pending;
     synchronized (lock) {
-      stopping = true;
+      stops++;
       if (stopSignal != null) {
         stopSignal.countDown();
       }
       pending = starter;
     }
-    if (pending != null) {
-      try {
-        pending.join();
-      } catch (InterruptedException e) {
-        Thread.currentThread().interrupt();
+    KafkaPipelineSource running = null;
+    Map<RouteTarget.StreamKey, BulkSink<RecordProcessor.DocumentRef>> toClose = Map.of();
+    try {
+      if (pending != null) {
+        try {
+          pending.join();
+        } catch (InterruptedException e) {
+          Thread.currentThread().interrupt();
+        }
       }
-    }
-    KafkaPipelineSource running;
-    Map<RouteTarget.StreamKey, BulkSink<RecordProcessor.DocumentRef>> toClose;
-    synchronized (lock) {
-      running = source;
-      toClose = sinks;
-    }
-    if (running != null) {
-      running.stop();
-    }
-    closeSinks(toClose, context.sinkCloseTimeout());
-    synchronized (lock) {
-      source = null;
-      sinks = Map.of();
-      pauseReasons.removeIf(reason -> reason.startsWith(AUTH_REASON_PREFIX));
-      if (state != PipelineState.FAILED_PREFLIGHT) {
-        setState(PipelineState.STOPPED);
+      synchronized (lock) {
+        running = source;
+        toClose = sinks;
       }
-      stopping = false;
+      if (running != null) {
+        running.stop();
+      }
+      closeSinks(toClose, context.sinkCloseTimeout());
+    } finally {
+      synchronized (lock) {
+        // Only what this stop stopped is forgotten; no start can run while a stop is in progress.
+        if (source == running) {
+          source = null;
+        }
+        if (sinks == toClose) {
+          sinks = Map.of();
+        }
+        pauseReasons.removeIf(reason -> reason.startsWith(AUTH_REASON_PREFIX));
+        if (state != PipelineState.FAILED_PREFLIGHT) {
+          setState(PipelineState.STOPPED);
+        }
+        stops--;
+      }
     }
   }
 
