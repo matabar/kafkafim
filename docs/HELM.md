@@ -166,7 +166,9 @@ group names are DNS labels); the cross-field rules above are `fail` calls in
 
 `config.kafkafim` accepts exactly `kafka`, `elasticsearch` and `pipelines`; the
 schema rejects any other key (for example `allow-inline-secrets`, which is for local
-development only and must never reach a production ConfigMap) instead of silently
+development outside Kubernetes only: the application refuses to start with it on
+Kubernetes, so a chart install, including the Docker Desktop demo, mounts its secrets as
+files like production) instead of silently
 dropping it. Helm reads values numbers as float64, so integers above 2^53 in
 `config` lose precision: quote them. Application-wide settings that are not
 per-group belong in the image's `application.yaml` or in `extraEnv`.
