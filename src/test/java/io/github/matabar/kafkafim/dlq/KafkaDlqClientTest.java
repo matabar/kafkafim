@@ -7,10 +7,12 @@ import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.apache.kafka.clients.producer.MockProducer;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.KafkaException;
+import org.apache.kafka.common.config.ConfigException;
 import org.apache.kafka.common.errors.ClusterAuthorizationException;
 import org.apache.kafka.common.errors.NetworkException;
 import org.apache.kafka.common.errors.SaslAuthenticationException;
@@ -21,6 +23,7 @@ import org.junit.jupiter.api.Test;
 class KafkaDlqClientTest {
 
   private final List<MockProducer<byte[], byte[]>> created = new CopyOnWriteArrayList<>();
+  private final AtomicInteger creationFailures = new AtomicInteger();
 
   private KafkaDlqClient client() {
     Map<String, Object> settings =
@@ -28,6 +31,11 @@ class KafkaDlqClientTest {
     return new KafkaDlqClient(
         settings,
         s -> {
+          if (creationFailures.getAndUpdate(n -> Math.max(0, n - 1)) > 0) {
+            throw new KafkaException(
+                "Failed to construct kafka producer",
+                new ConfigException("No resolvable bootstrap urls"));
+          }
           MockProducer<byte[], byte[]> producer =
               new MockProducer<>(false, null, new ByteArraySerializer(), new ByteArraySerializer());
           created.add(producer);
@@ -80,6 +88,61 @@ class KafkaDlqClientTest {
     assertThat(heard.get()).isInstanceOf(SaslAuthenticationException.class);
     assertThat(producersWhenHeard.get()).isEqualTo(2);
     assertThat(first.closed()).isTrue();
+  }
+
+  @Test
+  void failedReplacementIsRetriedOnTheNextSend() {
+    KafkaDlqClient client = client();
+    MockProducer<byte[], byte[]> first = created.get(0);
+    first.sendException = fatalWrapper();
+    creationFailures.set(2);
+
+    assertThatThrownBy(() -> client.send(record(), (m, e) -> {})).isSameAs(first.sendException);
+    assertThat(created).as("replacement failed").hasSize(1);
+    assertThatThrownBy(() -> client.send(record(), (m, e) -> {}))
+        .isInstanceOf(KafkaException.class)
+        .hasCauseInstanceOf(ConfigException.class)
+        .satisfies(
+            e -> assertThat(DlqFailure.classify(e)).isEqualTo(DlqFailure.Kind.CONFIGURATION));
+
+    client.send(record(), (m, e) -> {});
+
+    assertThat(created).hasSize(2);
+    assertThat(created.get(1).history()).hasSize(1);
+    assertThat(first.closed()).isTrue();
+  }
+
+  @Test
+  void failingCloseOfTheOldProducerStillReplacesIt() {
+    MockProducer<byte[], byte[]>[] holder = new MockProducer[1];
+    KafkaDlqClient client =
+        new KafkaDlqClient(
+            Map.of("client.id", "c"),
+            s -> {
+              MockProducer<byte[], byte[]> producer =
+                  new MockProducer<>(
+                      false, null, new ByteArraySerializer(), new ByteArraySerializer()) {
+                    @Override
+                    public void close(Duration timeout) {
+                      if (holder[0] == this) {
+                        throw new KafkaException("close failed");
+                      }
+                      super.close(timeout);
+                    }
+                  };
+              if (holder[0] == null) {
+                holder[0] = producer;
+              }
+              created.add(producer);
+              return producer;
+            });
+    holder[0].sendException = fatalWrapper();
+
+    assertThatThrownBy(() -> client.send(record(), (m, e) -> {}))
+        .isInstanceOf(KafkaException.class);
+
+    assertThat(client.producer()).isNotSameAs(holder[0]);
+    assertThat(created).hasSize(2);
   }
 
   @Test

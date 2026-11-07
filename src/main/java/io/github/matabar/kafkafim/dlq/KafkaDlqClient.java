@@ -43,6 +43,7 @@ final class KafkaDlqClient implements DlqClient {
   private @Nullable Admin admin;
   private volatile boolean closed;
   private boolean replacing;
+  private volatile boolean needsProducer;
 
   KafkaDlqClient(Map<String, Object> producerSettings) {
     this(producerSettings, KafkaProducer::new);
@@ -60,7 +61,7 @@ final class KafkaDlqClient implements DlqClient {
 
   @Override
   public void send(ProducerRecord<byte[], byte[]> record, Callback callback) {
-    Producer<byte[], byte[]> current = producer;
+    Producer<byte[], byte[]> current = currentProducer();
     try {
       current.send(
           record,
@@ -76,6 +77,27 @@ final class KafkaDlqClient implements DlqClient {
     }
   }
 
+  /**
+   * The producer to send with, first creating the replacement of a fatal one if that has not
+   * succeeded yet. A creation failure is thrown as is (a {@code ConfigException} or {@code
+   * KafkaException}), so the writer classifies it by its cause and retries with backoff.
+   */
+  private Producer<byte[], byte[]> currentProducer() {
+    if (!needsProducer) {
+      return producer;
+    }
+    synchronized (producerLock) {
+      if (closed) {
+        throw new IllegalStateException("DLQ producer is closed");
+      }
+      if (needsProducer) {
+        producer = producers.apply(producerSettings);
+        needsProducer = false;
+      }
+      return producer;
+    }
+  }
+
   /** The producer in use; a new instance after a fatal error. */
   Producer<byte[], byte[]> producer() {
     return producer;
@@ -88,7 +110,8 @@ final class KafkaDlqClient implements DlqClient {
    *
    * <p>The old producer is closed before the new one is created, so the two never share the {@code
    * client.id}'s app-info MBean. The close happens outside the lock: on the synchronous path it
-   * joins the old I/O thread, whose aborted-batch callbacks come back here and must not wait.
+   * joins the old I/O thread, whose aborted-batch callbacks come back here and must not wait. If
+   * creating the new one fails, every later send tries again until one succeeds.
    */
   private void replaceIfFatal(Producer<byte[], byte[]> failed, Throwable failure) {
     if (!DlqFailure.isFatalForProducer(failure)) {
@@ -104,19 +127,23 @@ final class KafkaDlqClient implements DlqClient {
         "DLQ producer {} is in a fatal state ({}); replacing it",
         producerSettings.get("client.id"),
         DlqFailure.unwrap(failure).getClass().getSimpleName());
-    // Possibly on the failed producer's own I/O thread, where kafka-clients forces a zero timeout.
-    failed.close(Duration.ZERO);
-    synchronized (producerLock) {
-      replacing = false;
-      if (closed) {
-        return;
+    try {
+      // Possibly on the failed producer's own I/O thread, where kafka-clients forces a zero
+      // timeout.
+      failed.close(Duration.ZERO);
+    } catch (RuntimeException e) {
+      log.warn("Closing the failed DLQ producer failed", e);
+    } finally {
+      synchronized (producerLock) {
+        replacing = false;
+        // From here every send first creates the replacement; the first attempt is now.
+        needsProducer = !closed;
       }
-      try {
-        producer = producers.apply(producerSettings);
-      } catch (RuntimeException e) {
-        // Sends fail on the closed producer and are retried; the next fatal error tries again.
-        log.warn("Recreating the DLQ producer failed", e);
-      }
+    }
+    try {
+      currentProducer();
+    } catch (RuntimeException e) {
+      log.warn("Recreating the DLQ producer failed; the next send tries again", e);
     }
   }
 
