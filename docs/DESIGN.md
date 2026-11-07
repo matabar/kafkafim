@@ -495,7 +495,7 @@ agent all work. A changed secret file is picked up by the same reload path.
 | Non-retryable item error (400 family: `mapper_parsing_exception`, `strict_dynamic_mapping_exception`, `illegal_argument_exception`, `document_parsing_exception`) | DLQ immediately, partition continues. |
 | Retryable **item** error (e.g. `es_rejected_execution_exception` inside a 200 bulk response) exceeding `max-attempts`/`max-elapsed` | DLQ, partition continues. This is the poison-message bound. Request-level failures (connection errors, 5xx, request-level 429, breaker open, 401/403) are retried indefinitely and never count toward it; an ES outage produces lag, never DLQ records. |
 | Bulk request rejected with 413 | The request is split and retried; a single-document bulk that still gets 413 sends that document to the DLQ with `error.type=too_large`. |
-| Undecodable record, non-object element, missing `_id`, bad timestamp, no matching route, unresolved index pattern | DLQ with the matching `error.type` (`decode`, `missing_id`, `bad_timestamp`, `no_route`, `unresolved_index`). |
+| Undecodable record, non-object element, missing `_id`, bad timestamp, no matching route, unresolved index pattern | DLQ with the matching `error.type` (`decode`, `missing_id`, `bad_timestamp`, `no_route`, `unresolved_index`; `too_large` from the 413 row). |
 | Missing topic, DLQ topic, or failed authentication at pipeline start | Pipeline stays stopped (`failed_preflight`), clear log naming resource and identity, alert. Other pipelines unaffected. kafkafim never creates the resource. |
 | DLQ produce fails | Block the partition and alert. Losing data is worse than lag. |
 | Kafka unavailable | Reconnect with backoff; `kafkafim_kafka_connected` gauge drops, alert. |
