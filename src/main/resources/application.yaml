@@ -7,7 +7,9 @@ spring:
     default: local                  # development sample in application-local.yaml; production sets
                                     # SPRING_PROFILES_ACTIVE=kafkafim, which disables this default
   lifecycle:
-    timeout-per-shutdown-phase: 60s # flush in-flight bulks and commit before the pod is killed
+    timeout-per-shutdown-phase: 60s # per SmartLifecycle phase, not total: the web drain phase runs first
+                                    # (instant for actuator-only traffic), then kafkafim's consumer/bulk
+                                    # phase gets up to 60s to flush and commit inside the pod's 90s grace
 
 server:
   port: 8080

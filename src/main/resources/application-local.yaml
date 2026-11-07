@@ -1,7 +1,8 @@
 # Development sample of the kafkafim configuration model (docs/DESIGN.md §5),
 # pointed at the local compose.yaml stack. Active through the default profile
 # `local`; production activates `kafkafim` instead, whose application-kafkafim.yaml
-# is rendered by the Helm chart, so this file never binds there.
+# is rendered by the Helm chart and whose secrets arrive through
+# spring.config.import=configtree:/etc/kafkafim/secrets/, so this file never binds there.
 kafkafim:
   allow-inline-secrets: true        # local only; production validation rejects literal secrets
   kafka:
