@@ -8,7 +8,9 @@
   is one of the commit types below: `feat/route-header-conditions`,
   `fix/offset-tracker-revoke`, `docs/runbook`, `ci/helm-unittest`.
 - Rebase on `main` before opening or updating a pull request. Merges into `main`
-  are **rebase merges** so each commit lands as written; squash only when asked.
+  are **squash merges** only: a pull request becomes one commit whose subject is
+  the PR title and whose body is the PR description, so both are written in
+  Conventional Commit form. Commits inside the branch stay atomic for review.
 
 ## Commits
 
@@ -43,7 +45,11 @@ Dockerfile build and Helm checks; all must pass before merge.
 
 ## Pull requests
 
-- Title in Conventional Commit form; body says why and how it was verified.
+- Title in Conventional Commit form; body says why and how it was verified. They
+  become the squash commit on `main`, so write them for the git log, not for chat.
+- Every pull request gets an independent review before merge (a reviewer agent or a
+  teammate). Findings are fixed on the branch; approval plus green CI merges it and
+  the branch is deleted.
 - Keep them small enough to review in one sitting. If a change needs two concerns,
   open two pull requests.
 - Design changes come with an ADR in `docs/decisions/` in the same pull request.
