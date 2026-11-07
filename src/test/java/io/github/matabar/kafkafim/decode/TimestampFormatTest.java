@@ -165,7 +165,8 @@ class TimestampFormatTest {
         "pattern:yyyy-MM-dd hh:mm|\"2026-11-07 03:04\"",
         "pattern:yyyy-MM-dd mm|\"2026-11-07 45\"",
         "pattern:yyyy-MM-dd hh:mm XXX|\"2026-11-07 11:30 +01:00\"",
-        "pattern:G yyyy-MM-dd|\"AD 2026-01-01\""
+        "pattern:G yyyy-MM-dd|\"AD 2026-01-01\"",
+        "pattern:yyyy-MM-dd a|\"2026-11-07 PM\""
       })
   void patternRejects(String format, String json) {
     assertRejects(format, json);
