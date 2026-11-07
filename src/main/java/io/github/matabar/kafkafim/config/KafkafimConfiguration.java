@@ -8,7 +8,7 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Role;
 import org.springframework.core.env.Environment;
 
-/** Binds and validates {@code kafkafim.*}. */
+/** Binds and validates {@code kafkafim.*} and guards the profile choice at startup. */
 @Configuration(proxyBeanMethods = false)
 @EnableConfigurationProperties(KafkafimProperties.class)
 public class KafkafimConfiguration {
@@ -24,5 +24,11 @@ public class KafkafimConfiguration {
   @Role(BeanDefinition.ROLE_INFRASTRUCTURE)
   static KafkafimPropertiesValidator configurationPropertiesValidator(Environment environment) {
     return new KafkafimPropertiesValidator(() -> ConfigurationPropertySources.get(environment));
+  }
+
+  /** Static so the guard runs with the other bean factory post-processors, before any singleton. */
+  @Bean
+  static LocalProfileGuard localProfileGuard() {
+    return new LocalProfileGuard();
   }
 }
