@@ -221,6 +221,12 @@ both activates that file and disables the default profile, so the local sample n
 binds in production. The packaged `application.yaml` holds only profile-independent
 defaults (Actuator, OTLP, logging).
 
+The model lives in `config/` (`KafkafimProperties` and its records); defaults are
+applied while binding, so the bound tree already carries the effective values. Unknown
+keys under `kafkafim.*` fail startup, so a typo (`idenity:`) never silently falls back to
+a default; only a Kafka cluster's `properties` map accepts arbitrary keys. Section 5.7
+lists every rule.
+
 ### 5.1 Clusters
 
 ```yaml
@@ -431,9 +437,10 @@ must be active for Spring Boot to load it; activating it also switches off the
 default `local` profile that carries the development sample. Two guards back this:
 the chart's unit tests assert that every rendered `Deployment` sets
 `SPRING_PROFILES_ACTIVE=kafkafim` and the non-optional config location, and the
-application (feature, roadmap 0.2) refuses to start with the `local` profile active
-when it detects Kubernetes (`CloudPlatform.KUBERNETES`, which reads
-`KUBERNETES_SERVICE_HOST`/`_PORT` and honours `spring.main.cloud-platform` for tests).
+application refuses to start with the `local` profile active (as the default or
+explicitly) when it detects Kubernetes (`CloudPlatform.KUBERNETES`, which reads
+`KUBERNETES_SERVICE_HOST`/`_PORT` and honours `spring.main.cloud-platform` for tests;
+`config/LocalProfileGuard`, which runs before any bean is created).
 A pod that lost its profile env would otherwise silently run the compose sample with
 inline secrets allowed.
 
@@ -459,16 +466,24 @@ property named after its path relative to the import root:
 application properties live under `kafkafim.*`. Cluster trust settings and identity
 definitions reference those properties with `${...}` placeholders, so the rendered
 ConfigMap never contains a secret. Startup validation refuses literal values in `password`,
-`api-key` and `*-password` fields unless `kafkafim.allow-inline-secrets=true`
-(local development only). Secret provisioning stays outside the chart
+`api-key` and `*-password` fields (and in passthrough `properties` keys ending in
+`password`, containing `secret`, or `sasl.jaas.config`) unless
+`kafkafim.allow-inline-secrets=true` (local development only). A value counts as
+non-literal when its raw, unresolved text is exactly one `${name}` placeholder (no
+`:default`, which would be an inline fallback) or when it is read straight from a
+`configtree` file; the check inspects the property source that wins for that name,
+before placeholder resolution, and reports its origin but never the value. A literal
+in YAML, an environment variable or a system property is rejected. Secret provisioning stays outside the chart
 (`existingSecret` names): plain Secrets, Sealed Secrets, External Secrets or a Vault
 agent all work. A changed secret file is picked up by the same reload path.
 
 ### 5.6 Validation and hot reload
 
 - **Startup**: binding failure or validation failure stops the pod with a clear
-  message; readiness never goes green. The `local` profile active on
-  `CloudPlatform.KUBERNETES` is a validation failure (roadmap 0.2).
+  message that lists every violation at once (Bean Validation and the rules of section
+  5.7 run in the same pass), each as `<property path>: <problem>`; readiness never goes
+  green. The `local` profile active on `CloudPlatform.KUBERNETES` stops startup before
+  binding (section 5.4).
 - **`validate` profile** (application feature, roadmap 0.2): started with
   `--spring.profiles.active=validate,kafkafim` and a rendered ConfigMap mounted, the
   application binds and validates, logs the pipeline summary, and exits 0/1 without
@@ -484,6 +499,55 @@ agent all work. A changed secret file is picked up by the same reload path.
   are untouched. Cluster definition changes restart every pipeline using that
   cluster; an identity change restarts only the pipelines referencing it. An invalid tree is rejected whole; the running config stays, a metric and
   log record the failure.
+
+### 5.7 Defaults and validation rules
+
+Defaults not shown inline in 5.1/5.2: Kafka `security-protocol: PLAINTEXT`; ES
+`bulk` 5000 docs / 5MB / 200ms / 4 in flight, `compression: true`; `source`
+`offset-reset: latest`, `max-poll-records: 500`, `max-in-flight-bytes: 64MB`,
+`commit-interval: 1s`, `max-record-bytes: 8MB`; `dlq` `max-attempts: 10`,
+`max-elapsed: 10m`; `route-mode: first`; `latency.max-age` unset (the cluster's
+`bulk.max-age` applies).
+
+Every rule below is checked on every bind (`config/ConfigValidator`), and all violations
+are reported together:
+
+- **Names** of clusters, identities and pipelines are lower-case kebab-case
+  (`[a-z0-9-]`, no leading/trailing `-`): they appear in group ids, metric labels and
+  configtree paths (`kafka/<cluster>.<identity>/password`).
+- **References**: every `cluster` and `identity` (including `default-identity`) names an
+  existing entry; identity names are unique per cluster (duplicate YAML keys fail).
+- **Kafka**: `bootstrap-servers` are `host:port`. `SASL_PLAINTEXT`/`SASL_SSL` require a
+  resolved identity with a `sasl` block for the consumer and the DLQ producer; `SSL` and
+  `PLAINTEXT` need none (client certificates are the broker's choice). A `sasl` block is
+  only allowed on a `SASL_*` cluster, a keystore and cluster `ssl` trust only on a TLS
+  one. `PLAIN`/`SCRAM-*` need `username` and `password`.
+- **Elasticsearch**: `uris` are `http(s)://host[:port]`, one scheme per cluster;
+  `ssl` trust and keystores only with `https`. An identity is exactly one of
+  `username`+`password` or `api-key`, optionally with a keystore, or a keystore alone.
+  A route on an `https` cluster without a resolvable identity fails; on `http` it binds
+  with a startup warning.
+- **Pipelines**: `topics` are non-empty and distinct; the DLQ topic is not one of the
+  source topics; `max-record-bytes ≤ max-in-flight-bytes`; sizes and durations are
+  positive. A consumer group belongs to exactly one pipeline: two pipelines with the same
+  `(source.cluster, group-id)` are rejected (the same topic in two groups is fine).
+- **Routes**: in `route-mode: first` exactly one `default: true` route, and every other
+  route has at least one `when` condition (an unconditional route would hide the rest);
+  in `all` at most one default, and unconditional routes are allowed (fan-out). The
+  default route is last and has no conditions.
+- **Conditions**: exactly one subject (`field`, `header` or `topic`). A `field` takes
+  exactly one of `equals`, `in` (non-empty), `exists`, `prefix`, `matches` (the regex
+  must compile); a `header` takes `equals`; a `topic` takes nothing and must be one of
+  the pipeline's source topics. Every `field` and document pointer is an RFC 6901 JSON
+  pointer starting with `/`.
+- **Index patterns**: `%{field}` (JSON pointer or top-level name) and
+  `%{+<DateTimeFormatter>}` must be terminated and parse; literal parts must not contain
+  characters Elasticsearch rejects (`\ / * ? " < > | , #` and space) nor start with
+  `-`, `_` or `+`. A `Y` (week-based year) in a date pattern is a warning.
+- **Timestamps**: `timestamp-format` is `iso-8601`, `epoch-millis`, `epoch-seconds` or
+  `pattern:<DateTimeFormatter>` that compiles.
+- **Warnings** (bind, log at `WARN`): no pipelines, `id-missing: auto`, an http route
+  without identity, week-based year, `allow-inline-secrets=true`.
 
 ## 6. Scaling
 
