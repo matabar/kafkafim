@@ -3,7 +3,8 @@
 # job); this file only layers it. See docs/DELIVERY.md.
 ARG JAR_FILE=target/*.jar
 
-FROM eclipse-temurin:27-jre AS extract
+# Extraction output is platform-independent: run it natively instead of under QEMU.
+FROM --platform=$BUILDPLATFORM eclipse-temurin:27-jre AS extract
 WORKDIR /build
 ARG JAR_FILE
 COPY ${JAR_FILE} application.jar
