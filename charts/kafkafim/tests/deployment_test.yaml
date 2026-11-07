@@ -220,6 +220,16 @@ tests:
           path: metadata.labels["app.kubernetes.io/version"]
           value: 1.2.3_build.7
 
+  - it: the version label maps any other character a label cannot hold to "_"
+    values:
+      - ../ci/minimal-values.yaml
+    chart:
+      appVersion: 1.2.3~rc/1
+    asserts:
+      - equal:
+          path: metadata.labels["app.kubernetes.io/version"]
+          value: 1.2.3_rc_1
+
   - it: mounts the group's ConfigMap as a directory and every secret read-only
     values:
       - ../ci/two-groups-values.yaml

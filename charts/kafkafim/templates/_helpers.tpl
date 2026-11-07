@@ -76,11 +76,12 @@ app.kubernetes.io/component: {{ .group }}
 
 {{/*
 app.kubernetes.io/version: the image tag (or appVersion), never the digest, made a
-valid label value: "+" becomes "_", at most 63 characters, starting and ending with
-an alphanumeric character.
+valid label value: any character outside [A-Za-z0-9_.-] (such as semver's "+")
+becomes "_", at most 63 characters, starting and ending with an alphanumeric
+character.
 */}}
 {{- define "kafkafim.versionLabel" -}}
-{{- $v := include "kafkafim.imageTag" . | replace "+" "_" | trunc 63 -}}
+{{- $v := regexReplaceAll "[^A-Za-z0-9_.-]" (include "kafkafim.imageTag" .) "_" | trunc 63 -}}
 {{- regexReplaceAll "^[^A-Za-z0-9]+|[^A-Za-z0-9]+$" $v "" -}}
 {{- end -}}
 
