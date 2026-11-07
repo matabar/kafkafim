@@ -43,7 +43,7 @@ Helm distribution model and is what `helm pull`/`helm push` and `skopeo` underst
 | Job | What it proves |
 |---|---|
 | `build` | `./mvnw verify`: compile, unit tests (Surefire, `*Test`/`*Tests`), integration tests (Failsafe, `*IntegrationTest`, Testcontainers Kafka + Elasticsearch), ArchUnit package-boundary tests. Uploads test reports and the jar. |
-| `image` | The Dockerfile builds from the tested jar (no push); `hadolint` on the Dockerfile; the container starts and exits cleanly with `--spring.profiles.active=validate`. |
+| `image` | The Dockerfile builds from the tested jar (no push); `hadolint` on the Dockerfile; the container starts read-only and answers `/actuator/health/liveness` within 60 s. |
 | `helm` | `helm lint`, `helm template` with every `charts/kafkafim/ci/*-values.yaml`, `kubeconform` against Kubernetes schemas, `helm unittest` for the group-rendering logic. Skipped until the chart exists. |
 
 Branch protection on `main`: PR required, all three jobs required, squash merge.
