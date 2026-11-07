@@ -39,8 +39,9 @@ final class OffsetTracker {
   }
 
   /**
-   * Installs fresh state for partitions newly assigned to a consumer. State left behind by a
-   * previous assignment (to any consumer) is closed and its incomplete records abandoned.
+   * Installs fresh state for partitions newly assigned to a consumer; the only way state is
+   * created. State left behind by a previous assignment (to any consumer) is closed and its
+   * incomplete records abandoned.
    *
    * @param consumer the consumer the partitions were assigned to
    * @param assigned the newly assigned partitions
@@ -86,8 +87,13 @@ final class OffsetTracker {
     int keyBytes = record.key() == null ? 0 : record.key().length;
     PartitionOffsets owner = partitions.get(tp);
     if (owner == null || owner.consumer() != consumer) {
-      // Records only arrive for assigned partitions, after onPartitionsAssigned; be safe anyway.
-      owner = install(tp, consumer);
+      // Only assign() installs state, from the rebalance callback where the group actually gave
+      // the partition to this consumer. A record without owned state comes from a consumer that
+      // lost the partition but does not know yet (a zombie, or a thread of a stopped container):
+      // it must never take over the real owner's state. It is abandoned at once (bytes released,
+      // completion ignored) and the partition's owner re-reads it.
+      owner = new PartitionOffsets(tp, consumer);
+      owner.close();
     }
     SourceRecord handle =
         new SourceRecord(

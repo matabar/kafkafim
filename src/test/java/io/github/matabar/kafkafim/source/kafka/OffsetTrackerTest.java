@@ -14,6 +14,7 @@ import java.util.concurrent.TimeUnit;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.common.TopicPartition;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 class OffsetTrackerTest {
@@ -26,6 +27,11 @@ class OffsetTrackerTest {
   private final List<Boolean> budgetEvents = new ArrayList<>();
   private final ByteBudget budget = new ByteBudget(1_000_000, 0, budgetEvents::add);
   private final OffsetTracker tracker = new OffsetTracker(budget);
+
+  @BeforeEach
+  void assignToFirstConsumer() {
+    tracker.assign(C1, List.of(P0, P1));
+  }
 
   private SourceRecord track(TopicPartition tp, long offset) {
     return track(tp, offset, new byte[10]);
@@ -164,6 +170,7 @@ class OffsetTrackerTest {
     assertThat(tracker.pendingRecords()).isEqualTo(1);
 
     // A new assignment of P0 starts from scratch and is not affected by the old records.
+    tracker.assign(C1, List.of(P0));
     SourceRecord again = track(P0, 1);
     r1.complete();
     assertThat(committable(P0)).isEqualTo(1L);
@@ -202,8 +209,37 @@ class OffsetTrackerTest {
   }
 
   @Test
+  void zombieConsumerCannotTakeOverTheOwnersState() {
+    tracker.assign(C2, List.of(P0));
+    final SourceRecord owned = tracker.track(C2, record(P0, 100), 1_000);
+
+    // C1 still believes it owns P0 and polls a buffered record for it.
+    SourceRecord zombie = tracker.track(C1, record(P0, 101), 1_000);
+    assertThat(zombie.isComplete()).isFalse();
+    zombie.complete(); // abandoned on arrival: ignored
+    assertThat(tracker.pendingRecords()).as("only C2's record is in flight").isEqualTo(1);
+    assertThat(budget.outstanding()).isEqualTo(10);
+
+    assertThat(tracker.committable(C2, List.of(P0)).get(P0).offset())
+        .as("C2's record 100 still blocks")
+        .isEqualTo(100L);
+    owned.complete();
+    assertThat(tracker.committable(C2, List.of(P0)).get(P0).offset()).isEqualTo(101L);
+    assertThat(tracker.committable(C1, List.of(P0))).isEmpty();
+  }
+
+  @Test
+  void recordForAnUnassignedPartitionIsAbandoned() {
+    SourceRecord stray = tracker.track(C1, record(new TopicPartition("other", 0), 5), 1_000);
+    assertThat(tracker.pendingRecords()).isZero();
+    assertThat(budget.outstanding()).isZero();
+    assertThat(tracker.committable(C1, List.of(stray.topicPartition()))).isEmpty();
+  }
+
+  @Test
   void revokeAllDropsStateOfEveryConsumer() {
     track(P0, 0);
+    tracker.assign(C2, List.of(P1));
     tracker.track(C2, record(P1, 0), 1_000);
     assertThat(tracker.revokeAll()).isEqualTo(2);
     assertThat(tracker.pendingRecords()).isZero();
@@ -245,6 +281,7 @@ class OffsetTrackerTest {
   @Test
   void concurrentCompletionAndRevokeReleaseEachRecordOnce() throws Exception {
     for (int round = 0; round < 50; round++) {
+      tracker.assign(C1, List.of(P0));
       List<SourceRecord> records = new ArrayList<>();
       for (int i = 0; i < 200; i++) {
         records.add(track(P0, round * 1_000L + i));
