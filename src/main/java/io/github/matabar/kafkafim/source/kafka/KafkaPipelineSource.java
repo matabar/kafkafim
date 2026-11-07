@@ -204,6 +204,35 @@ public final class KafkaPipelineSource implements SmartLifecycle {
     }
   }
 
+  /**
+   * Stops asynchronously, so that the lifecycle processor drains every pipeline of the phase in
+   * parallel within one {@code timeout-per-shutdown-phase} instead of one after another.
+   *
+   * @param callback run once this source has stopped
+   */
+  @Override
+  public void stop(Runnable callback) {
+    Thread.ofVirtual()
+        .name(clientId + "-stop")
+        .start(() -> {
+          try {
+            stop();
+          } finally {
+            callback.run();
+          }
+        });
+  }
+
+  /**
+   * {@code false}: the supervisor starts each source explicitly, so a {@link
+   * MissingTopicsException} fails one pipeline instead of the application context. Stopping on
+   * shutdown still goes through the lifecycle phase.
+   */
+  @Override
+  public boolean isAutoStartup() {
+    return false;
+  }
+
   @Override
   public boolean isRunning() {
     ConcurrentMessageListenerContainer<byte[], byte[]> running = container;

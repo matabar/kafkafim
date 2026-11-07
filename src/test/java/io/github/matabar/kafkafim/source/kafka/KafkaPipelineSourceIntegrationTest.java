@@ -214,7 +214,8 @@ class KafkaPipelineSourceIntegrationTest {
     KafkaPipelineSource source =
         new KafkaPipelineSource(
             "drain",
-            source(topic, 500, DataSize.ofMegabytes(1)),
+            // A long commit-interval: the only commit after the first poll is the one on revoke.
+            source(topic, 500, DataSize.ofMegabytes(1), Duration.ofHours(1)),
             factories.get("local", null),
             recorder,
             SourceOptions.defaults().withDesiredConcurrency(1).withDrainTimeout(TIMEOUT));
@@ -228,6 +229,7 @@ class KafkaPipelineSourceIntegrationTest {
         .until(() -> source.pauseReasons().contains(KafkaPipelineSource.STOPPING_REASON));
     Thread.sleep(300);
     assertThat(stopper.isAlive()).as("waits for in-flight records").isTrue();
+    assertThat(committed(groupOf(topic), topic, 0)).as("nothing committed yet").isLessThan(1);
     recorder.records.forEach(SourceRecord::complete);
     stopper.join(TIMEOUT.toMillis());
     assertThat(stopper.isAlive()).isFalse();
@@ -317,6 +319,11 @@ class KafkaPipelineSourceIntegrationTest {
   }
 
   private static Pipeline.Source source(String topic, int maxPollRecords, DataSize maxInFlight) {
+    return source(topic, maxPollRecords, maxInFlight, COMMIT_INTERVAL);
+  }
+
+  private static Pipeline.Source source(
+      String topic, int maxPollRecords, DataSize maxInFlight, Duration commitInterval) {
     return new Pipeline.Source(
         "local",
         List.of(topic),
@@ -325,7 +332,7 @@ class KafkaPipelineSourceIntegrationTest {
         Pipeline.OffsetReset.EARLIEST,
         maxPollRecords,
         maxInFlight,
-        COMMIT_INTERVAL,
+        commitInterval,
         DataSize.ofBytes(1_000));
   }
 
