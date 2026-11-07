@@ -108,8 +108,8 @@ For each `groups.<g>`:
   `appVersion` next to a digest, so a reference never shows a tag the values did not
   name. The `app.kubernetes.io/version` label comes from `image.tag` or `appVersion`,
   never the digest, made a valid label value: characters outside `[A-Za-z0-9_.-]`
-(such as `+`) become `_`, cut to 63 characters,
-  leading and trailing non-alphanumerics dropped. It is on the resources, not on the
+  (such as `+`) become `_`, cut to 63 characters, leading and trailing
+  non-alphanumerics dropped. It is on the resources, not on the
   pod template, so a version change alone does not roll the pods.
 - Names: a group's resources are `<fullname>-<group>`; with the conventional release
   name `kafkafim` that is `kafkafim-<group>`. The ServiceAccount (and the opt-in
