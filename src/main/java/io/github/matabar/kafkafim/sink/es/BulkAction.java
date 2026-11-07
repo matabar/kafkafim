@@ -1,6 +1,7 @@
 package io.github.matabar.kafkafim.sink.es;
 
 import io.github.matabar.kafkafim.config.Pipeline.Op;
+import java.nio.charset.StandardCharsets;
 import java.util.Objects;
 import org.jspecify.annotations.Nullable;
 
@@ -30,6 +31,9 @@ public record BulkAction<H>(
     byte[] source,
     H handle) {
 
+  /** Elasticsearch's {@code _id} limit in UTF-8 bytes. */
+  public static final int MAX_ID_BYTES = 512;
+
   /** Validates the action; a violation is a programming error in the caller. */
   public BulkAction {
     Objects.requireNonNull(index, "index");
@@ -40,6 +44,21 @@ public record BulkAction<H>(
     }
     if (version != null && version < 0) {
       throw new IllegalArgumentException("version must not be negative");
+    }
+    // Each of the following makes Elasticsearch reject the whole bulk request (400), which the
+    // sink could only retry forever: reject it here, at the caller.
+    if (version != null && op == Op.CREATE) {
+      throw new IllegalArgumentException(
+          "op create does not support external versions (Elasticsearch: use index)");
+    }
+    if (id != null) {
+      int idBytes = id.getBytes(StandardCharsets.UTF_8).length;
+      if (idBytes == 0 || idBytes > MAX_ID_BYTES) {
+        throw new IllegalArgumentException("_id must be 1 to 512 UTF-8 bytes");
+      }
+    }
+    if (ingestPipeline != null && ingestPipeline.isEmpty()) {
+      throw new IllegalArgumentException("ingest pipeline must not be empty");
     }
     if (source.length == 0) {
       throw new IllegalArgumentException("source must not be empty");

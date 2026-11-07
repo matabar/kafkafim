@@ -60,7 +60,7 @@ class BulkBodyTest {
     // Number spelling, key order, whitespace and unicode survive: the bytes are not re-serialised.
     String source = "{\"b\":1.0E2, \"a\":[1 ,2],\"u\":\"\\u00e9\",\"x\":\"é\"}";
     BulkAction<String> first = action("orders", "1", Op.INDEX, null, null, source);
-    BulkAction<String> second = action("orders", null, Op.CREATE, 3L, "p", "{}");
+    BulkAction<String> second = action("orders", null, Op.INDEX, 3L, "p", "{}");
     List<TestEntry> entries = List.of(TestEntry.of(first), TestEntry.of(second));
     long size = entries.stream().mapToLong(TestEntry::size).sum();
 
@@ -91,6 +91,20 @@ class BulkBodyTest {
         .isThrownBy(() -> action("orders", "1", Op.INDEX, -1L, null, "{}"));
     assertThatIllegalArgumentException()
         .isThrownBy(() -> action("", "1", Op.INDEX, null, null, "{}"));
+  }
+
+  @Test
+  void actionRejectsWhatElasticsearchWouldRejectForTheWholeRequest() {
+    assertThatIllegalArgumentException()
+        .isThrownBy(() -> action("orders", "1", Op.CREATE, 5L, null, "{}"))
+        .withMessageContaining("external versions");
+    assertThatIllegalArgumentException()
+        .isThrownBy(() -> action("orders", "1", Op.INDEX, null, "", "{}"));
+    assertThatIllegalArgumentException()
+        .isThrownBy(() -> action("orders", "", Op.INDEX, null, null, "{}"));
+    assertThatIllegalArgumentException()
+        .isThrownBy(() -> action("orders", "é".repeat(257), Op.INDEX, null, null, "{}"));
+    assertThat(action("orders", "x".repeat(512), Op.INDEX, null, null, "{}").id()).hasSize(512);
   }
 
   record TestEntry(byte[] metadataLine, byte[] source) implements BulkBody.Entry {
