@@ -60,12 +60,11 @@
 			<artifactId>spring-boot-starter-webmvc</artifactId>
 		</dependency>
 
-
-		<!-- Elasticsearch: low-level REST client only (version-agnostic HTTP; we build bulk bodies ourselves) -->
+		<!-- Elasticsearch: low-level REST client only (plain HTTP, version-agnostic; we build bulk bodies ourselves).
+		     The rest5 variant (Apache HttpClient 5) is the one managed by the Spring Boot 4 BOM. -->
 		<dependency>
-			<groupId>org.elasticsearch.client</groupId>
-			<artifactId>elasticsearch-rest-client</artifactId>
-			<version>${elasticsearch-client.version}</version>
+			<groupId>co.elastic.clients</groupId>
+			<artifactId>elasticsearch-rest5-client</artifactId>
 		</dependency>
 		<!-- Circuit breaker + retry per Elasticsearch cluster -->
 		<dependency>
