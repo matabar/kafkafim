@@ -60,10 +60,13 @@ jobs:
 
       - uses: sigstore/cosign-installer@v4.1.3
       - name: Sign image
+        # Legacy (.sig tag) format on purpose: cosign v3 defaults to the OCI-referrer bundle
+        # format, which `cosign save` / `cosign load` do not carry into the air-gap layout.
+        # `cosign verify` falls back to the legacy format automatically.
         env:
           IMAGE: ${{ steps.ver.outputs.image }}
           DIGEST: ${{ steps.push.outputs.digest }}
-        run: cosign sign --yes "${IMAGE}@${DIGEST}"
+        run: cosign sign --yes --new-bundle-format=false "${IMAGE}@${DIGEST}"
       - uses: anchore/sbom-action@v0
         with:
           image: ${{ steps.ver.outputs.image }}@${{ steps.push.outputs.digest }}
@@ -92,12 +95,13 @@ jobs:
           V: ${{ steps.ver.outputs.version }}
           CHART_REPO: ${{ steps.ver.outputs.chart_repo }}
           HELM_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
         run: |
           helm package charts/kafkafim --version "$V" --app-version "$V" -d dist
-          echo "$HELM_TOKEN" | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
+          echo "$HELM_TOKEN" | helm registry login ghcr.io -u "$ACTOR" --password-stdin
           helm push "dist/kafkafim-$V.tgz" "$CHART_REPO" 2>&1 | tee push.log
           DIGEST=$(grep -o 'sha256:[a-f0-9]*' push.log | head -1)
-          cosign sign --yes "${CHART_REPO#oci://}/kafkafim@${DIGEST}"
+          cosign sign --yes --new-bundle-format=false "${CHART_REPO#oci://}/kafkafim@${DIGEST}"
 
       - name: Air-gap bundle
         env:
