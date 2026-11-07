@@ -121,7 +121,9 @@ probes:
     failureThreshold: 3
     timeoutSeconds: 2
 
-# PodDisruptionBudget per group: set exactly one of minAvailable / maxUnavailable.
+# PodDisruptionBudget per group. maxUnavailable, when set, wins over minAvailable (so
+# --set pdb.maxUnavailable=1 needs no null for the default). A single-replica group
+# (allowSingleReplica) should set maxUnavailable: 1, or minAvailable 1 blocks drains.
 pdb:
   minAvailable: 1
 
@@ -148,6 +150,7 @@ serviceMonitor:
   interval: 30s
   labels: {}
 
+# Extra pod labels; must not use the selector keys app.kubernetes.io/{name,instance,component}.
 podLabels: {}
 podAnnotations:
   prometheus.io/scrape: "true"

@@ -9,10 +9,12 @@ metadata:
   labels:
     {{- include "kafkafim.groupLabels" (dict "root" $ "group" $g) | nindent 4 }}
 spec:
-  {{- if hasKey $pdb "maxUnavailable" }}
+  {{- if not (kindIs "invalid" $pdb.maxUnavailable) }}
   maxUnavailable: {{ $pdb.maxUnavailable }}
+  {{- else if not (kindIs "invalid" $pdb.minAvailable) }}
+  minAvailable: {{ $pdb.minAvailable }}
   {{- else }}
-  minAvailable: {{ $pdb.minAvailable | default 1 }}
+  minAvailable: 1
   {{- end }}
   selector:
     matchLabels:

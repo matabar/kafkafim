@@ -62,7 +62,7 @@ spec:
       {{- if $.Values.topologySpread.enabled }}
       topologySpreadConstraints:
         - maxSkew: {{ $.Values.topologySpread.maxSkew | default 1 }}
-          topologyKey: {{ $.Values.topologySpread.topologyKey }}
+          topologyKey: {{ $.Values.topologySpread.topologyKey | quote }}
           whenUnsatisfiable: {{ $.Values.topologySpread.whenUnsatisfiable | default "ScheduleAnyway" }}
           labelSelector:
             matchLabels:
@@ -117,21 +117,21 @@ spec:
           {{- end }}
           startupProbe:
             httpGet:
-              path: {{ $.Values.probes.startup.path }}
+              path: {{ $.Values.probes.startup.path | quote }}
               port: http
             periodSeconds: {{ $.Values.probes.startup.periodSeconds }}
             failureThreshold: {{ $.Values.probes.startup.failureThreshold }}
             timeoutSeconds: {{ $.Values.probes.startup.timeoutSeconds }}
           livenessProbe:
             httpGet:
-              path: {{ $.Values.probes.liveness.path }}
+              path: {{ $.Values.probes.liveness.path | quote }}
               port: http
             periodSeconds: {{ $.Values.probes.liveness.periodSeconds }}
             failureThreshold: {{ $.Values.probes.liveness.failureThreshold }}
             timeoutSeconds: {{ $.Values.probes.liveness.timeoutSeconds }}
           readinessProbe:
             httpGet:
-              path: {{ $.Values.probes.readiness.path }}
+              path: {{ $.Values.probes.readiness.path | quote }}
               port: http
             periodSeconds: {{ $.Values.probes.readiness.periodSeconds }}
             failureThreshold: {{ $.Values.probes.readiness.failureThreshold }}
@@ -152,7 +152,7 @@ spec:
               mountPath: /tmp
             {{- range $i, $s := $.Values.secrets }}
             - name: secret-{{ $i }}
-              mountPath: {{ include "kafkafim.secretMountPath" $s.mountPath }}
+              mountPath: {{ include "kafkafim.secretMountPath" $s.mountPath | quote }}
               readOnly: true
             {{- end }}
       volumes:
@@ -165,6 +165,6 @@ spec:
         {{- range $i, $s := $.Values.secrets }}
         - name: secret-{{ $i }}
           secret:
-            secretName: {{ $s.name }}
+            secretName: {{ $s.name | quote }}
         {{- end }}
 {{- end }}

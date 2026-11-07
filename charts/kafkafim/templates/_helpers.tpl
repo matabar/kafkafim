@@ -177,6 +177,18 @@ cannot express.
   {{- end -}}
   {{- $_ := set $seen $path (toString $i) -}}
 {{- end -}}
+{{- range $a, $ia := $seen -}}
+  {{- range $b, $ib := $seen -}}
+    {{- if hasPrefix (printf "%s/" $a) $b -}}
+      {{- fail (printf "secrets[%s] mountPath %q is nested inside secrets[%s] mountPath %q; secret mounts must not overlap" $ib $b $ia $a) -}}
+    {{- end -}}
+  {{- end -}}
+{{- end -}}
+{{- range $k, $_ := .Values.podLabels -}}
+  {{- if has $k (list "app.kubernetes.io/name" "app.kubernetes.io/instance" "app.kubernetes.io/component") -}}
+    {{- fail (printf "podLabels must not set %s; it is a selector label the chart sets" $k) -}}
+  {{- end -}}
+{{- end -}}
 {{- $reserved := list "SPRING_PROFILES_ACTIVE" "SPRING_CONFIG_ADDITIONAL_LOCATION" "SPRING_CONFIG_IMPORT" "OTEL_EXPORTER_OTLP_ENDPOINT" "JAVA_TOOL_OPTIONS" -}}
 {{- if .Values.otel.headers -}}
   {{- $reserved = append $reserved "OTEL_EXPORTER_OTLP_HEADERS" -}}

@@ -114,3 +114,27 @@ tests:
           path: metadata.name
           value: ingest-kafkafim-audit
         documentIndex: 0
+
+  - it: keeps a group minAvailable of 0
+    template: templates/pdb.yaml
+    values:
+      - ../ci/minimal-values.yaml
+    set:
+      groups.orders.pdb: { minAvailable: 0 }
+    asserts:
+      - equal:
+          path: spec.minAvailable
+          value: 0
+
+  - it: uses a top-level maxUnavailable without nulling the default minAvailable
+    template: templates/pdb.yaml
+    values:
+      - ../ci/minimal-values.yaml
+    set:
+      pdb.maxUnavailable: 1
+    asserts:
+      - equal:
+          path: spec.maxUnavailable
+          value: 1
+      - notExists:
+          path: spec.minAvailable

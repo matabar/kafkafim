@@ -164,3 +164,28 @@ tests:
           valueFrom: { secretKeyRef: { name: apm-token, key: headers } }
     asserts:
       - notFailedTemplate: {}
+
+  - it: fails when one secret mount is nested inside another
+    set:
+      secrets:
+        - { name: outer, mountPath: /etc/kafkafim/secrets/kafka }
+        - { name: inner, mountPath: /etc/kafkafim/secrets/kafka/prod-a }
+    asserts:
+      - failedTemplate:
+          errorMessage: 'secrets[1] mountPath "/etc/kafkafim/secrets/kafka/prod-a" is nested inside secrets[0] mountPath "/etc/kafkafim/secrets/kafka"; secret mounts must not overlap'
+
+  - it: accepts sibling mounts that share a name prefix
+    set:
+      secrets:
+        - { name: a, mountPath: /etc/kafkafim/secrets/kafka/prod-a }
+        - { name: b, mountPath: /etc/kafkafim/secrets/kafka/prod-a.orders-reader }
+    asserts:
+      - notFailedTemplate: {}
+
+  - it: fails when podLabels override a selector label
+    set:
+      podLabels:
+        app.kubernetes.io/component: other
+    asserts:
+      - failedTemplate:
+          errorMessage: 'podLabels must not set app.kubernetes.io/component; it is a selector label the chart sets'
