@@ -217,6 +217,8 @@ public final class KafkaPipelineSource implements SmartLifecycle {
         .start(() -> {
           try {
             stop();
+          } catch (RuntimeException e) {
+            LOG.error("Pipeline '{}': stop failed", pipeline, e);
           } finally {
             callback.run();
           }
