@@ -1,0 +1,1 @@
+{"errors":true,"items":[{"index":{"status":201}},{"index":{"status":403,"error":{"type":"security_exception","reason":"action [indices:data/write/bulk[s]] is unauthorized for user [kfm-writer] with effective roles [kfm-orders-writer] on indices [kfm-strict], this action is granted by the index privileges [create_doc,create,delete,index,write,all]"}}}]}
