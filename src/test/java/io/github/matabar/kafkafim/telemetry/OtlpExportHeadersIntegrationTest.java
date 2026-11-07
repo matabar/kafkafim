@@ -44,7 +44,11 @@ import org.junit.jupiter.api.io.TempDir;
  */
 class OtlpExportHeadersIntegrationTest {
 
-  /** Mount paths below the configtree root, as in charts/kafkafim/templates/deployment.yaml. */
+  /**
+   * Mount paths below the configtree root. Keep in sync with {@code
+   * kafkafim.otelSecretHeaderMountPaths} in charts/kafkafim/templates/_helpers.tpl (asserted by
+   * charts/kafkafim/tests/deployment_test.yaml).
+   */
   private static final List<String> SECRET_HEADER_DIRS =
       List.of(
           "management/otlp/metrics/export/headers",
@@ -97,6 +101,8 @@ class OtlpExportHeadersIntegrationTest {
       Path headerDir = Files.createDirectories(secrets.resolve(dir));
       // Kubernetes Secret files often end with a newline; configtree trims it.
       Files.writeString(headerDir.resolve("Authorization"), SECRET_VALUE + "\n");
+      // A dashed header name, as an API-key style header would be.
+      Files.writeString(headerDir.resolve("X-Api-Key"), "k1\n");
     }
     final int serverPort = freePort();
     appLog = temp.resolve("app.log");
@@ -115,10 +121,14 @@ class OtlpExportHeadersIntegrationTest {
             name.startsWith("OTEL_")
                 || name.startsWith("SPRING_")
                 || name.startsWith("MANAGEMENT_")
-                || name.startsWith("KUBERNETES_"));
+                || name.startsWith("KUBERNETES_")
+                || name.startsWith("KAFKAFIM_")
+                || name.equals("JAVA_TOOL_OPTIONS")
+                || name.equals("JDK_JAVA_OPTIONS"));
     // As rendered by the chart (otel.endpoint, otel.headers, the configtree import).
     env.put("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:" + collector.getAddress().getPort());
-    env.put("OTEL_EXPORTER_OTLP_HEADERS", "x-kafkafim-tenant=ingest");
+    // The chart percent-encodes "%" and "," in otel.headers values: "a,b%c" -> "a%2Cb%25c".
+    env.put("OTEL_EXPORTER_OTLP_HEADERS", "x-kafkafim-tenant=ingest,x-kafkafim-list=a%2Cb%25c");
     env.put("SPRING_CONFIG_IMPORT", "configtree:" + secrets.toAbsolutePath() + "/");
     // Test-only: no compose stack, a free port, every request sampled, fast export.
     env.put("SPRING_DOCKER_COMPOSE_ENABLED", "false");
@@ -163,7 +173,9 @@ class OtlpExportHeadersIntegrationTest {
           .isNotEmpty()
           .allSatisfy(headers -> {
             assertThat(headers.getFirst("x-kafkafim-tenant")).isEqualTo("ingest");
+            assertThat(headers.getFirst("x-kafkafim-list")).isEqualTo("a,b%c");
             assertThat(headers.getFirst("Authorization")).isEqualTo(SECRET_VALUE);
+            assertThat(headers.getFirst("X-Api-Key")).isEqualTo("k1");
           });
     }
   }
