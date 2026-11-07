@@ -14,6 +14,22 @@ import org.springframework.boot.builder.SpringApplicationBuilder;
 class LocalProfileGuardIntegrationTest {
 
   @Test
+  void refusesToStartWithTheDefaultProfileOnKubernetes() {
+    // No profile set: application.yaml's spring.profiles.default=local applies, as in a pod that
+    // lost SPRING_PROFILES_ACTIVE.
+    SpringApplicationBuilder application =
+        new SpringApplicationBuilder(KafkafimApplication.class)
+            .properties(
+                "spring.main.cloud-platform=kubernetes",
+                "spring.docker.compose.enabled=false",
+                "server.port=0");
+
+    assertThatThrownBy(application::run)
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessageContaining("SPRING_PROFILES_ACTIVE=kafkafim");
+  }
+
+  @Test
   void refusesToStartWithTheLocalProfileOnKubernetes() {
     SpringApplicationBuilder application =
         new SpringApplicationBuilder(KafkafimApplication.class)

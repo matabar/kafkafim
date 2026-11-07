@@ -188,7 +188,7 @@ public record Pipeline(
   /**
    * An ordered routing rule (DESIGN §5.3).
    *
-   * @param name label for metrics; default: the route's position
+   * @param name label for metrics; optional, consumers fall back to the route's position
    * @param when conditions that must all hold; empty only for the default route or in {@code all}
    *     mode
    * @param isDefault {@code default: true}: taken when no other route matched

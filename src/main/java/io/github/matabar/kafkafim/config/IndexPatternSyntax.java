@@ -1,5 +1,8 @@
 package io.github.matabar.kafkafim.config;
 
+import java.time.DateTimeException;
+import java.time.ZoneOffset;
+import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
@@ -12,7 +15,11 @@ import java.util.List;
 final class IndexPatternSyntax {
 
   /** Characters Elasticsearch rejects in index names; lower-casing happens at resolution. */
-  private static final String FORBIDDEN_LITERAL_CHARS = "\\/*?\"<>|,# ";
+  private static final String FORBIDDEN_LITERAL_CHARS = "\\/*?\"<>|,#: ";
+
+  /** A fixed instant to format date references with, to check what they produce. */
+  private static final ZonedDateTime SAMPLE =
+      ZonedDateTime.of(2026, 12, 31, 23, 59, 58, 0, ZoneOffset.UTC);
 
   private IndexPatternSyntax() {}
 
@@ -22,6 +29,9 @@ final class IndexPatternSyntax {
     if (pattern == null || pattern.isBlank()) {
       errors.add("index pattern is empty");
       return errors;
+    }
+    if (pattern.equals(".") || pattern.equals("..")) {
+      errors.add("index names must not be '.' or '..'");
     }
     char first = pattern.charAt(0);
     if (first == '-' || first == '_' || first == '+') {
@@ -59,7 +69,7 @@ final class IndexPatternSyntax {
         break;
       }
       String format = pattern.substring(open + 3, close);
-      if (format.indexOf('Y') >= 0) {
+      if (format.replaceAll("'[^']*'", "").indexOf('Y') >= 0) {
         warnings.add(
             "'%{+"
                 + format
@@ -89,10 +99,18 @@ final class IndexPatternSyntax {
         errors.add("empty date pattern '%{+}'");
         return;
       }
+      String sample;
       try {
-        DateTimeFormatter.ofPattern(format);
-      } catch (IllegalArgumentException e) {
+        sample = DateTimeFormatter.ofPattern(format).format(SAMPLE);
+      } catch (IllegalArgumentException | DateTimeException e) {
         errors.add("invalid DateTimeFormatter pattern '" + format + "': " + e.getMessage());
+        return;
+      }
+      // What the date produces is part of the index name too, e.g. 'yyyy/MM' or 'HH:mm'.
+      List<String> produced = new ArrayList<>();
+      checkLiteral(sample, produced);
+      for (String problem : produced) {
+        errors.add("'%{+" + format + "}' produces '" + sample + "': " + problem);
       }
     } else if (reference.startsWith("/")) {
       String error = JsonPointers.error(reference);

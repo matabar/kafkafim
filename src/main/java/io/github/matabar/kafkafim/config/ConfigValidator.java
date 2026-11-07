@@ -310,7 +310,8 @@ public final class ConfigValidator {
       String path, String identity, String clusterName, KafkaCluster cluster) {
     SecurityProtocol protocol = cluster.securityProtocol();
     if (identity == null) {
-      if (protocol.requiresSasl()) {
+      // An invalid default-identity is reported on the cluster; do not send users here too.
+      if (protocol.requiresSasl() && cluster.defaultIdentity() == null) {
         error(
             path,
             "Kafka cluster '"
@@ -434,7 +435,9 @@ public final class ConfigValidator {
       return;
     }
     if (route.identity() == null) {
-      if (cluster.usesHttps()) {
+      if (cluster.defaultIdentity() != null) {
+        return; // the cluster's default-identity is invalid and reported there
+      } else if (cluster.usesHttps()) {
         error(
             path + ".identity",
             "Elasticsearch cluster '"

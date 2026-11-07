@@ -13,7 +13,7 @@ import org.springframework.validation.annotation.Validated;
  * identity resolution of §5.2.1 (source → cluster {@code default-identity}; DLQ → resolved source
  * identity; route → cluster {@code default-identity}). A default identity is only applied when the
  * referenced cluster exists and declares it; otherwise the reference stays unset and {@link
- * ConfigValidator} reports the problem once, at its origin.
+ * ConfigValidator} reports the problem once, on the cluster.
  *
  * @param allowInlineSecrets accept literal secret values (local development only, §5.5)
  * @param kafka Kafka cluster definitions

@@ -359,6 +359,23 @@ class ConfigValidationTest {
     }
 
     @Test
+    void reportsInvalidDefaultIdentityOnlyOnTheCluster() {
+      assertThat(
+              ConfigTestSupport.errors(
+                  MINIMAL,
+                  SASL_SSL,
+                  sasl("reader"),
+                  K + ".default-identity=nope",
+                  ES + ".uris=https://a:9200",
+                  ES + ".identities.w.api-key=key",
+                  ES + ".default-identity=nope",
+                  "kafkafim.allow-inline-secrets=true"))
+          .containsExactlyInAnyOrder(
+              K + ".default-identity: 'nope' is not one of this cluster's identities [reader]",
+              ES + ".default-identity: 'nope' is not one of this cluster's identities [w]");
+    }
+
+    @Test
     void rejectsAnUnknownSourceIdentity() {
       assertInvalid(
           MINIMAL,
@@ -680,6 +697,27 @@ class ConfigValidationTest {
     }
 
     @Test
+    void rejectsColonsDotNamesAndDatesThatProduceForbiddenCharacters() {
+      assertInvalid(index("orders:x"), "index names must not contain ':'");
+      assertInvalid(index(".."), "index names must not be '.' or '..'");
+      assertInvalid(
+          index("orders-%{+yyyy/MM}"),
+          P
+              + ".routes[0].index: '%{+yyyy/MM}' produces '2026/12': index names must not contain"
+              + " '/'");
+      assertInvalid(index("orders-%{+HH:mm}"), "produces '23:59'");
+    }
+
+    @Test
+    void doesNotWarnOnQuotedLiteralY() {
+      ConfigValidator.Result result =
+          ConfigValidator.validate(
+              ConfigTestSupport.bind(defaultRoute("cluster: es, index: \"a-%{+yyyy'Y'MM}\"")));
+
+      assertThat(result.warnings()).noneMatch(w -> w.contains("week-based year"));
+    }
+
+    @Test
     void warnsOnWeekBasedYear() {
       ConfigValidator.Result result =
           ConfigValidator.validate(ConfigTestSupport.bind(index("a-%{+YYYY.MM.dd}")));
@@ -760,6 +798,11 @@ class ConfigValidationTest {
 
   @Nested
   class Sources {
+
+    @Test
+    void rejectsBlankGroupId() {
+      assertInvalid(MINIMAL, P + ".source.group-id: must not be blank", P + ".source.group-id= ");
+    }
 
     @Test
     void rejectsDuplicateTopics() {
