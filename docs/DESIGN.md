@@ -479,8 +479,7 @@ placeholder (secret or username) that nothing defines always fails startup, even
 inline secrets allowed: Spring leaves unresolvable placeholders as literal text, so a
 missing secret file would otherwise become the password. A value with a placeholder embedded in
 other text (for example a `sasl.jaas.config` string containing `password="${...}"`)
-counts as a literal, so such a value is mounted whole as one secret file. Date patterns
-in index names are checked and resolved with `Locale.ROOT`. Secret provisioning stays outside the chart
+counts as a literal, so such a value is mounted whole as one secret file. Secret provisioning stays outside the chart
 (`existingSecret` names): plain Secrets, Sealed Secrets, External Secrets or a Vault
 agent all work. A changed secret file is picked up by the same reload path.
 
@@ -554,7 +553,8 @@ are reported together:
   `%{+<DateTimeFormatter>}` must be terminated and parse; literal parts, and what each
   date pattern produces (so `%{+yyyy/MM}` or `%{+HH:mm}` fail), must not contain
   characters Elasticsearch rejects (`\ / * ? " < > | , # :` and space); a name must not
-  start with `-`, `_` or `+`, nor be `.` or `..`. An unquoted `Y` (week-based year) in a
+  start with `-`, `_` or `+`, nor be `.` or `..`. Date patterns are checked, and resolved, with
+  `Locale.ROOT`. An unquoted `Y` (week-based year) in a
   date pattern is a warning.
 - **Timestamps**: `timestamp-format` is `iso-8601`, `epoch-millis`, `epoch-seconds` or
   `pattern:<DateTimeFormatter>` that compiles.
