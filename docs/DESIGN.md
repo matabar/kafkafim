@@ -167,7 +167,14 @@ batching is per target, not per partition.
   Ids always come from the JSON content, never from the Kafka key. If missing →
   DLQ with `error.type=missing_id`, unless `document.id-missing: auto` (ES-generated
   id; duplicates on retry, startup warning).
+  A JSON string (1 to 512 UTF-8 bytes, ES's `_id` limit) is used as is; a JSON integer
+  of any size becomes its decimal digits (canonical, since JSON has no leading zeros or
+  `+`; `-0` is `0`). A number with a fraction or exponent, a boolean, an object or an
+  array is `missing_id` in both modes: `auto` covers only an absent or `null` id.
 - Optional external versioning: `document.version-field`, `version_type: external`.
+  The version is a JSON integer or a string of ASCII digits in `[0, 2^63-1]`; anything
+  else, including an absent or `null` version, is `error.type=decode`, because an
+  unversioned write could overwrite a newer document.
   On `version_conflict_engine_exception` the item is counted as `stale` and treated
   as success (`document.on-version-conflict: ignore|dlq`).
 - Data streams require `op: create`. A retried item that already landed returns 409;
@@ -183,11 +190,39 @@ JSON, a scalar, `null`, an array containing non-objects) goes to the DLQ with
 `error.type=decode`; the DLQ record carries the original bytes and, for a bad array
 element, `kafkafim.doc-index`.
 
+- **Granularity.** A value that is not one valid JSON value fails as one record, with
+  no `doc-index`: a tombstone, an empty or whitespace-only value, a value over
+  `max-record-bytes` (rejected before parsing), invalid JSON or UTF-8, a scalar or
+  `null`, trailing content, nesting deeper than 500, or a duplicate key at any depth.
+  Duplicates are rejected because ES rejects them too, and because routing and `_id`
+  would otherwise read whichever duplicate the parser kept. Inside a valid array each
+  element stands alone: a non-object element (including a nested array), or an id,
+  version or timestamp problem, fails only that element (`doc-index` set), and the
+  other elements are indexed. An empty array is zero documents, so its offset is
+  committable at once.
+- **Source bytes.** Each document is indexed from its own bytes in the value (the
+  whole value for an object, the element's slice for an array), not from a
+  re-serialised tree, so number spelling and key order survive. A leading UTF-8 BOM
+  is skipped. A slice containing a line feed between tokens is copied once with the
+  whitespace outside strings removed, because the bulk body is NDJSON.
+- **Limits.** `max-record-bytes` bounds every string, number and token count before
+  parsing. Nesting is capped at 500 and number literals at 1000 digits. Parsed trees
+  are kept for routing and take several times the value size on the heap.
+
 Timestamps for `%{+...}` index patterns are read from `document.timestamp-field`
 and parsed per `document.timestamp-format`: `iso-8601` (default, offset or `Z`
 required), `epoch-millis`, `epoch-seconds`, or `pattern:<DateTimeFormatter>`. An
 unparsable or missing value follows `on-bad-timestamp`: `dlq` (default, so a daily
 index never silently receives misdated documents) or `ingest-time`.
+
+`epoch-millis` takes an integer, as a number or a digit string; `epoch-seconds` also
+takes up to nine fraction digits (truncated to nanoseconds; a JSON number with a
+fraction passes through a `double`, which is exact to the millisecond, so send a
+string for more). `pattern:` parses with `Locale.ROOT` and strict resolution (the era
+defaults to CE, so `yyyy` works and `02-30` fails). A pattern without an offset or
+zone is read as **UTC**, one without a time as midnight, and one that yields no date
+fails. Every format rejects instants outside years 1 to 9999. "Ingest time" is the
+Kafka record timestamp.
 
 ### 4.6 No provisioning, fail-fast verification
 
