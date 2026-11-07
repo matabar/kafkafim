@@ -88,9 +88,13 @@ jobs:
         run: helm lint charts/kafkafim
       - if: steps.chart.outputs.exists == 'true'
         name: Template and validate against Kubernetes schemas
+        shell: bash
         run: |
+          shopt -s nullglob
+          files=(charts/kafkafim/ci/*-values.yaml)
+          if [ ${#files[@]} -eq 0 ]; then echo "no charts/kafkafim/ci/*-values.yaml; add at least one" >&2; exit 1; fi
           go install github.com/yannh/kubeconform/cmd/kubeconform@latest
-          for v in charts/kafkafim/ci/*-values.yaml; do
+          for v in "${files[@]}"; do
             helm template kafkafim charts/kafkafim -f "$v" | "$(go env GOPATH)/bin/kubeconform" -strict -summary
           done
       - if: steps.chart.outputs.exists == 'true'
