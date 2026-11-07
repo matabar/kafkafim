@@ -35,7 +35,8 @@ import tools.jackson.databind.json.JsonMapper;
  *       duplicate key at any depth, nesting deeper than {@value #MAX_NESTING_DEPTH}), a scalar,
  *       JSON {@code null} and trailing content after the value also fail as a whole: once the bytes
  *       are not one valid JSON value nothing inside them is trusted. A leading UTF-8 byte order
- *       mark is skipped.
+ *       mark is skipped; a second one, a UTF-16/32 byte order mark or a NUL in the first four bytes
+ *       (UTF-16/32 without a mark) fails the record.
  *   <li>An object is one document; an array is one document per element. An element that is not an
  *       object (a scalar, {@code null}, a nested array) fails on its own, as do id, version and
  *       timestamp problems: the other elements of the record are still indexed. An empty array is
@@ -57,9 +58,10 @@ import tools.jackson.databind.json.JsonMapper;
  *
  * <p>Memory: values are bounded by {@code maxRecordBytes} before parsing, so string, number and
  * token sizes are too; Jackson's {@link StreamReadConstraints} additionally cap nesting at {@value
- * #MAX_NESTING_DEPTH} and number literals at {@value #MAX_NUMBER_LENGTH} digits. The parsed trees
- * are kept for routing and take several times the value size on the heap (worst case, an array of
- * empty objects, roughly 50 to 100 bytes per element).
+ * #MAX_NESTING_DEPTH}, number literals at {@value #MAX_NUMBER_LENGTH} digits and keys at {@value
+ * #MAX_NAME_LENGTH} characters. The parsed trees are kept for routing and can take far more heap
+ * than the value: the worst case, an array of empty objects, measured about 85 bytes per element,
+ * roughly 28 times the value size (an 8 MiB record retained about 237 MB).
  */
 public final class Decoder {
 
@@ -68,6 +70,9 @@ public final class Decoder {
 
   /** Longest accepted number literal, in characters (Jackson's default, stated explicitly). */
   public static final int MAX_NUMBER_LENGTH = 1000;
+
+  /** Longest accepted object key, in characters (Jackson's default, stated explicitly). */
+  public static final int MAX_NAME_LENGTH = 50_000;
 
   /** Elasticsearch's {@code _id} limit, in UTF-8 bytes. */
   public static final int MAX_ID_BYTES = 512;
@@ -79,6 +84,7 @@ public final class Decoder {
                       StreamReadConstraints.builder()
                           .maxNestingDepth(MAX_NESTING_DEPTH)
                           .maxNumberLength(MAX_NUMBER_LENGTH)
+                          .maxNameLength(MAX_NAME_LENGTH)
                           .build())
                   .enable(StreamReadFeature.STRICT_DUPLICATE_DETECTION)
                   .build())
@@ -165,11 +171,20 @@ public final class Decoder {
     }
     // Parser byte offsets are relative to `base`; Jackson's own BOM detection only triggers when
     // enough bytes follow the BOM, so it is stripped here.
-    int base = hasBom(value) ? BOM_LENGTH : 0;
+    int base = hasBom(value, 0) ? BOM_LENGTH : 0;
+    String notUtf8 = notUtf8(value, base);
+    if (notUtf8 != null) {
+      return recordFailure(notUtf8);
+    }
     try (JsonParser parser = MAPPER.createParser(value, base, value.length - base)) {
       JsonToken root = parser.nextToken();
       if (root == null) {
         return recordFailure("record value contains no JSON value");
+      }
+      if (parser.currentTokenLocation().getByteOffset() < 0) {
+        // Jackson detected a non-UTF-8 encoding and switched to a char-based parser, whose
+        // locations carry no byte offsets; notUtf8 should have caught it.
+        return recordFailure("record value is not UTF-8");
       }
       List<DocumentOutcome> outcomes;
       boolean array;
@@ -207,7 +222,8 @@ public final class Decoder {
       return new DecodeResult.Documents(array, outcomes);
     } catch (JacksonException e) {
       String where = e.getLocation() == null ? "" : " at byte " + e.getLocation().getByteOffset();
-      return recordFailure("invalid JSON" + where + ": " + truncate(e.getOriginalMessage()));
+      return recordFailure(
+          "invalid JSON" + where + ": " + truncate(String.valueOf(e.getOriginalMessage())));
     }
   }
 
@@ -281,11 +297,32 @@ public final class Decoder {
         index, node, DocumentSource.of(value, start, end), id, version, timestamp, source);
   }
 
-  private static boolean hasBom(byte[] value) {
-    return value.length >= BOM_LENGTH
-        && value[0] == (byte) 0xEF
-        && value[1] == (byte) 0xBB
-        && value[2] == (byte) 0xBF;
+  private static boolean hasBom(byte[] value, int at) {
+    return value.length >= at + BOM_LENGTH
+        && value[at] == (byte) 0xEF
+        && value[at + 1] == (byte) 0xBB
+        && value[at + 2] == (byte) 0xBF;
+  }
+
+  /**
+   * Why the value is visibly not UTF-8 JSON, or {@code null}. Jackson would otherwise auto-detect
+   * UTF-16/32 and parse it with byte offsets the source slices cannot use. JSON text never contains
+   * a raw NUL, and {@code 0xFE}/{@code 0xFF} never occur in UTF-8.
+   */
+  private static String notUtf8(byte[] value, int base) {
+    if (hasBom(value, base)) {
+      return "record value starts with more than one byte order mark";
+    }
+    int first = value.length > base ? value[base] & 0xFF : -1;
+    if (first == 0xFE || first == 0xFF) {
+      return "record value is not UTF-8 (UTF-16/32 byte order mark)";
+    }
+    for (int i = base; i < Math.min(value.length, base + 4); i++) {
+      if (value[i] == 0) {
+        return "record value is not UTF-8 (NUL byte; UTF-16/32?)";
+      }
+    }
+    return null;
   }
 
   /** Why a present, non-null id node is unusable, or {@code null}. */

@@ -161,6 +161,57 @@ class DecoderTest {
       assertThat(recordFailure(value).reason()).contains("Duplicate");
     }
 
+    @ParameterizedTest
+    @ValueSource(strings = {"UTF-16BE", "UTF-16LE", "UTF-16", "UTF-32BE", "UTF-32LE", "UTF-32"})
+    void otherUnicodeEncodingsFailTheRecord(String charset) {
+      for (String json : List.of("{\"id\":\"a\"}", "[{\"id\":\"a\"},{\"id\":\"b\"}]")) {
+        byte[] value = json.getBytes(java.nio.charset.Charset.forName(charset));
+        assertThat(recordFailure(DEFAULT, value).reason()).contains("not UTF-8");
+      }
+    }
+
+    @Test
+    void secondBomFailsTheRecord() {
+      byte[] json = "{\"id\":1}".getBytes(UTF_8);
+      byte[] value = new byte[json.length + 6];
+      for (int i = 0; i < 6; i += 3) {
+        value[i] = (byte) 0xEF;
+        value[i + 1] = (byte) 0xBB;
+        value[i + 2] = (byte) 0xBF;
+      }
+      System.arraycopy(json, 0, value, 6, json.length);
+      assertThat(recordFailure(DEFAULT, value).reason()).contains("more than one byte order mark");
+    }
+
+    @Test
+    void keyLongerThanTheLimitFails() {
+      String key = "k".repeat(Decoder.MAX_NAME_LENGTH + 1);
+      assertThat(recordFailure("{\"id\":1,\"" + key + "\":1}").reason()).startsWith("invalid JSON");
+    }
+
+    @Test
+    void sourceIsUsableForEveryRandomInputThatDecodes() {
+      Random random = new Random(7);
+      byte[] alphabet = "{}[]\":,0123456789 \nidabc\\".getBytes(UTF_8);
+      for (int i = 0; i < 20000; i++) {
+        byte[] value = new byte[random.nextInt(24)];
+        for (int j = 0; j < value.length; j++) {
+          value[j] =
+              random.nextInt(8) == 0
+                  ? (byte) random.nextInt(256)
+                  : alphabet[random.nextInt(alphabet.length)];
+        }
+        if (DEFAULT.decode(value, INGEST) instanceof DecodeResult.Documents docs) {
+          for (DocumentOutcome outcome : docs.outcomes()) {
+            if (outcome instanceof DocumentOutcome.Decoded doc) {
+              assertThat(doc.source().length()).isPositive();
+              assertThatNoException().isThrownBy(() -> doc.source().toByteArray());
+            }
+          }
+        }
+      }
+    }
+
     @Test
     void oversizeIsRejectedWithoutParsing() {
       Decoder small =
