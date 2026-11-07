@@ -20,6 +20,8 @@ class OffsetTrackerTest {
 
   private static final TopicPartition P0 = new TopicPartition("t", 0);
   private static final TopicPartition P1 = new TopicPartition("t", 1);
+  private static final Object C1 = new Object();
+  private static final Object C2 = new Object();
 
   private final List<Boolean> budgetEvents = new ArrayList<>();
   private final ByteBudget budget = new ByteBudget(1_000_000, 0, budgetEvents::add);
@@ -31,11 +33,11 @@ class OffsetTrackerTest {
 
   private SourceRecord track(TopicPartition tp, long offset, byte[] value) {
     return tracker.track(
-        new ConsumerRecord<>(tp.topic(), tp.partition(), offset, null, value), 1_000);
+        C1, new ConsumerRecord<>(tp.topic(), tp.partition(), offset, null, value), 1_000);
   }
 
   private Long committable(TopicPartition tp) {
-    OffsetAndMetadata offset = tracker.committable(List.of(tp)).get(tp);
+    OffsetAndMetadata offset = tracker.committable(C1, List.of(tp)).get(tp);
     return offset == null ? null : offset.offset();
   }
 
@@ -83,19 +85,19 @@ class OffsetTrackerTest {
     SourceRecord p1 = track(P1, 100);
     p1.complete();
 
-    Map<TopicPartition, OffsetAndMetadata> offsets = tracker.committable(List.of(P0, P1));
+    Map<TopicPartition, OffsetAndMetadata> offsets = tracker.committable(C1, List.of(P0, P1));
     assertThat(offsets.get(P0).offset()).isZero();
     assertThat(offsets.get(P1).offset()).isEqualTo(101L);
-    assertThat(tracker.committable(List.of(P0))).containsOnlyKeys(P0);
+    assertThat(tracker.committable(C1, List.of(P0))).containsOnlyKeys(P0);
     assertThat(p0.isComplete()).isFalse();
   }
 
   @Test
   void committedOffsetIsNotOfferedAgain() {
     track(P0, 0).complete();
-    Map<TopicPartition, OffsetAndMetadata> offsets = tracker.committable(List.of(P0));
-    tracker.committed(offsets);
-    assertThat(tracker.committable(List.of(P0))).isEmpty();
+    Map<TopicPartition, OffsetAndMetadata> offsets = tracker.committable(C1, List.of(P0));
+    tracker.committed(C1, offsets);
+    assertThat(tracker.committable(C1, List.of(P0))).isEmpty();
 
     track(P0, 1).complete();
     assertThat(committable(P0)).isEqualTo(2L);
@@ -151,8 +153,8 @@ class OffsetTrackerTest {
     assertThat(committable(P0)).isEqualTo(1L);
     assertThat(budget.outstanding()).isEqualTo(20);
 
-    assertThat(tracker.revoke(List.of(P0))).as("abandoned").isEqualTo(1);
-    assertThat(tracker.committable(List.of(P0))).isEmpty();
+    assertThat(tracker.revoke(C1, List.of(P0))).as("abandoned").isEqualTo(1);
+    assertThat(tracker.committable(C1, List.of(P0))).isEmpty();
     assertThat(budget.outstanding()).as("only P1 left").isEqualTo(10);
 
     r1.complete();
@@ -172,6 +174,47 @@ class OffsetTrackerTest {
   }
 
   @Test
+  void partitionMovedToAnotherConsumerIsNotDroppedByTheOldOwner() {
+    tracker.assign(C1, List.of(P0));
+    final SourceRecord old = track(P0, 100);
+
+    // P0 moves to C2 in the same source before C1 learns it lost it; C2 re-reads from 100.
+    tracker.assign(C2, List.of(P0));
+    assertThat(old.isComplete()).isFalse();
+    final SourceRecord fresh100 = tracker.track(C2, record(P0, 100), 1_000);
+    final SourceRecord fresh101 = tracker.track(C2, record(P0, 101), 1_000);
+
+    // The late lost/revoke callback on C1 must not touch C2's state.
+    assertThat(tracker.tracked(C1, List.of(P0))).isEmpty();
+    assertThat(tracker.revoke(C1, List.of(P0))).isZero();
+    assertThat(tracker.committable(C1, List.of(P0))).as("C1 owns nothing").isEmpty();
+
+    fresh101.complete();
+    assertThat(tracker.committable(C2, List.of(P0)).get(P0).offset())
+        .as("100 is still in flight on C2")
+        .isEqualTo(100L);
+    old.complete(); // abandoned when C2 took over: ignored
+    assertThat(tracker.committable(C2, List.of(P0)).get(P0).offset()).isEqualTo(100L);
+    fresh100.complete();
+    assertThat(tracker.committable(C2, List.of(P0)).get(P0).offset()).isEqualTo(102L);
+    assertThat(tracker.pendingRecords()).isZero();
+    assertThat(budget.outstanding()).isZero();
+  }
+
+  @Test
+  void revokeAllDropsStateOfEveryConsumer() {
+    track(P0, 0);
+    tracker.track(C2, record(P1, 0), 1_000);
+    assertThat(tracker.revokeAll()).isEqualTo(2);
+    assertThat(tracker.pendingRecords()).isZero();
+    assertThat(budget.outstanding()).isZero();
+  }
+
+  private static ConsumerRecord<byte[], byte[]> record(TopicPartition tp, long offset) {
+    return new ConsumerRecord<>(tp.topic(), tp.partition(), offset, null, new byte[10]);
+  }
+
+  @Test
   void oversizeIsFlaggedFromTheValueLength() {
     SourceRecord small = track(P0, 0, new byte[1_000]);
     SourceRecord big = track(P0, 1, new byte[1_001]);
@@ -185,7 +228,7 @@ class OffsetTrackerTest {
   @Test
   void sizeCountsKeyAndValue() {
     SourceRecord record =
-        tracker.track(new ConsumerRecord<>("t", 0, 0, new byte[7], new byte[5]), 1_000);
+        tracker.track(C1, new ConsumerRecord<>("t", 0, 0, new byte[7], new byte[5]), 1_000);
     assertThat(record.sizeBytes()).isEqualTo(12);
     assertThat(budget.outstanding()).isEqualTo(12);
   }
@@ -216,7 +259,7 @@ class OffsetTrackerTest {
           });
         }
         start.countDown();
-        tracker.revoke(List.of(P0));
+        tracker.revoke(C1, List.of(P0));
         pool.shutdown();
         assertThat(pool.awaitTermination(10, TimeUnit.SECONDS)).isTrue();
       }

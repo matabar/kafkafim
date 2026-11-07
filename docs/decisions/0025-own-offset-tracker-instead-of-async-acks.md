@@ -17,7 +17,10 @@ consumer thread; spring-kafka's acknowledgement machinery is not used (`AckMode.
 never acknowledged). The container, batch listener, cooperative-sticky assignor,
 lifecycle and pause/resume stay spring-kafka's (ADR-0004 otherwise unchanged).
 
-- **Per partition, per assignment**: every delivered record is pending until it is
+- **Per partition, per assignment**: state belongs to the consumer the partition was
+  assigned to; a partition that moves between consumers of one source gets fresh state, and
+  only the owning consumer's callbacks can commit, revoke or lose it. Every delivered
+  record is pending until it is
   completed (once, or after `n` declared parts for a multi-document record). The commit
   offset is the lowest pending offset, or one past the highest delivered offset when none
   is pending; offset gaps (compaction, transaction markers) need no handling.

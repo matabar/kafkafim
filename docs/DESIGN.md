@@ -165,7 +165,9 @@ batching is per target, not per partition.
 - Rebalance safety: cooperative-sticky assignor; on revoke the supervisor is told first
   (to flush or abandon in-flight batches for the revoked partitions), then what completed
   is committed and the partition's remaining records are abandoned: their late
-  completions are ignored. On partition loss nothing is committed. Anything
+  completions are ignored. On partition loss nothing is committed. Tracker state belongs to
+  one consumer's assignment, so a late loss callback on a consumer that was replaced by
+  another consumer of the same pod never drops the new owner's state. Anything
   uncommitted is re-delivered to the new owner. Because `_id` is deterministic,
   re-delivery is harmless.
 - Records whose value exceeds `max-record-bytes` are handed over flagged as oversize and

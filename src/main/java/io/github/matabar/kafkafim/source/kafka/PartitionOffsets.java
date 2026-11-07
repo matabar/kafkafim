@@ -13,21 +13,30 @@ import org.apache.kafka.common.TopicPartition;
  * past the highest delivered offset when nothing is pending. Gaps in the offset sequence (compacted
  * topics, transaction markers) need no special handling: only delivered offsets are ever pending.
  *
- * <p>A revoke {@linkplain #close() closes} the instance; a later assignment of the same partition
- * gets a new one, so completions of records from the old assignment never touch the new state.
+ * <p>An instance belongs to one assignment of the partition to one consumer ({@link #consumer()}).
+ * A revoke or loss {@linkplain #close() closes} it; a later assignment of the same partition, to
+ * the same or another consumer of the source, gets a new one, so completions of records from the
+ * old assignment never touch the new state.
  */
 final class PartitionOffsets {
 
   private static final long NONE = -1;
 
   private final TopicPartition partition;
+  private final Object consumer;
   private final NavigableMap<Long, SourceRecord> pending = new TreeMap<>();
   private long nextAfterDelivered = NONE;
   private long committed = NONE;
   private boolean closed;
 
-  PartitionOffsets(TopicPartition partition) {
+  PartitionOffsets(TopicPartition partition, Object consumer) {
     this.partition = partition;
+    this.consumer = consumer;
+  }
+
+  /** The consumer this assignment belongs to. */
+  Object consumer() {
+    return consumer;
   }
 
   TopicPartition partition() {

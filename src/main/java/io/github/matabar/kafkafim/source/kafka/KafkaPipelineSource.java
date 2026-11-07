@@ -7,6 +7,7 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import org.apache.kafka.clients.consumer.Consumer;
@@ -153,6 +154,9 @@ public final class KafkaPipelineSource implements SmartLifecycle {
             partitions,
             source.topics());
       }
+      // State left by a container that stopped on its own (no revoke callback ran) is stale.
+      tracker.revokeAll();
+      lastCommitNanos.clear();
       ConcurrentMessageListenerContainer<byte[], byte[]> created = createContainer();
       pauseReasons.remove(HANDLER_FAILURE_REASON);
       container = created;
@@ -330,7 +334,8 @@ public final class KafkaPipelineSource implements SmartLifecycle {
       return;
     }
     lastCommitNanos.put(consumer, now);
-    Map<TopicPartition, OffsetAndMetadata> offsets = tracker.committable(consumer.assignment());
+    Map<TopicPartition, OffsetAndMetadata> offsets =
+        tracker.committable(consumer, consumer.assignment());
     if (offsets.isEmpty()) {
       return;
     }
@@ -338,7 +343,7 @@ public final class KafkaPipelineSource implements SmartLifecycle {
         offsets,
         (committed, exception) -> {
           if (exception == null) {
-            tracker.committed(committed);
+            tracker.committed(consumer, committed);
           } else {
             LOG.warn(
                 "Pipeline '{}': offset commit failed, retrying next interval: {}",
@@ -350,13 +355,13 @@ public final class KafkaPipelineSource implements SmartLifecycle {
 
   /** Synchronously commits what completed for partitions about to be revoked. */
   private void commitNow(Consumer<?, ?> consumer, Collection<TopicPartition> partitions) {
-    Map<TopicPartition, OffsetAndMetadata> offsets = tracker.committable(partitions);
+    Map<TopicPartition, OffsetAndMetadata> offsets = tracker.committable(consumer, partitions);
     if (offsets.isEmpty()) {
       return;
     }
     try {
       consumer.commitSync(offsets, options.commitTimeout());
-      tracker.committed(offsets);
+      tracker.committed(consumer, offsets);
     } catch (KafkaException e) {
       LOG.warn(
           "Pipeline '{}': commit on revoke failed; the next owner re-reads from the last commit:"
@@ -371,10 +376,11 @@ public final class KafkaPipelineSource implements SmartLifecycle {
     @Override
     public void onMessage(
         List<ConsumerRecord<byte[], byte[]>> data, @Nullable Consumer<?, ?> consumer) {
+      Objects.requireNonNull(consumer, "consumer-aware listener without a consumer");
       long maxRecordBytes = source.maxRecordBytes().toBytes();
       List<SourceRecord> batch = new ArrayList<>(data.size());
       for (ConsumerRecord<byte[], byte[]> record : data) {
-        batch.add(tracker.track(record, maxRecordBytes));
+        batch.add(tracker.track(consumer, record, maxRecordBytes));
       }
       try {
         handler.onBatch(Collections.unmodifiableList(batch));
@@ -392,13 +398,13 @@ public final class KafkaPipelineSource implements SmartLifecycle {
 
     @Override
     public void onPartitionsAssigned(Consumer<?, ?> consumer, Collection<TopicPartition> assigned) {
-      tracker.assign(assigned);
+      tracker.assign(consumer, assigned);
     }
 
     @Override
     public void onPartitionsRevokedBeforeCommit(
         Consumer<?, ?> consumer, Collection<TopicPartition> partitions) {
-      List<TopicPartition> tracked = tracker.tracked(partitions);
+      List<TopicPartition> tracked = tracker.tracked(consumer, partitions);
       if (tracked.isEmpty()) {
         return;
       }
@@ -408,7 +414,7 @@ public final class KafkaPipelineSource implements SmartLifecycle {
         LOG.error("Pipeline '{}': revoke handler failed", pipeline, e);
       }
       commitNow(consumer, tracked);
-      int abandoned = tracker.revoke(tracked);
+      int abandoned = tracker.revoke(consumer, tracked);
       LOG.info(
           "Pipeline '{}': revoked {}, {} incomplete records left for the next owner",
           pipeline,
@@ -418,7 +424,7 @@ public final class KafkaPipelineSource implements SmartLifecycle {
 
     @Override
     public void onPartitionsLost(Consumer<?, ?> consumer, Collection<TopicPartition> partitions) {
-      List<TopicPartition> tracked = tracker.tracked(partitions);
+      List<TopicPartition> tracked = tracker.tracked(consumer, partitions);
       if (tracked.isEmpty()) {
         return;
       }
@@ -427,7 +433,7 @@ public final class KafkaPipelineSource implements SmartLifecycle {
       } catch (RuntimeException e) {
         LOG.error("Pipeline '{}': lost-partitions handler failed", pipeline, e);
       }
-      int abandoned = tracker.revoke(tracked);
+      int abandoned = tracker.revoke(consumer, tracked);
       LOG.warn(
           "Pipeline '{}': lost {}, {} incomplete records left for the next owner",
           pipeline,

@@ -19,6 +19,13 @@ import org.apache.kafka.common.TopicPartition;
  * offset may become committable, its bytes are released) or abandoned on revoke (its bytes are
  * released, its offset is never committed here). The tracker computes commits; the consumer thread
  * performs them.
+ *
+ * <p>State is owned per assignment: each {@link PartitionOffsets} belongs to the consumer it was
+ * assigned to, and only that consumer's callbacks can commit, revoke or lose it. A partition that
+ * moves between consumers of the same source (for example after one consumer missed its session
+ * timeout) gets fresh state on the new consumer; the old state is closed, and its incomplete
+ * records are abandoned, so a late {@code onPartitionsLost} on the old consumer cannot touch the
+ * new owner's records.
  */
 final class OffsetTracker {
 
@@ -31,24 +38,57 @@ final class OffsetTracker {
     this.budget = budget;
   }
 
-  /** Prepares tracking for newly assigned partitions. */
-  void assign(Collection<TopicPartition> assigned) {
-    assigned.forEach(tp -> partitions.computeIfAbsent(tp, PartitionOffsets::new));
+  /**
+   * Installs fresh state for partitions newly assigned to a consumer. State left behind by a
+   * previous assignment (to any consumer) is closed and its incomplete records abandoned.
+   *
+   * @param consumer the consumer the partitions were assigned to
+   * @param assigned the newly assigned partitions
+   */
+  void assign(Object consumer, Collection<TopicPartition> assigned) {
+    for (TopicPartition tp : assigned) {
+      install(tp, consumer);
+    }
+  }
+
+  private PartitionOffsets install(TopicPartition tp, Object consumer) {
+    PartitionOffsets fresh = new PartitionOffsets(tp, consumer);
+    PartitionOffsets previous = partitions.put(tp, fresh);
+    if (previous != null) {
+      abandon(previous);
+    }
+    return fresh;
+  }
+
+  private int abandon(PartitionOffsets state) {
+    int abandoned = 0;
+    for (SourceRecord record : state.close()) {
+      if (record.abandon()) {
+        finished(record, false);
+        abandoned++;
+      }
+    }
+    return abandoned;
   }
 
   /**
    * Registers a delivered record.
    *
+   * @param consumer the consumer that polled it
    * @param record the record as polled
    * @param maxRecordBytes values longer than this are flagged {@linkplain SourceRecord#oversize()
    *     oversize}
    * @return the record's completion handle
    */
-  SourceRecord track(ConsumerRecord<byte[], byte[]> record, long maxRecordBytes) {
+  SourceRecord track(Object consumer, ConsumerRecord<byte[], byte[]> record, long maxRecordBytes) {
     TopicPartition tp = new TopicPartition(record.topic(), record.partition());
     int valueBytes = record.value() == null ? 0 : record.value().length;
     int keyBytes = record.key() == null ? 0 : record.key().length;
-    PartitionOffsets owner = partitions.computeIfAbsent(tp, PartitionOffsets::new);
+    PartitionOffsets owner = partitions.get(tp);
+    if (owner == null || owner.consumer() != consumer) {
+      // Records only arrive for assigned partitions, after onPartitionsAssigned; be safe anyway.
+      owner = install(tp, consumer);
+    }
     SourceRecord handle =
         new SourceRecord(
             record, valueBytes > maxRecordBytes, (long) valueBytes + keyBytes, owner, this);
@@ -81,16 +121,24 @@ final class OffsetTracker {
     }
   }
 
+  /** The state of {@code tp} if it belongs to {@code consumer}. */
+  private PartitionOffsets ownedBy(Object consumer, TopicPartition tp) {
+    PartitionOffsets state = partitions.get(tp);
+    return state != null && state.consumer() == consumer ? state : null;
+  }
+
   /**
-   * Offsets that advanced since their last commit, for the given partitions.
+   * Offsets that advanced since their last commit, for partitions the consumer owns.
    *
-   * @param among partitions to consider (typically one consumer's assignment)
+   * @param consumer the committing consumer
+   * @param among partitions to consider (typically that consumer's assignment)
    * @return offsets to commit, possibly empty
    */
-  Map<TopicPartition, OffsetAndMetadata> committable(Collection<TopicPartition> among) {
+  Map<TopicPartition, OffsetAndMetadata> committable(
+      Object consumer, Collection<TopicPartition> among) {
     Map<TopicPartition, OffsetAndMetadata> offsets = new LinkedHashMap<>();
     for (TopicPartition tp : among) {
-      PartitionOffsets state = partitions.get(tp);
+      PartitionOffsets state = ownedBy(consumer, tp);
       if (state != null) {
         long offset = state.committable();
         if (offset >= 0) {
@@ -101,21 +149,21 @@ final class OffsetTracker {
     return offsets;
   }
 
-  /** Records successful commits, so they are not repeated. */
-  void committed(Map<TopicPartition, OffsetAndMetadata> offsets) {
+  /** Records successful commits by a consumer, so they are not repeated. */
+  void committed(Object consumer, Map<TopicPartition, OffsetAndMetadata> offsets) {
     offsets.forEach((tp, offset) -> {
-      PartitionOffsets state = partitions.get(tp);
+      PartitionOffsets state = ownedBy(consumer, tp);
       if (state != null) {
         state.committed(offset.offset());
       }
     });
   }
 
-  /** The partitions among {@code candidates} that are currently tracked. */
-  List<TopicPartition> tracked(Collection<TopicPartition> candidates) {
+  /** The partitions among {@code candidates} whose current state belongs to the consumer. */
+  List<TopicPartition> tracked(Object consumer, Collection<TopicPartition> candidates) {
     List<TopicPartition> tracked = new ArrayList<>();
     for (TopicPartition tp : candidates) {
-      if (partitions.containsKey(tp)) {
+      if (ownedBy(consumer, tp) != null) {
         tracked.add(tp);
       }
     }
@@ -123,31 +171,35 @@ final class OffsetTracker {
   }
 
   /**
-   * Stops tracking partitions: their pending records are abandoned (bytes released, offsets never
-   * committed here) and later completions of those records are ignored.
+   * Stops tracking partitions the consumer owns: their pending records are abandoned (bytes
+   * released, offsets never committed here) and later completions of those records are ignored.
+   * State of these partitions that now belongs to another consumer is left alone.
    *
+   * @param consumer the consumer whose partitions were revoked or lost
+   * @param revoked the partitions
    * @return number of records abandoned
    */
-  int revoke(Collection<TopicPartition> revoked) {
+  int revoke(Object consumer, Collection<TopicPartition> revoked) {
     int abandoned = 0;
     for (TopicPartition tp : revoked) {
-      PartitionOffsets state = partitions.remove(tp);
-      if (state == null) {
-        continue;
-      }
-      for (SourceRecord record : state.close()) {
-        if (record.abandon()) {
-          finished(record, false);
-          abandoned++;
-        }
+      PartitionOffsets state = ownedBy(consumer, tp);
+      if (state != null && partitions.remove(tp, state)) {
+        abandoned += abandon(state);
       }
     }
     return abandoned;
   }
 
-  /** Revokes every tracked partition. */
+  /** Drops all state, whoever owns it; for a source that stopped or is (re)starting. */
   int revokeAll() {
-    return revoke(List.copyOf(partitions.keySet()));
+    int abandoned = 0;
+    for (TopicPartition tp : List.copyOf(partitions.keySet())) {
+      PartitionOffsets state = partitions.remove(tp);
+      if (state != null) {
+        abandoned += abandon(state);
+      }
+    }
+    return abandoned;
   }
 
   /** Records delivered and neither completed nor abandoned. */
