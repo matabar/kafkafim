@@ -10,16 +10,15 @@ import org.testcontainers.utility.DockerImageName;
 @TestConfiguration(proxyBeanMethods = false)
 class TestcontainersConfiguration {
 
-	@Bean
-	@ServiceConnection
-	LgtmStackContainer grafanaLgtmContainer() {
-		return new LgtmStackContainer(DockerImageName.parse("grafana/otel-lgtm:latest"));
-	}
+  @Bean
+  @ServiceConnection
+  LgtmStackContainer grafanaLgtmContainer() {
+    return new LgtmStackContainer(DockerImageName.parse("grafana/otel-lgtm:latest"));
+  }
 
-	@Bean
-	@ServiceConnection
-	KafkaContainer kafkaContainer() {
-		return new KafkaContainer(DockerImageName.parse("apache/kafka-native:latest"));
-	}
-
+  @Bean
+  @ServiceConnection
+  KafkaContainer kafkaContainer() {
+    return new KafkaContainer(DockerImageName.parse("apache/kafka-native:latest"));
+  }
 }
