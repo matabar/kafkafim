@@ -18,7 +18,8 @@ import org.jspecify.annotations.Nullable;
  * @param maxAge how long the oldest action of a batch may wait
  * @param inFlight concurrent bulk requests for this stream
  * @param maxAttempts item-level retryable errors per document before the DLQ (poison bound)
- * @param maxElapsed time since a document's first item-level retryable error before the DLQ
+ * @param maxElapsed time since a document's first item-level retryable error before the DLQ; zero
+ *     sends a document to the DLQ on its first retryable error
  * @param onVersionConflict {@code ignore} (stale, success) or {@code dlq}
  * @param backoff delays between retries
  */

@@ -53,6 +53,10 @@ interface BulkTransport {
         response = client.performRequest(request);
       } catch (ResponseException e) {
         response = e.getResponse();
+      } catch (RuntimeException e) {
+        // The client throws unchecked exceptions for an interrupted wait, a protocol error from
+        // a misbehaving proxy, or a stopped I/O reactor: all request-level, retryable failures.
+        throw new IOException("bulk request failed: " + e, e);
       }
       return new Result(response.getStatusCode(), read(response.getEntity()));
     };

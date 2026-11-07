@@ -47,6 +47,9 @@ public record BreakerSettings(
         .failureRateThreshold(failureRateThreshold)
         .waitDurationInOpenState(waitInOpen)
         .permittedNumberOfCallsInHalfOpenState(probesInHalfOpen)
+        // Safety net: a half-open breaker whose probes never report back reopens instead of
+        // holding every sender of the cluster forever.
+        .maxWaitDurationInHalfOpenState(waitInOpen)
         .automaticTransitionFromOpenToHalfOpenEnabled(false)
         .slowCallRateThreshold(100f)
         .slowCallDurationThreshold(Duration.ofDays(1))

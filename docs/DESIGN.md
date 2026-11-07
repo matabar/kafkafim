@@ -166,8 +166,13 @@ offset acks or DLQ records; the sink knows nothing about Kafka.
   fills, and the pipeline pauses; nothing is dropped.
 - **Lifecycle**: `flush()` seals the open batch; `close(timeout)` rejects new actions,
   sends what is batched (retries are sealed at once from then on) and waits for every
-  outcome. Actions still unresolved at the timeout get no outcome, so their offsets are
-  not committed and the records are re-delivered (idempotent by `_id`).
+  outcome. Actions still unresolved at the timeout normally get no outcome (one whose
+  response arrives at that moment may still get it), so their offsets are not committed
+  and the records are re-delivered (idempotent by `_id`).
+- **Auth state**: the stream is failing while the last request got 401/403 or any
+  action waits to retry after an item-level 401/403. The listener hears one
+  `onAuthFailure` per response and one `onAuthRecovered` when the stream leaves that
+  state, so the supervisor can pause and resume without flapping.
 
 ### 4.3 Offsets and delivery guarantee
 

@@ -19,7 +19,6 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Consumer;
@@ -79,7 +78,10 @@ public final class BulkSink<H> implements AutoCloseable {
   private final ExecutorService senders;
   private final Semaphore inFlight;
   private final Queue<Batch> ready = new ConcurrentLinkedQueue<>();
-  private final AtomicBoolean authFailing = new AtomicBoolean();
+  private final Object authLock = new Object();
+  private boolean requestAuthFailing; // guarded by authLock
+  private int itemsAuthRetrying; // guarded by authLock
+  private boolean authFailureReported; // guarded by authLock
 
   private final ReentrantLock lock = new ReentrantLock();
   private final Condition idle = lock.newCondition();
@@ -108,7 +110,7 @@ public final class BulkSink<H> implements AutoCloseable {
     this.breakerPoll = Objects.requireNonNull(breakerPoll, "breakerPoll");
     this.timer = Objects.requireNonNull(timer, "timer");
     this.callback = Objects.requireNonNull(callback, "callback");
-    this.listener = Objects.requireNonNull(listener, "listener");
+    this.listener = new SafeListener(Objects.requireNonNull(listener, "listener"));
     this.clock = Objects.requireNonNull(clock, "clock");
     this.onClosed = Objects.requireNonNull(onClosed, "onClosed");
     this.senders =
@@ -203,15 +205,21 @@ public final class BulkSink<H> implements AutoCloseable {
     }
   }
 
-  /** Whether the last bulk answer on this stream was a 401/403 (a configuration failure). */
+  /**
+   * Whether the stream is in a configuration failure: the last bulk request was rejected with
+   * 401/403, or some action is waiting to retry after an item-level 401/403.
+   */
   public boolean authFailing() {
-    return authFailing.get();
+    synchronized (authLock) {
+      return requestAuthFailing || itemsAuthRetrying > 0;
+    }
   }
 
   /**
    * Graceful close: rejects new actions, sends what is batched (retries are sealed at once from now
    * on), and waits up to {@code timeout} for every outcome. Then stops: requests still running are
-   * abandoned and their actions get no outcome. Idempotent.
+   * abandoned and their actions normally get no outcome (one whose response arrives at the same
+   * moment may still get it). Idempotent.
    *
    * @return {@code true} if every action got its outcome
    */
@@ -317,6 +325,7 @@ public final class BulkSink<H> implements AutoCloseable {
   }
 
   private void requeue(Entry entry) {
+    entry.retryScheduled = false;
     if (stopped) {
       return;
     }
@@ -331,6 +340,7 @@ public final class BulkSink<H> implements AutoCloseable {
   }
 
   private void scheduleRetry(Entry entry, Duration delay) {
+    entry.retryScheduled = true;
     try {
       timer.schedule(() -> requeue(entry), delay.toNanos(), TimeUnit.NANOSECONDS);
     } catch (RejectedExecutionException e) {
@@ -360,10 +370,13 @@ public final class BulkSink<H> implements AutoCloseable {
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt(); // stopped; the actions get no outcome
     } catch (RuntimeException e) {
+      if (stopped) {
+        return; // close() interrupted the request
+      }
       // A bug, not an Elasticsearch answer. Retry the actions rather than leave them pending.
       LOG.error("Bulk sink {}: unexpected failure, retrying the batch", key, e);
       for (Entry entry : batch.entries) {
-        if (!entry.done) {
+        if (!entry.done && !entry.retryScheduled) {
           scheduleRetry(entry, settings.backoff().max());
         }
       }
@@ -375,82 +388,96 @@ public final class BulkSink<H> implements AutoCloseable {
   private void send(List<Entry> entries, long bytes) throws InterruptedException {
     int attempt = 0;
     while (!stopped) {
-      awaitBreakerPermission();
-      byte[] body = BulkBody.build(entries, bytes);
-      long start = System.nanoTime();
-      BulkTransport.Result result;
+      Permit permit = awaitBreakerPermission();
       try {
-        result = transport.send(body);
-      } catch (IOException e) {
-        breaker.onError(System.nanoTime() - start, TimeUnit.NANOSECONDS, e);
-        attempt = retryRequest(0, e, attempt + 1, "transport error: " + e);
-        continue;
+        attempt = attempt(entries, bytes, attempt, permit);
+      } finally {
+        permit.release(); // no-op unless an exception escaped before a verdict
       }
-      long elapsed = System.nanoTime() - start;
-      int status = result.status();
-      listener.onBulkResponse(key, status, entries.size(), bytes, Duration.ofNanos(elapsed));
-      switch (ErrorClassifier.request(status)) {
-        case PARSE_ITEMS -> {
-          BulkResponse response;
-          try {
-            response = BulkResponse.parse(result.body());
-            if (response.errors() && response.items().size() != entries.size()) {
-              throw new BulkResponse.MalformedResponseException(
-                  response.items().size() + " items for " + entries.size() + " actions", null);
-            }
-          } catch (BulkResponse.MalformedResponseException e) {
-            breaker.onError(elapsed, TimeUnit.NANOSECONDS, e);
-            attempt = retryRequest(status, e, attempt + 1, "malformed response: " + e.getMessage());
-            continue;
-          }
-          breaker.onSuccess(elapsed, TimeUnit.NANOSECONDS);
-          if (authFailing.compareAndSet(true, false)) {
-            LOG.info("Bulk sink {}: Elasticsearch accepts the identity again", key);
-            listener.onAuthRecovered(key);
-          }
-          handleItems(entries, response);
-          return;
-        }
-        case SPLIT -> {
-          breaker.onSuccess(elapsed, TimeUnit.NANOSECONDS);
-          if (entries.size() == 1) {
-            Entry entry = entries.getFirst();
-            entry.answered++;
-            complete(
-                entry,
-                dlq(
-                    entry,
-                    SinkErrorType.TOO_LARGE,
-                    "single-document bulk request of " + bytes + " bytes rejected with 413",
-                    413));
-            return;
-          }
-          int middle = entries.size() / 2;
-          List<Entry> first = entries.subList(0, middle);
-          List<Entry> second = entries.subList(middle, entries.size());
-          LOG.info(
-              "Bulk sink {}: 413 for {} actions ({} bytes), splitting", key, entries.size(), bytes);
-          send(first, sizeOf(first));
-          send(second, sizeOf(second));
-          return;
-        }
-        case AUTH_FAILURE -> {
-          breaker.releasePermission();
-          authFailing.set(true);
-          String reason = text(result.body());
-          listener.onAuthFailure(key, status, reason);
-          attempt = retryRequest(status, null, attempt + 1, "authentication failure: " + reason);
-        }
-        case RETRY_CLUSTER -> {
-          breaker.onError(elapsed, TimeUnit.NANOSECONDS, new RequestFailure(status));
-          attempt = retryRequest(status, null, attempt + 1, text(result.body()));
-        }
-        case RETRY_UNEXPECTED -> {
-          breaker.releasePermission();
-          attempt = retryRequest(status, null, attempt + 1, "unexpected: " + text(result.body()));
-        }
-        default -> throw new IllegalStateException("unhandled request verdict");
+      if (attempt < 0) {
+        return;
       }
+    }
+  }
+
+  /**
+   * One request attempt holding a breaker permit.
+   *
+   * @return {@code -1} when the actions are dealt with, else the failed-attempt count so far
+   */
+  private int attempt(List<Entry> entries, long bytes, int attempt, Permit permit)
+      throws InterruptedException {
+    byte[] body = BulkBody.build(entries, bytes);
+    long start = System.nanoTime();
+    BulkTransport.Result result;
+    try {
+      result = transport.send(body);
+    } catch (IOException e) {
+      if (stopped) {
+        return -1; // close() interrupted the request
+      }
+      permit.error(System.nanoTime() - start, e);
+      return retryRequest(0, e, attempt + 1, "transport error: " + e);
+    }
+    long elapsed = System.nanoTime() - start;
+    int status = result.status();
+    listener.onBulkResponse(key, status, entries.size(), bytes, Duration.ofNanos(elapsed));
+    switch (ErrorClassifier.request(status)) {
+      case PARSE_ITEMS -> {
+        BulkResponse response;
+        try {
+          response = BulkResponse.parse(result.body());
+          if (response.errors() && response.items().size() != entries.size()) {
+            throw new BulkResponse.MalformedResponseException(
+                response.items().size() + " items for " + entries.size() + " actions", null);
+          }
+        } catch (BulkResponse.MalformedResponseException e) {
+          permit.error(elapsed, e);
+          return retryRequest(status, e, attempt + 1, "malformed response: " + e.getMessage());
+        }
+        permit.success(elapsed);
+        handleItems(entries, response);
+        return -1;
+      }
+      case SPLIT -> {
+        permit.success(elapsed);
+        if (entries.size() == 1) {
+          Entry entry = entries.getFirst();
+          entry.answered++;
+          complete(
+              entry,
+              dlq(
+                  entry,
+                  SinkErrorType.TOO_LARGE,
+                  "single-document bulk request of " + bytes + " bytes rejected with 413",
+                  413));
+          return -1;
+        }
+        int middle = entries.size() / 2;
+        List<Entry> first = entries.subList(0, middle);
+        List<Entry> second = entries.subList(middle, entries.size());
+        LOG.info(
+            "Bulk sink {}: 413 for {} actions ({} bytes), splitting", key, entries.size(), bytes);
+        send(first, sizeOf(first));
+        send(second, sizeOf(second));
+        return -1;
+      }
+      case AUTH_FAILURE -> {
+        permit.release();
+        String reason = text(result.body());
+        updateAuth(() -> requestAuthFailing = true);
+        listener.onAuthFailure(key, status, reason);
+        return retryRequest(status, null, attempt + 1, "authentication failure: " + reason);
+      }
+      case RETRY_CLUSTER -> {
+        permit.error(elapsed, new RequestFailure(status));
+        return retryRequest(status, null, attempt + 1, text(result.body()));
+      }
+      case RETRY_UNEXPECTED -> {
+        permit.release();
+        return retryRequest(status, null, attempt + 1, "unexpected: " + text(result.body()));
+      }
+      default -> throw new IllegalStateException("unhandled request verdict");
     }
   }
 
@@ -469,9 +496,71 @@ public final class BulkSink<H> implements AutoCloseable {
     return attempt;
   }
 
-  private void awaitBreakerPermission() throws InterruptedException {
+  private Permit awaitBreakerPermission() throws InterruptedException {
     while (!breaker.tryAcquirePermission()) {
       Thread.sleep(breakerPoll);
+    }
+    return new Permit();
+  }
+
+  /**
+   * A breaker permission that is settled exactly once: success, error, or released without a
+   * verdict (auth failures, unexpected statuses, or an exception before any answer). A leaked
+   * permission would hold a half-open breaker forever.
+   */
+  private final class Permit {
+    private boolean settled;
+
+    void success(long nanos) {
+      if (!settled) {
+        settled = true;
+        breaker.onSuccess(nanos, TimeUnit.NANOSECONDS);
+      }
+    }
+
+    void error(long nanos, Throwable error) {
+      if (!settled) {
+        settled = true;
+        breaker.onError(nanos, TimeUnit.NANOSECONDS, error);
+      }
+    }
+
+    void release() {
+      if (!settled) {
+        settled = true;
+        breaker.releasePermission();
+      }
+    }
+  }
+
+  /**
+   * Applies a change to the auth state and reports a recovery when the stream leaves the failure
+   * state: no 401/403 for the last request and no action waiting for an auth retry.
+   */
+  private void updateAuth(Runnable change) {
+    boolean recovered = false;
+    synchronized (authLock) {
+      change.run();
+      boolean failing = requestAuthFailing || itemsAuthRetrying > 0;
+      if (failing) {
+        authFailureReported = true;
+      } else if (authFailureReported) {
+        authFailureReported = false;
+        recovered = true;
+      }
+    }
+    if (recovered) {
+      LOG.info("Bulk sink {}: Elasticsearch accepts the identity again", key);
+      listener.onAuthRecovered(key);
+    }
+  }
+
+  private void setAuthRetrying(Entry entry, boolean retrying) {
+    if (entry.authRetrying != retrying) {
+      entry.authRetrying = retrying;
+      synchronized (authLock) {
+        itemsAuthRetrying += retrying ? 1 : -1;
+      }
     }
   }
 
@@ -481,8 +570,10 @@ public final class BulkSink<H> implements AutoCloseable {
         entry.answered++;
         complete(entry, ActionOutcome.INDEXED);
       }
+      updateAuth(() -> requestAuthFailing = false);
       return;
     }
+    BulkResponse.Item firstAuthFailure = null;
     for (int i = 0; i < entries.size(); i++) {
       Entry entry = entries.get(i);
       BulkResponse.Item item = response.items().get(i);
@@ -496,16 +587,32 @@ public final class BulkSink<H> implements AutoCloseable {
             complete(entry, dlq(entry, SinkErrorType.ES_ERROR, reason, item.status()));
         case DLQ_VERSION_CONFLICT ->
             complete(entry, dlq(entry, SinkErrorType.VERSION_CONFLICT, reason, item.status()));
-        case RETRY -> retryItem(entry, item, reason);
+        case RETRY -> {
+          setAuthRetrying(entry, false);
+          retryItem(entry, item, reason);
+        }
         case AUTH_FAILURE -> {
-          authFailing.set(true);
-          listener.onAuthFailure(key, item.status(), reason);
+          if (firstAuthFailure == null) {
+            firstAuthFailure = item;
+          }
+          setAuthRetrying(entry, true);
           entry.markFailure(clock);
           entry.authRetries++;
           scheduleRetry(entry, settings.backoff().delay(entry.authRetries));
         }
         default -> throw new IllegalStateException("unhandled item verdict " + verdict);
       }
+    }
+    if (firstAuthFailure != null) {
+      // One event per response, not per item.
+      BulkResponse.Item failure = firstAuthFailure;
+      updateAuth(() -> requestAuthFailing = false);
+      listener.onAuthFailure(
+          key,
+          failure.status(),
+          failure.errorJson() != null ? failure.errorJson() : "status " + failure.status());
+    } else {
+      updateAuth(() -> requestAuthFailing = false);
     }
   }
 
@@ -537,6 +644,7 @@ public final class BulkSink<H> implements AutoCloseable {
       return; // closed: the caller no longer expects outcomes; the record is re-delivered
     }
     entry.done = true;
+    setAuthRetrying(entry, false);
     try {
       callback.onOutcome(entry.action, outcome);
     } catch (RuntimeException e) {
@@ -591,6 +699,8 @@ public final class BulkSink<H> implements AutoCloseable {
     boolean retrying;
     long firstRetryableNanos;
     boolean done;
+    volatile boolean retryScheduled;
+    boolean authRetrying;
     @Nullable Instant firstFailure;
 
     Entry(BulkAction<H> action, byte[] metadataLine) {
@@ -613,6 +723,60 @@ public final class BulkSink<H> implements AutoCloseable {
     @Override
     public byte[] source() {
       return action.source();
+    }
+  }
+
+  /** Shields the sink from a throwing listener: a lost event is better than a lost batch. */
+  private static final class SafeListener implements SinkListener {
+    private final SinkListener delegate;
+
+    SafeListener(SinkListener delegate) {
+      this.delegate = delegate;
+    }
+
+    private static void guard(Runnable call) {
+      try {
+        call.run();
+      } catch (RuntimeException e) {
+        LOG.warn("Sink listener failed", e);
+      }
+    }
+
+    @Override
+    public void onFlush(SinkKey key, FlushReason reason, int docs, long bytes) {
+      guard(() -> delegate.onFlush(key, reason, docs, bytes));
+    }
+
+    @Override
+    public void onBulkResponse(SinkKey key, int status, int docs, long bytes, Duration latency) {
+      guard(() -> delegate.onBulkResponse(key, status, docs, bytes, latency));
+    }
+
+    @Override
+    public void onRequestRetry(
+        SinkKey key, int status, @Nullable Throwable error, int attempt, Duration delay) {
+      guard(() -> delegate.onRequestRetry(key, status, error, attempt, delay));
+    }
+
+    @Override
+    public void onAuthFailure(SinkKey key, int status, String reason) {
+      guard(() -> delegate.onAuthFailure(key, status, reason));
+    }
+
+    @Override
+    public void onAuthRecovered(SinkKey key) {
+      guard(() -> delegate.onAuthRecovered(key));
+    }
+
+    @Override
+    public void onItemRetry(SinkKey key, int status, String errorType, int attempts) {
+      guard(() -> delegate.onItemRetry(key, status, errorType, attempts));
+    }
+
+    @Override
+    public void onBreakerStateChange(
+        String cluster, CircuitBreaker.State from, CircuitBreaker.State to) {
+      guard(() -> delegate.onBreakerStateChange(cluster, from, to));
     }
   }
 

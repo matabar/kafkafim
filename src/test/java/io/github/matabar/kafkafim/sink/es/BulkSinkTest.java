@@ -357,6 +357,72 @@ class BulkSinkTest {
     assertThat(events.authFailures).hasValue(4);
   }
 
+  @Test
+  void persistentItemAuthFailureNeverReportsRecoveryUntilItClears() throws Exception {
+    AtomicInteger forbiddenCalls = new AtomicInteger(Integer.MAX_VALUE);
+    FakeTransport transport =
+        new FakeTransport((request, call) ->
+            FakeTransport.items(
+                request,
+                sent ->
+                    sent.id().equals("denied") && call <= forbiddenCalls.get()
+                        ? new String[] {"403", "security_exception"}
+                        : new String[] {"201"}));
+    BulkSink<String> sink = sink(retrying(2, Duration.ofMillis(5), 1, HOUR), transport);
+
+    submitAll(sink, "ok", "denied");
+    await().until(() -> transport.requests().size() >= 10);
+    assertThat(events.authRecovered).hasValue(0);
+    assertThat(sink.authFailing()).isTrue();
+    assertThat(events.authFailures.get())
+        .as("one event per response, not per item")
+        .isLessThanOrEqualTo(transport.requests().size());
+    forbiddenCalls.set(0);
+
+    assertThat(sink.awaitIdle(WAIT)).isTrue();
+    assertThat(outcomes.get("denied")).isEqualTo(ActionOutcome.INDEXED);
+    await().until(() -> events.authRecovered.get() == 1);
+    Thread.sleep(50);
+    assertThat(events.authRecovered).hasValue(1);
+    assertThat(sink.authFailing()).isFalse();
+  }
+
+  @Test
+  void throwingListenerLosesNoAction() throws Exception {
+    FakeTransport transport = new FakeTransport((request, call) -> FakeTransport.allOk());
+    SinkListener throwing =
+        new SinkListener() {
+          @Override
+          public void onFlush(SinkKey key, FlushReason reason, int docs, long bytes) {
+            throw new IllegalStateException("listener bug");
+          }
+
+          @Override
+          public void onBulkResponse(
+              SinkKey key, int status, int docs, long bytes, Duration latency) {
+            throw new IllegalStateException("listener bug");
+          }
+        };
+    BulkSink<String> sink =
+        new BulkSink<>(
+            new SinkKey("orders", "search-eu", null),
+            settings(1, 1 << 20, HOUR, 1),
+            transport,
+            breaker,
+            Duration.ofMillis(5),
+            timer,
+            outcomes,
+            throwing,
+            Clock.systemUTC(),
+            closed -> {});
+    sinks.add(sink);
+
+    submitAll(sink, "a", "b");
+
+    assertThat(sink.awaitIdle(WAIT)).isTrue();
+    assertThat(outcomes.all()).hasSize(2).containsOnly(ActionOutcome.INDEXED);
+  }
+
   // ---- request-level failures ----
 
   @Test
@@ -521,6 +587,29 @@ class BulkSinkTest {
     assertThat(outcomes.all()).containsOnly(ActionOutcome.INDEXED);
     assertThat(seen).contains(CircuitBreaker.State.OPEN, CircuitBreaker.State.HALF_OPEN);
     assertThat(breaker.getState()).isEqualTo(CircuitBreaker.State.CLOSED);
+  }
+
+  @Test
+  void exceptionDuringHalfOpenProbesDoesNotLeakBreakerPermits() throws Exception {
+    breaker =
+        CircuitBreaker.of(
+            "c",
+            new BreakerSettings(4, 4, 50f, Duration.ofMillis(50), 2, Duration.ofMillis(5))
+                .toConfig());
+    breaker.transitionToOpenState();
+    FakeTransport transport =
+        new FakeTransport((request, call) -> {
+          if (call <= 2) {
+            throw new IllegalStateException("unexpected client failure");
+          }
+          return FakeTransport.allOk();
+        });
+    BulkSink<String> sink = sink(settings(1, 1 << 20, HOUR, 2), transport);
+
+    submitAll(sink, "a", "b");
+
+    assertThat(sink.awaitIdle(WAIT)).isTrue();
+    assertThat(outcomes.all()).hasSize(2).containsOnly(ActionOutcome.INDEXED);
   }
 
   // ---- lifecycle ----
