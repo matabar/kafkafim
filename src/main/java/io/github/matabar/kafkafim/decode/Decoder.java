@@ -59,7 +59,7 @@ import tools.jackson.databind.json.JsonMapper;
  * <p>Memory: values are bounded by {@code maxRecordBytes} before parsing, so string, number and
  * token sizes are too; Jackson's {@link StreamReadConstraints} additionally cap nesting at {@value
  * #MAX_NESTING_DEPTH}, number literals at {@value #MAX_NUMBER_LENGTH} digits and keys at {@value
- * #MAX_NAME_LENGTH} characters. The parsed trees are kept for routing and can take far more heap
+ * #MAX_NAME_LENGTH} UTF-8 bytes. The parsed trees are kept for routing and can take far more heap
  * than the value: the worst case, an array of empty objects, measured about 85 bytes per element,
  * roughly 28 times the value size (an 8 MiB record retained about 237 MB).
  */
@@ -71,7 +71,7 @@ public final class Decoder {
   /** Longest accepted number literal, in characters (Jackson's default, stated explicitly). */
   public static final int MAX_NUMBER_LENGTH = 1000;
 
-  /** Longest accepted object key, in characters (Jackson's default, stated explicitly). */
+  /** Longest accepted object key, in UTF-8 bytes (Jackson's default, stated explicitly). */
   public static final int MAX_NAME_LENGTH = 50_000;
 
   /** Elasticsearch's {@code _id} limit, in UTF-8 bytes. */

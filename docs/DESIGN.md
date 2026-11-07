@@ -208,7 +208,7 @@ element, `kafkafim.doc-index`.
   whitespace outside strings removed, because the bulk body is NDJSON.
 - **Limits.** `max-record-bytes` bounds every string, number and token count before
   parsing. Nesting is capped at 500, number literals at 1000 digits and keys at
-  50,000 characters. Parsed trees are kept for routing and can take far more heap than
+  50,000 UTF-8 bytes. Parsed trees are kept for routing and can take far more heap than
   the value: an 8 MiB array of empty objects retains about 237 MB (~85 bytes per
   element, ~28× the value), while `max-in-flight-bytes` counts raw bytes.
 
