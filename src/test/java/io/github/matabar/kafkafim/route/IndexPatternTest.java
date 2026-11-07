@@ -220,9 +220,22 @@ class IndexPatternTest {
     }
 
     @Test
-    void constantInvalidPatternIsResolvedOnceAsInvalid() {
-      assertThat(IndexPattern.compile("_bad").resolve(doc("{}"), null))
-          .isInstanceOf(InvalidName.class);
+    void constantInvalidPatternFailsAtCompile() {
+      for (String pattern : List.of("_bad", "A B", "a/b", ".")) {
+        assertThatThrownBy(() -> IndexPattern.compile(pattern))
+            .as(pattern)
+            .isInstanceOf(IllegalArgumentException.class)
+            .hasMessageContaining("is invalid");
+      }
+    }
+
+    @Test
+    void unpairedSurrogatesAreInvalid() {
+      IndexResolution result =
+          IndexPattern.compile("x-%{s}")
+              .resolve(JsonNodeFactory.instance.objectNode().put("s", "\ud800y"), T);
+      assertThat(result).isInstanceOf(InvalidName.class);
+      assertThat(((InvalidName) result).problem()).contains("unpaired");
     }
   }
 

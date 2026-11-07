@@ -20,9 +20,9 @@ import tools.jackson.databind.JsonNode;
  * <ul>
  *   <li>{@code %{/a/b}} is a JSON pointer, {@code %{name}} the top-level property {@code name}
  *       (taken literally, so {@code %{a.b}} is the property {@code "a.b"}).
- *   <li>A field that is a string contributes its text; a number or boolean its JSON text ({@code
- *       42}, {@code 1.5}, {@code true}). A missing field, JSON {@code null}, an object or an array
- *       is {@link IndexResolution.Unresolved}.
+ *   <li>A field that is a string contributes its text; a number or boolean Jackson's text form
+ *       ({@code 42}, {@code 1.5}, {@code true}). A missing field, JSON {@code null}, an object or
+ *       an array is {@link IndexResolution.Unresolved}.
  *   <li>{@code %{+pattern}} formats the event {@link Instant} in UTC with {@link Locale#ROOT}.
  *   <li>The whole result is lower-cased with {@link Locale#ROOT} and checked against
  *       Elasticsearch's index-name rules; a violation is {@link IndexResolution.InvalidName}.
@@ -48,6 +48,9 @@ public final class IndexPattern {
     this.sizeHint = Math.max(16, pattern.length() + 16);
     this.constant =
         parts.stream().allMatch(p -> p instanceof Literal) ? validated(literalText(parts)) : null;
+    if (constant instanceof IndexResolution.InvalidName invalid) {
+      throw new IllegalArgumentException(invalid.reason());
+    }
   }
 
   /**

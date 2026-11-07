@@ -5,8 +5,8 @@ import tools.jackson.databind.JsonNode;
 
 /**
  * A configured {@code equals}/{@code in} value, pre-parsed once so that comparing it to a document
- * field allocates nothing for strings, booleans and integers. Semantics: {@link
- * ConditionSpec.FieldEquals}.
+ * field allocates nothing for strings, booleans and integers in {@code long} range (other numbers
+ * allocate one {@code BigDecimal} per comparison). Semantics: {@link ConditionSpec.FieldEquals}.
  */
 final class ScalarValue {
 

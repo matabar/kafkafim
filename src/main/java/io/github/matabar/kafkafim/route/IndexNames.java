@@ -42,6 +42,8 @@ final class IndexNames {
           && Character.isLowSurrogate(name.charAt(i + 1))) {
         bytes += 4;
         i++;
+      } else if (Character.isSurrogate(c)) {
+        return "must not contain an unpaired UTF-16 surrogate";
       } else {
         bytes += 3;
       }
