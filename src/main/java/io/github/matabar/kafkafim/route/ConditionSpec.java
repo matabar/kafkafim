@@ -81,7 +81,9 @@ public sealed interface ConditionSpec {
 
   /**
    * {@code field: /p, matches: regex}: the field is a JSON string the whole of which matches {@code
-   * regex} ({@link java.util.regex.Matcher#matches()}, so implicitly anchored).
+   * regex} ({@link java.util.regex.Matcher#matches()}, so implicitly anchored). A value long enough
+   * to overflow the regex engine's stack (possible with constructs like {@code (a|b)*}) does not
+   * match.
    *
    * @param field JSON pointer
    * @param regex {@link java.util.regex.Pattern} syntax, compiled once
@@ -104,7 +106,7 @@ public sealed interface ConditionSpec {
   record HeaderEquals(String name, String value) implements ConditionSpec {
     /** Rejects missing components. */
     public HeaderEquals {
-      Specs.require(name != null && !name.isEmpty(), "header name is required");
+      Specs.require(name != null && !name.isBlank(), "header name is required");
       Specs.require(value != null, "header equals value is required");
     }
   }
@@ -117,7 +119,7 @@ public sealed interface ConditionSpec {
   record TopicEquals(String topic) implements ConditionSpec {
     /** Rejects missing components. */
     public TopicEquals {
-      Specs.require(topic != null && !topic.isEmpty(), "topic is required");
+      Specs.require(topic != null && !topic.isBlank(), "topic is required");
     }
   }
 }

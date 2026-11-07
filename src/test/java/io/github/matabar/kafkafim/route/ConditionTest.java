@@ -176,6 +176,15 @@ class ConditionTest {
   class Matches {
 
     @Test
+    void stackOverflowOnLongValueIsNoMatch() {
+      Condition condition = Condition.compile(new FieldMatches("/s", "(a|b)*c"));
+      JsonNode longValue =
+          JsonNodeFactory.instance.objectNode().put("s", "ab".repeat(200_000) + "c");
+      assertThat(condition.test(longValue, "t", HeaderLookup.NONE)).isFalse();
+      assertThat(condition.test(doc("{\"s\":\"ababc\"}"), "t", HeaderLookup.NONE)).isTrue();
+    }
+
+    @Test
     void anchoredOnBothEnds() {
       FieldMatches matches = new FieldMatches("/host", "web-[0-9]+");
       assertThat(test(matches, "{\"host\":\"web-12\"}")).isTrue();
@@ -250,7 +259,7 @@ class ConditionTest {
           .isInstanceOf(IllegalArgumentException.class);
       assertThatThrownBy(() -> new FieldEquals("/a", null))
           .isInstanceOf(IllegalArgumentException.class);
-      assertThatThrownBy(() -> new HeaderEquals("", "x"))
+      assertThatThrownBy(() -> new HeaderEquals(" ", "x"))
           .isInstanceOf(IllegalArgumentException.class);
       assertThatThrownBy(() -> new TopicEquals(null)).isInstanceOf(IllegalArgumentException.class);
       assertThatThrownBy(() -> Condition.compile(null))

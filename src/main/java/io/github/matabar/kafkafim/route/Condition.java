@@ -58,7 +58,7 @@ interface Condition {
         Pattern pattern = Pattern.compile(regex);
         yield (document, topic, headers) -> {
           JsonNode node = document.at(pointer);
-          return node.isString() && pattern.matcher(node.stringValue()).matches();
+          return node.isString() && matches(pattern, node.stringValue());
         };
       }
       case ConditionSpec.HeaderEquals(String name, String value) -> {
@@ -71,5 +71,18 @@ interface Condition {
       case ConditionSpec.TopicEquals(String expected) ->
           (document, topic, headers) -> expected.equals(topic);
     };
+  }
+
+  /**
+   * Anchored match. {@code java.util.regex} recurses per repetition of some constructs (e.g. {@code
+   * (a|b)*}), so a long enough value overflows the stack; that counts as no match rather than
+   * killing the consumer thread on document content.
+   */
+  private static boolean matches(Pattern pattern, String value) {
+    try {
+      return pattern.matcher(value).matches();
+    } catch (StackOverflowError e) {
+      return false;
+    }
   }
 }

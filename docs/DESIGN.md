@@ -415,7 +415,9 @@ A route matches when **all** of its `when` conditions hold. Condition types:
   and infinities equal nothing); a JSON boolean equals `true`/`false` exactly. A
   string never equals a number (`"1"` in the document does not match `equals: 1.0`);
   objects, arrays, `null` and a missing field match nothing.
-- `prefix`/`matches` apply to string fields only; any other type does not match.
+- `prefix`/`matches` apply to string fields only; any other type does not match. A
+  value long enough to overflow `java.util.regex`'s stack (constructs like `(a|b)*`
+  recurse per repetition) counts as no match instead of failing the record.
 - `header` compares the UTF-8 bytes of `v` with the value of the **last** header of
   that name (Kafka allows repeats); a missing header or a null value does not match.
 
