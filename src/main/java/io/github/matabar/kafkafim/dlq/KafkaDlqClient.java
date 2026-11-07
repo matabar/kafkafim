@@ -118,7 +118,7 @@ final class KafkaDlqClient implements DlqClient {
       return;
     }
     synchronized (producerLock) {
-      if (closed || replacing || producer != failed) {
+      if (closed || replacing || needsProducer || producer != failed) {
         return;
       }
       replacing = true;
