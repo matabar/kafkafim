@@ -342,6 +342,14 @@ public final class ConfigValidator {
     pointer(path + ".id-field", document.idField());
     if (document.versionField() != null) {
       pointer(path + ".version-field", document.versionField());
+      if (document.op() == Pipeline.Op.CREATE) {
+        // Elasticsearch: "create operations only support internal versioning"; BulkAction rejects
+        // the pair too, but only at runtime.
+        error(
+            path + ".op",
+            "op create does not support external versions; remove document.version-field or"
+                + " use document.op: index");
+      }
     }
     if (document.timestampField() != null) {
       pointer(path + ".timestamp-field", document.timestampField());
