@@ -8,7 +8,7 @@ deploys. The team carries an image and a chart into production and installs them
 
 ## Decision
 - **CI** (PRs and `main`): `./mvnw verify` (unit + Testcontainers integration +
-  ArchUnit), Dockerfile build from the tested jar with a `validate`-profile smoke
+  ArchUnit), Dockerfile build from the tested jar with a read-only liveness smoke
   run, Helm lint/template/kubeconform/unittest. All required for merge.
 - **CD** (tag `v*`): rebuild and re-test at the tag, multi-arch image to
   `ghcr.io/matabar/kafkafim`, SBOM (Syft), Cosign keyless signatures for image and
