@@ -93,12 +93,12 @@ jobs:
           shopt -s nullglob
           files=(charts/kafkafim/ci/*-values.yaml)
           if [ ${#files[@]} -eq 0 ]; then echo "no charts/kafkafim/ci/*-values.yaml; add at least one" >&2; exit 1; fi
-          go install github.com/yannh/kubeconform/cmd/kubeconform@latest
+          go install github.com/yannh/kubeconform/cmd/kubeconform@v0.8.0
           for v in "${files[@]}"; do
             helm template kafkafim charts/kafkafim -f "$v" | "$(go env GOPATH)/bin/kubeconform" -strict -summary
           done
       - if: steps.chart.outputs.exists == 'true'
         name: Chart unit tests
         run: |
-          helm plugin install https://github.com/helm-unittest/helm-unittest
+          helm plugin install https://github.com/helm-unittest/helm-unittest --version 1.2.1
           helm unittest charts/kafkafim
