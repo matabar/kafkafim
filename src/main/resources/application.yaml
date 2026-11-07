@@ -7,9 +7,10 @@ spring:
     default: local                  # development sample in application-local.yaml; production sets
                                     # SPRING_PROFILES_ACTIVE=kafkafim, which disables this default
   lifecycle:
-    timeout-per-shutdown-phase: 60s # per SmartLifecycle phase, not total: the web drain phase runs first
-                                    # (instant for actuator-only traffic), then kafkafim's consumer/bulk
-                                    # phase gets up to 60s to flush and commit inside the pod's 90s grace
+    timeout-per-shutdown-phase: 60s # per SmartLifecycle phase, not on the whole shutdown. Higher phases stop
+                                    # first: Spring Kafka containers (phase MAX-100) flush and commit, then
+                                    # the web server drains (phase MAX-1024, instant for actuator-only
+                                    # traffic). The 60s consumer phase must fit the pod's 90s grace period.
 
 server:
   port: 8080
