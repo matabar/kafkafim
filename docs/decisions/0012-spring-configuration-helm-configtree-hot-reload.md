@@ -27,7 +27,7 @@ production.
 - No config checksum annotation on the pod template: pipeline edits hot-reload,
   everything else rolls pods.
 - Hot reload: watcher on config and secret directories (`WatchService` + 10s hash
-  poll) and `POST /actuator/kafkafim-reload`. The tree is re-read through Spring's
+  poll) and `POST /actuator/reload`. The tree is re-read through Spring's
   `Binder` into a fresh model, validated whole, then diffed by pipeline; changed
   pipelines drain and restart, others are untouched. Invalid trees are rejected
   whole.

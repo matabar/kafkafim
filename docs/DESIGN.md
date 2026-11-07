@@ -443,7 +443,7 @@ agent all work. A changed secret file is picked up by the same reload path.
   summary, and exits 0/1 without connecting anywhere. This replaces a CLI.
 - **Reload**: a watcher on the config and secret directories (Java `WatchService` +
   10s hash poll, because kubelet updates volumes by symlink swap with up to ~1 min
-  delay) plus `POST /actuator/kafkafim-reload`. The new tree is loaded with Spring's
+  delay) plus `POST /actuator/reload`. The new tree is loaded with Spring's
   `Binder` into a fresh model and validated as a whole. On success the supervisor
   diffs by pipeline: changed pipelines are drained (stop fetching, flush in-flight,
   commit, leave group) and restarted; added start; removed drain and stop; unchanged
@@ -586,7 +586,7 @@ pipeline it serves.
   and route, so Kafka ACLs and ES roles can be scoped per pipeline and per role.
 - Container: layered jar on a minimal JRE image, non-root, read-only root filesystem,
   no capabilities.
-- `/actuator/kafkafim-reload` is reachable only in-cluster via the Service; a
+- `/actuator/reload` is reachable only in-cluster via the Service; a
   `NetworkPolicy` in the chart (opt-in).
 
 ## 12. Technology choices

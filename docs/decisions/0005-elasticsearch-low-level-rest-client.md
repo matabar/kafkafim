@@ -8,8 +8,8 @@ coupled to a server major; Spring Data Elasticsearch adds repository abstraction
 we do not need and a single-cluster assumption.
 
 ## Decision
-Use `org.elasticsearch.client:elasticsearch-rest-client` only (Apache HttpClient,
-node round-robin, TLS). kafkafim builds the NDJSON `_bulk` body and parses per-item
+Use `co.elastic.clients:elasticsearch-rest5-client` only (Apache HttpClient 5, node
+round-robin, TLS; the low-level client variant managed by the Spring Boot 4 BOM). kafkafim builds the NDJSON `_bulk` body and parses per-item
 results with Jackson.
 
 ## Rationale
