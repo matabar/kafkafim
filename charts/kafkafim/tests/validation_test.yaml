@@ -157,6 +157,15 @@ tests:
       - failedTemplate:
           errorMessage: 'extraEnv must not set OTEL_EXPORTER_OTLP_HEADERS; the chart already sets it from values'
 
+  - it: fails when extraEnv sets a per-signal OTLP headers variable while otel.secretHeaders is set
+    set:
+      otel.secretHeaders: { Authorization: { secretName: apm, key: token } }
+      extraEnv:
+        - { name: OTEL_EXPORTER_OTLP_TRACES_HEADERS, value: x=y }
+    asserts:
+      - failedTemplate:
+          errorMessage: 'extraEnv must not set OTEL_EXPORTER_OTLP_TRACES_HEADERS; the chart already sets it from values'
+
   - it: allows OTEL_EXPORTER_OTLP_HEADERS from a Secret when otel.headers is empty
     set:
       extraEnv:
@@ -189,3 +198,50 @@ tests:
     asserts:
       - failedTemplate:
           errorMessage: 'podLabels must not set app.kubernetes.io/component; it is a selector label the chart sets'
+
+  - it: fails when a secrets[] mount uses the path reserved for otel.secretHeaders
+    set:
+      secrets:
+        - { name: sneaky, mountPath: /etc/kafkafim/secrets/management/otlp }
+    asserts:
+      - failedTemplate:
+          errorMessage: 'secrets[0] (sneaky): mountPath "/etc/kafkafim/secrets/management/otlp" is below /etc/kafkafim/secrets/management, which is reserved for otel.secretHeaders'
+
+  - it: fails when a secrets[] mount is the reserved management root itself
+    set:
+      secrets:
+        - { name: sneaky, mountPath: /etc/kafkafim/secrets/management/ }
+    asserts:
+      - failedTemplate:
+          errorMessage: 'secrets[0] (sneaky): mountPath "/etc/kafkafim/secrets/management/" is below /etc/kafkafim/secrets/management, which is reserved for otel.secretHeaders'
+
+  - it: fails when a header is both plain and secret (case-insensitive)
+    set:
+      otel.headers: { authorization: plain }
+      otel.secretHeaders: { Authorization: { secretName: apm, key: token } }
+    asserts:
+      - failedTemplate:
+          errorMessage: 'otel header "Authorization" is set in both otel.headers and otel.secretHeaders (header names are case-insensitive)'
+
+  - it: fails when otel.secretHeaders names one header twice in different case
+    set:
+      otel.secretHeaders:
+        Authorization: { secretName: apm, key: a }
+        authorization: { secretName: apm, key: b }
+    asserts:
+      - failedTemplate:
+          errorPattern: 'otel.secretHeaders sets "[Aa]uthorization" and "[Aa]uthorization"; header names are case-insensitive'
+
+  - it: rejects an otel header name that is not a plain token
+    set:
+      otel.secretHeaders: { "x_api_key": { secretName: apm, key: a } }
+    asserts:
+      - failedTemplate:
+          errorPattern: "'x_api_key' does not match pattern"
+
+  - it: rejects an otel.secretHeaders entry without a key
+    set:
+      otel.secretHeaders: { Authorization: { secretName: apm } }
+    asserts:
+      - failedTemplate:
+          errorPattern: "missing propert(y|ies).*'key'"
