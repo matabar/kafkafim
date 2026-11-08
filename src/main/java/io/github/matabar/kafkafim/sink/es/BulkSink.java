@@ -453,7 +453,7 @@ public final class BulkSink<H> implements AutoCloseable {
       }
       permit.error(System.nanoTime() - start, e);
       requests.add(request(sentAt, entries.size(), bytes, 0, e.toString(), attempt, 0));
-      return retryRequest(0, e, attempt + 1, "transport error: " + e);
+      return retryRequest(0, e, attempt + 1, "transport error: " + e, null);
     }
     long elapsed = System.nanoTime() - start;
     int status = result.status();
@@ -471,7 +471,9 @@ public final class BulkSink<H> implements AutoCloseable {
           permit.error(elapsed, e);
           requests.add(
               request(sentAt, entries.size(), bytes, status, "malformed response", attempt, 0));
-          return retryRequest(status, e, attempt + 1, "malformed response: " + e.getMessage());
+          // No throwable for the listener: the Jackson cause can quote the body (ADR-0030).
+          return retryRequest(
+              status, null, attempt + 1, "malformed response: " + e.getMessage(), result.body());
         }
         permit.success(elapsed);
         Instant answeredAt = clock.instant();
@@ -512,20 +514,31 @@ public final class BulkSink<H> implements AutoCloseable {
       case AUTH_FAILURE -> {
         permit.release();
         requests.add(request(sentAt, entries.size(), bytes, status, null, attempt, 0));
-        String reason = text(result.body());
+        String reason = ErrorSummary.ofResponse(result.body(), true);
         updateAuth(() -> requestAuthFailing = true);
         listener.onAuthFailure(key, status, reason);
-        return retryRequest(status, null, attempt + 1, "authentication failure: " + reason);
+        return retryRequest(
+            status, null, attempt + 1, "authentication failure: " + reason, result.body());
       }
       case RETRY_CLUSTER -> {
         permit.error(elapsed, new RequestFailure(status));
         requests.add(request(sentAt, entries.size(), bytes, status, null, attempt, 0));
-        return retryRequest(status, null, attempt + 1, text(result.body()));
+        return retryRequest(
+            status,
+            null,
+            attempt + 1,
+            ErrorSummary.ofResponse(result.body(), false),
+            result.body());
       }
       case RETRY_UNEXPECTED -> {
         permit.release();
         requests.add(request(sentAt, entries.size(), bytes, status, null, attempt, 0));
-        return retryRequest(status, null, attempt + 1, "unexpected: " + text(result.body()));
+        return retryRequest(
+            status,
+            null,
+            attempt + 1,
+            "unexpected: " + ErrorSummary.ofResponse(result.body(), false),
+            result.body());
       }
       default -> throw new IllegalStateException("unhandled request verdict");
     }
@@ -543,7 +556,13 @@ public final class BulkSink<H> implements AutoCloseable {
         sentAt, clock.instant(), docs, bytes, status, error, retries, itemErrors);
   }
 
-  private int retryRequest(int status, @Nullable Throwable error, int attempt, String detail)
+  /**
+   * Logs a request-level failure and sleeps the backoff. {@code detail} goes into the WARN line, so
+   * it never holds response text that may quote document field values (ADR-0030); the response body
+   * itself, cut to {@value #LOGGED_BODY_CHARS} characters, is logged at DEBUG only.
+   */
+  private int retryRequest(
+      int status, @Nullable Throwable error, int attempt, String detail, byte @Nullable [] body)
       throws InterruptedException {
     Duration delay = settings.backoff().delay(attempt);
     listener.onRequestRetry(key, status, error, attempt, delay);
@@ -554,6 +573,14 @@ public final class BulkSink<H> implements AutoCloseable {
         attempt,
         delay.toMillis(),
         detail);
+    if (body != null && LOG.isDebugEnabled()) {
+      LOG.debug(
+          "Bulk sink {}: response body of the failed request (status {}, attempt {}): {}",
+          key,
+          status,
+          attempt,
+          text(body));
+    }
     Thread.sleep(delay);
     return attempt;
   }
@@ -706,7 +733,9 @@ public final class BulkSink<H> implements AutoCloseable {
       listener.onAuthFailure(
           key,
           failure.status(),
-          failure.errorJson() != null ? failure.errorJson() : "status " + failure.status());
+          failure.errorJson() != null
+              ? ErrorSummary.ofError(failure.errorJson(), true)
+              : "status " + failure.status());
     } else {
       updateAuth(() -> requestAuthFailing = false);
     }
