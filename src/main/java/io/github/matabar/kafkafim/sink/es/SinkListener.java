@@ -8,7 +8,8 @@ import org.jspecify.annotations.Nullable;
  * Hook for metrics and for the supervisor: the telemetry slice binds meters to it and the
  * supervisor pauses a pipeline on an auth failure (DESIGN §5.2.1, §10). Every method has a no-op
  * default; implementations must be quick and thread-safe, and are called from sender threads.
- * Events carry names only, never credentials.
+ * Events carry names, statuses and error types only: never credentials, documents or
+ * Elasticsearch's raw response text, which can quote field values (ADR-0030).
  */
 public interface SinkListener {
 
@@ -43,7 +44,7 @@ public interface SinkListener {
    *
    * @param key the bulk stream
    * @param status HTTP status, or 0 for a transport error
-   * @param error the transport error, or {@code null}
+   * @param error the transport error, or {@code null} for any answer from Elasticsearch
    * @param attempt consecutive failed attempts for this request, starting at 1
    * @param delay backoff before the next attempt
    */
@@ -58,7 +59,10 @@ public interface SinkListener {
    *
    * @param key the bulk stream
    * @param status 401 or 403
-   * @param reason the Elasticsearch error JSON (no credentials)
+   * @param reason safe to log: {@code type=<error.type>, root_cause=[...], reason=<error.reason>}
+   *     as the sink builds it, or {@code "status <n>"}, {@code "non-JSON, <n> bytes"} and the like
+   *     when the body has no error object. The reason of a security error names the user, roles,
+   *     action and index, never document data; the raw body is never passed on
    */
   default void onAuthFailure(SinkKey key, int status, String reason) {}
 
