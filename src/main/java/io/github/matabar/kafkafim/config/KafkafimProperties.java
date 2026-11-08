@@ -1,9 +1,11 @@
 package io.github.matabar.kafkafim.config;
 
 import jakarta.validation.Valid;
+import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.boot.context.properties.bind.ConstructorBinding;
 import org.springframework.validation.annotation.Validated;
 
 /**
@@ -19,6 +21,7 @@ import org.springframework.validation.annotation.Validated;
  * @param kafka Kafka cluster definitions
  * @param elasticsearch Elasticsearch cluster definitions
  * @param pipelines pipelines by name
+ * @param reload hot-reload watcher settings (§5.6); read at startup only
  */
 @ConfigurationProperties(prefix = KafkafimProperties.PREFIX, ignoreUnknownFields = false)
 @Validated
@@ -26,7 +29,8 @@ public record KafkafimProperties(
     boolean allowInlineSecrets,
     @Valid Kafka kafka,
     @Valid Elasticsearch elasticsearch,
-    Map<String, @Valid Pipeline> pipelines) {
+    Map<String, @Valid Pipeline> pipelines,
+    Reload reload) {
 
   /** Property prefix of the tree. */
   public static final String PREFIX = "kafkafim";
@@ -35,7 +39,9 @@ public record KafkafimProperties(
   public static final String GROUP_ID_PREFIX = "kafkafim.";
 
   /** Applies defaults that depend on pipeline names and cluster definitions. */
+  @ConstructorBinding
   public KafkafimProperties {
+    reload = Defaults.orDefault(reload, Reload.DEFAULTS);
     kafka = Defaults.orDefault(kafka, new Kafka(null));
     elasticsearch = Defaults.orDefault(elasticsearch, new Elasticsearch(null));
     Map<String, Pipeline> resolved = new LinkedHashMap<>();
@@ -43,6 +49,22 @@ public record KafkafimProperties(
       resolved.put(entry.getKey(), resolve(entry.getKey(), entry.getValue(), kafka, elasticsearch));
     }
     pipelines = Defaults.map(resolved);
+  }
+
+  /**
+   * A tree with the default {@link Reload} settings.
+   *
+   * @param allowInlineSecrets accept literal secret values
+   * @param kafka Kafka cluster definitions
+   * @param elasticsearch Elasticsearch cluster definitions
+   * @param pipelines pipelines by name
+   */
+  public KafkafimProperties(
+      boolean allowInlineSecrets,
+      Kafka kafka,
+      Elasticsearch elasticsearch,
+      Map<String, Pipeline> pipelines) {
+    this(allowInlineSecrets, kafka, elasticsearch, pipelines, null);
   }
 
   private static Pipeline resolve(
@@ -112,6 +134,29 @@ public record KafkafimProperties(
     /** Applies the documented defaults. */
     public Elasticsearch {
       clusters = Defaults.map(clusters);
+    }
+  }
+
+  /**
+   * {@code kafkafim.reload}: how the configuration and secret directories are watched (DESIGN
+   * §5.6). Read once at startup; a reload that changes these values logs that they apply after a
+   * restart. {@code POST /actuator/reload} works whether or not the watcher is enabled.
+   *
+   * @param enabled watch the directories; default {@code true}
+   * @param pollInterval content-hash poll period, the upper bound on how late a change is seen when
+   *     file events are missed (kubelet swaps symlinks); default 10s
+   * @param debounce quiet period after the last change before reloading, so that a kubelet update
+   *     of several files is read once; default 2s
+   */
+  public record Reload(Boolean enabled, Duration pollInterval, Duration debounce) {
+
+    static final Reload DEFAULTS = new Reload(null, null, null);
+
+    /** Applies the documented defaults. */
+    public Reload {
+      enabled = Defaults.orDefault(enabled, Boolean.TRUE);
+      pollInterval = Defaults.orDefault(pollInterval, Duration.ofSeconds(10));
+      debounce = Defaults.orDefault(debounce, Duration.ofSeconds(2));
     }
   }
 }

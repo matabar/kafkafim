@@ -100,6 +100,13 @@ public final class ConfigValidator {
             checkGroupUnique(path, name, pipeline.source(), groupOwners);
           }
         });
+    KafkafimProperties.Reload reload = properties.reload();
+    if (reload.pollInterval().isNegative() || reload.pollInterval().isZero()) {
+      error(prefix + ".reload.poll-interval", "must be positive");
+    }
+    if (reload.debounce().isNegative()) {
+      error(prefix + ".reload.debounce", "must not be negative");
+    }
     if (properties.allowInlineSecrets()) {
       warnings.add(
           prefix + ".allow-inline-secrets=true: literal secrets accepted (local development only)");
