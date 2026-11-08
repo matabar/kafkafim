@@ -35,13 +35,14 @@ jobs:
             printf 'docs_only=false\nhelm=true\n' >> "$GITHUB_OUTPUT"; exit 0
           fi
           # What merging the PR would change. --no-renames lists both sides of a rename, so
-          # renaming code to *.md is not docs-only.
-          git diff --no-renames --name-only HEAD^1 HEAD > "$RUNNER_TEMP/changed"
+          # renaming code to *.md is not docs-only. quotePath=false keeps non-ASCII paths unquoted.
+          git -c core.quotePath=false diff --no-renames --name-only HEAD^1 HEAD > "$RUNNER_TEMP/changed"
           sed 's/^/  /' "$RUNNER_TEMP/changed"
           docs_only=false helm=false
           [ -s "$RUNNER_TEMP/changed" ] && docs_only=true
           while IFS= read -r f; do
             case "$f" in
+              src/*) docs_only=false ;;   # Maven packages src/main/resources, *.md included
               *.md | docs/* | LICENSE) ;;
               *) docs_only=false ;;
             esac

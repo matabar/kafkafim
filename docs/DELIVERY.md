@@ -49,8 +49,8 @@ Helm distribution model and is what `helm pull`/`helm push` and `skopeo` underst
 
 ### Docs-only pull requests
 
-A pull request whose every changed path (both sides of a rename) is `*.md` anywhere,
-under `docs/`, or `LICENSE` skips `build` and therefore `image`; `helm` runs only if the
+A pull request whose every changed path (both sides of a rename) is `*.md` outside
+`src/` (Maven packages `src/main/resources`), under `docs/`, or `LICENSE` skips `build` and therefore `image`; `helm` runs only if the
 chart, `ci.yml` or `.github/keys/` changed. The paths are what merging would change
 (`git diff` between the PR merge commit and the base tip). The skip is a job-level `if:`,
 not a workflow-level `paths-ignore`: GitHub reports a job skipped by `if:` as a passing

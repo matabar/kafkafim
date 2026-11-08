@@ -26,7 +26,7 @@
 - Scopes: `kafka`, `es`, `config`, `route`, `decode`, `dlq`, `supervisor`,
   `telemetry`, `helm`, `docker`, `ci`, `deps`, `style`, `docs`. Omit when global.
 - One commit, one responsibility. A commit builds and passes `./mvnw verify` on its
-  own; a commit that changes only documentation (`*.md`, `docs/**`, `LICENSE`) passes
+  own; a commit that changes only documentation (`*.md` outside `src/`, `docs/**`, `LICENSE`) passes
   `./mvnw -DskipTests verify`, matching CI, which skips the Java and image jobs for
   docs-only pull requests (docs/DELIVERY.md). Formatting-only changes are their own
   commit (`style:`).
