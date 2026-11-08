@@ -223,6 +223,17 @@ public final class DlqWriter {
         return;
       }
       owner.unregister(this);
+      // One line per DLQ record (DESIGN §10, logs): coordinates and error type only; the reason
+      // and the record itself are in the DLQ record, never in the log.
+      log.warn(
+          "Pipeline '{}': dead-lettered {} to {}-{}@{} (target {}/{})",
+          pipeline,
+          request,
+          metadata.topic(),
+          metadata.partition(),
+          metadata.offset(),
+          request.targetCluster() == null ? "-" : request.targetCluster(),
+          request.targetIndex() == null ? "-" : request.targetIndex());
       owner.notify(listener -> listener.onWritten(pipeline, request, metadata));
       if (failedBefore) {
         recovered();
