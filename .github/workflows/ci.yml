@@ -116,7 +116,7 @@ jobs:
         name: Chart unit tests
         shell: bash
         env:
-          ASSET_TOKEN: ${{ github.token }}   # passed to gh api only, not to the plugin hook or tests
+          ASSET_TOKEN: ${{ github.token }}   # unset after the downloads, before any plugin code runs
           TOOLS: ${{ runner.temp }}/chart-tools
           # helm-unittest 1.2.1: the signed all-platform plugin tarball, its provenance file
           # (release asset ids are immutable), their SHA-256 and the release key's fingerprint.
@@ -146,6 +146,7 @@ jobs:
           }
           fetch "$TGZ" "$TGZ_ASSET"
           fetch "$TGZ.prov" "$PROV_ASSET"
+          unset ASSET_TOKEN
           printf '%s  %s\n' "$TGZ_SHA256" "$d/$TGZ" "$PROV_SHA256" "$d/$TGZ.prov" | sha256sum -c -
           GNUPGHOME=$(mktemp -d)   # short path: gpg's socket paths have a length limit
           export GNUPGHOME
