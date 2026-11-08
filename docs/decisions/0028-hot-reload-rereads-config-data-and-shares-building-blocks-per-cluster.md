@@ -54,4 +54,9 @@ once.
   `(cluster, identity)`, and a cluster's breaker split per instance.
 - Adding a pipeline creates new DLQ producers for its Kafka cluster (the current
   ones cannot learn a new pipeline); untouched pipelines keep the old ones.
+- A pipeline that moves to new DLQ producers leaves its old writer behind; that
+  writer keeps retrying failed sends (and reporting them to telemetry under the
+  pipeline's name) until its instance closes with the last pipeline still using it.
+  The records are re-delivered to the new run regardless. Per-writer eviction in
+  `dlq/` would end this.
 - A reload waits for the drains it triggers; a SIGTERM during a reload waits for it.

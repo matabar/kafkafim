@@ -747,20 +747,27 @@ agent all work. A changed secret file is picked up by the same reload path.
     (clients per `(cluster, identity)`, one breaker) and one set of DLQ producers and
     consumer factories per *cluster definition*. A restarted pipeline gets the current
     instance of each cluster it uses, so a pipeline restarted for its own change keeps
-    its clients, producer and DLQ writer; a changed cluster or identity makes a new
+    its clients, producer and DLQ writer as long as they are still the current ones (an
+    earlier reload that added a pipeline on its Kafka cluster made new DLQ producers
+    current, and the restart then moves it to them); a changed cluster or identity makes a new
     instance current; a pipeline that is new to the current DLQ producers, or whose
     DLQ settings changed, also gets new DLQ producers (they cache each pipeline's
     writer with its topic). An instance closes when its last pipeline stopped.
     Meanwhile old and new instances coexist: briefly two producers or clients for the
     same `(cluster, identity)`, and a breaker per instance; each pipeline follows only
     the breaker and DLQ writer it uses, and `dlq-blocked` is dropped when a restart
-    gives the pipeline a new writer.
+    gives the pipeline a new writer. A DLQ writer left behind keeps retrying its
+    failed sends until its instance closes; their records are re-delivered to the new
+    run anyway, so this costs memory and duplicate DLQ records, not data.
   - **One reload at a time**: watcher and endpoint share one lock; a second caller
     waits. The watcher reloads once the content hash has been stable for the debounce
     (2s), so a kubelet update of several files is read once, and it does not retry a
     rejected tree until the files change again. A reload waits for the drains it
-    causes (up to about 50s per pipeline, in parallel); a SIGTERM during a reload
-    waits for it before stopping the pipelines.
+    causes (up to about 50s per pipeline, in parallel; drains are never cut short);
+    a SIGTERM during a reload waits for it before stopping the pipelines, starts
+    nothing the reload would have started, and may then exceed the 60s shutdown
+    phase, after which Spring moves on: records not yet committed are re-delivered
+    after the restart, nothing is lost.
   - **`POST /actuator/reload`** returns `{result, generation, added, removed,
     restarted: [{pipeline, reasons}], unchanged, errors}`: 200 for `applied` or
     `unchanged`, 400 with every violation for `rejected`, 503 while the supervisor is
