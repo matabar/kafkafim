@@ -18,6 +18,8 @@ Status: design and scaffolding. Nothing ships yet.
 - [Delivery](docs/DELIVERY.md): CI, releases, registries, importing into the
   air-gapped environment.
 - [Helm chart](docs/HELM.md): one release per Kubernetes cluster, groups, secrets.
+- [Runbook](docs/RUNBOOK.md): deploy, observe and recover kafkafim in production;
+  incidents as symptom → check → action.
 
 ## Develop
 
