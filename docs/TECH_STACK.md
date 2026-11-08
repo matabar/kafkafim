@@ -7,7 +7,7 @@ Versions are the ones pinned at project creation (2026-11-07). Everything marked
 |---|---|---|---|---|
 | Language | Java | 27 | Team runs the JVM; current release line | [0002](decisions/0002-java-and-spring-boot.md) |
 | Framework | Spring Boot | 4.1.2 | Config binding + validation, Actuator, OTel starter, Kafka starter, graceful shutdown | [0002](decisions/0002-java-and-spring-boot.md) |
-| Build | Maven (wrapper 3.3.4 → Maven 3.10), single module, `${revision}` versioning, Surefire + Failsafe | — | Low ceremony, no local install, no version-bump commits | [0003](decisions/0003-maven-single-module.md) |
+| Build | Maven (wrapper 3.3.4 → Maven 3.10), single module, `${revision}` versioning, Surefire + Failsafe (integration-test classes in `it.forkCount` parallel JVMs, default 3) | — | Low ceremony, no local install, no version-bump commits | [0003](decisions/0003-maven-single-module.md) |
 | Code style | Google Java Style via Spotless (`google-java-format`) + Checkstyle (`google_checks.xml`) | see pom | Formatting is mechanical and fails the build in `validate`; conventions checked by Checkstyle | [0024](decisions/0024-google-java-style.md) |
 | Architecture tests | ArchUnit JUnit 5 | 1.5.1 (1.4.1 cannot read Java 27 class files) | Enforce package boundaries so a later module split is mechanical | [0003](decisions/0003-maven-single-module.md) |
 | Configuration | `@ConfigurationProperties` + Bean Validation, Helm-rendered ConfigMap, `configtree` secrets | BOM | One config system; secrets never in ConfigMaps | [0012](decisions/0012-spring-configuration-helm-configtree-hot-reload.md) |

@@ -43,6 +43,19 @@
 Testcontainers integration tests and ArchUnit rules. CI runs the same, plus the
 Dockerfile build and Helm checks; all must pass before merge.
 
+The `*IntegrationTest` classes run in three parallel Failsafe JVMs (each class starts
+its own containers, so up to three sets run at once). On a smaller machine, or
+to read one class's log on its own, run fewer forks:
+
+```bash
+./mvnw -Dit.forkCount=1 verify
+```
+
+Integration tests must be safe to run alongside each other: no fixed host ports (pass
+`--server.port=0` as a command-line argument when starting the app, since
+`application.yaml`'s 8080 beats default properties), no shared files outside a
+`@TempDir`, and no containers shared between classes.
+
 ## Pull requests
 
 - Title in Conventional Commit form; body says why and how it was verified. They
