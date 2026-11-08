@@ -26,6 +26,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.IntStream;
 import org.jspecify.annotations.Nullable;
@@ -360,6 +361,7 @@ class BulkSinkTest {
     assertThat(sink.awaitIdle(WAIT)).isTrue();
     assertThat(outcomes.get("a")).isEqualTo(ActionOutcome.INDEXED);
     assertThat(events.authFailures).hasValue(4);
+    assertThat(events.lastAuthReason).startsWith("type=security_exception");
   }
 
   @Test
@@ -460,6 +462,7 @@ class BulkSinkTest {
     assertThat(outcomes.all()).containsOnly(ActionOutcome.INDEXED);
     assertThat(transport.requests()).hasSize(12).allMatch(r -> r.ids().equals(List.of("a", "b")));
     assertThat(events.requestRetries).hasValue(11);
+    assertThat(events.answerWithThrowable).isFalse(); // incl. the unparsable 2xx (ADR-0030)
   }
 
   @Test
@@ -632,6 +635,8 @@ class BulkSinkTest {
     assertThat(sink.awaitIdle(WAIT)).isTrue();
     assertThat(transport.requests()).hasSize(2);
     assertThat(outcomes.all()).containsOnly(ActionOutcome.INDEXED);
+    assertThat(events.requestRetries).hasValue(1);
+    assertThat(events.answerWithThrowable).isFalse();
   }
 
   // ---- breaker ----
@@ -846,6 +851,7 @@ class BulkSinkTest {
     final List<FlushReason> flushes = Collections.synchronizedList(new ArrayList<>());
     final List<Long> flushBytes = Collections.synchronizedList(new ArrayList<>());
     final AtomicInteger requestRetries = new AtomicInteger();
+    final AtomicBoolean answerWithThrowable = new AtomicBoolean();
     final AtomicInteger itemRetries = new AtomicInteger();
     final AtomicInteger authFailures = new AtomicInteger();
     final AtomicInteger authRecovered = new AtomicInteger();
@@ -861,6 +867,9 @@ class BulkSinkTest {
     public void onRequestRetry(
         SinkKey key, int status, @Nullable Throwable error, int attempt, Duration delay) {
       requestRetries.incrementAndGet();
+      if (status != 0 && error != null) {
+        answerWithThrowable.set(true); // only a transport error carries one (ADR-0030)
+      }
     }
 
     @Override

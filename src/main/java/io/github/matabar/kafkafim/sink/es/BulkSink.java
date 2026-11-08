@@ -434,8 +434,9 @@ public final class BulkSink<H> implements AutoCloseable {
           }
         } catch (BulkResponse.MalformedResponseException e) {
           permit.error(elapsed, e);
+          // No throwable for the listener: the Jackson cause can quote the body (ADR-0030).
           return retryRequest(
-              status, e, attempt + 1, "malformed response: " + e.getMessage(), result.body());
+              status, null, attempt + 1, "malformed response: " + e.getMessage(), result.body());
         }
         permit.success(elapsed);
         handleItems(entries, response);

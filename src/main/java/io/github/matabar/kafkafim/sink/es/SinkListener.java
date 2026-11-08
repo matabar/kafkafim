@@ -44,7 +44,7 @@ public interface SinkListener {
    *
    * @param key the bulk stream
    * @param status HTTP status, or 0 for a transport error
-   * @param error the transport error, or {@code null}
+   * @param error the transport error, or {@code null} for any answer from Elasticsearch
    * @param attempt consecutive failed attempts for this request, starting at 1
    * @param delay backoff before the next attempt
    */
