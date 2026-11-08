@@ -37,6 +37,8 @@
 		<google-java-format.version>2.0.0</google-java-format.version>
 		<checkstyle.version>14.4.0</checkstyle.version>
 		<maven-checkstyle-plugin.version>3.6.0</maven-checkstyle-plugin.version>
+		<!-- Parallel Failsafe JVMs for the *IntegrationTest classes; override with -Dit.forkCount=N -->
+		<it.forkCount>3</it.forkCount>
 	</properties>
 	<dependencies>
 		<dependency>
@@ -231,6 +233,10 @@
 				<groupId>org.apache.maven.plugins</groupId>
 				<artifactId>maven-failsafe-plugin</artifactId>
 				<configuration>
+					<!-- Each *IntegrationTest class runs in one of it.forkCount JVMs; containers are per class,
+					     so forks share nothing but the Docker daemon. -->
+					<forkCount>${it.forkCount}</forkCount>
+					<reuseForks>true</reuseForks>
 					<includes>
 						<include>**/*IntegrationTest.java</include>
 					</includes>
