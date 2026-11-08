@@ -40,7 +40,9 @@ class ElasticsearchSinkIntegrationTest {
               DockerImageName.parse("docker.elastic.co/elasticsearch/elasticsearch:8.19.0"))
           .withEnv("xpack.security.enabled", "false")
           .withEnv("action.auto_create_index", "false")
-          .withEnv("ES_JAVA_OPTS", "-Xms512m -Xmx512m");
+          .withEnv("ES_JAVA_OPTS", "-Xms512m -Xmx512m")
+          // Parallel Failsafe forks can boot several nodes at once; the 60 s default is tight.
+          .withStartupTimeout(Duration.ofMinutes(3));
 
   static final Duration WAIT = Duration.ofSeconds(60);
 
