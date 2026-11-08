@@ -35,7 +35,10 @@ change. Option 4 is the leak.
 - The WARN line of a request-level retry names the status and Elasticsearch's
   `error.type` plus the distinct `error.root_cause[].type`s (at most 5). It never includes
   `error.reason` or any other text from the body. A body that is not JSON is logged as
-  `non-JSON, <n> bytes`; JSON without an `error` object, by its size only.
+  `non-JSON, <n> bytes` (a top-level array or scalar, or JSON nested too deep to parse,
+  counts as not JSON); an empty body as `empty body`; JSON without an `error` object, by
+  its size only. A 2xx body that is not a bulk response is logged by what was wrong with
+  it (for example "bulk response has no items"), never by its content.
 - A 401/403 keeps the security error's `reason`. It names the user, roles, action and
   index, which an operator needs to fix the grant, and no document data. Response headers
   echoed in the body (`WWW-Authenticate`) are dropped.
@@ -44,6 +47,8 @@ change. Option 4 is the leak.
   off by default; an operator enables it for that one logger while diagnosing.
 - `SinkListener.onAuthFailure` carries the same summary (type, root-cause types,
   reason), never the raw body, for request-level and item-level auth failures.
+  `SinkListener.onRequestRetry` carries a throwable only for a transport error; a
+  malformed 2xx passes none, because the JSON parser's message can quote the body.
 
 ## Consequences
 Logs at the default level hold no Elasticsearch text that can quote documents. Diagnosing
