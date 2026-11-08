@@ -47,7 +47,7 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- define "kafkafim.labels" -}}
 helm.sh/chart: {{ include "kafkafim.chart" . }}
 {{ include "kafkafim.selectorLabels" . }}
-app.kubernetes.io/version: {{ include "kafkafim.imageTag" . | quote }}
+app.kubernetes.io/version: {{ include "kafkafim.versionLabel" . | quote }}
 app.kubernetes.io/managed-by: {{ .Release.Service }}
 app.kubernetes.io/part-of: kafkafim
 {{- end -}}
@@ -75,15 +75,38 @@ app.kubernetes.io/component: {{ .group }}
 {{- end -}}
 
 {{/*
-Full image reference: <registry>/<repository>:<tag>. image.registry is first-class
-so the air-gapped registry is a one-line override.
+app.kubernetes.io/version: the image tag (or appVersion), never the digest, made a
+valid label value: any character outside [A-Za-z0-9_.-] (such as semver's "+")
+becomes "_", at most 63 characters, starting and ending with an alphanumeric
+character.
+*/}}
+{{- define "kafkafim.versionLabel" -}}
+{{- $v := regexReplaceAll "[^A-Za-z0-9_.-]" (include "kafkafim.imageTag" .) "_" | trunc 63 -}}
+{{- regexReplaceAll "^[^A-Za-z0-9]+|[^A-Za-z0-9]+$" $v "" -}}
+{{- end -}}
+
+{{/*
+Full image reference. image.registry is first-class so the air-gapped registry is a
+one-line override.
+  no digest:            <registry>/<repository>:<image.tag or appVersion>
+  digest, no image.tag: <registry>/<repository>@<digest>
+  digest and image.tag: <registry>/<repository>:<image.tag>@<digest>
+With a digest the runtime pulls by digest; a tag next to it is only informational.
 */}}
 {{- define "kafkafim.image" -}}
 {{- $repo := .Values.image.repository -}}
 {{- if .Values.image.registry -}}
 {{- $repo = printf "%s/%s" (trimSuffix "/" .Values.image.registry) $repo -}}
 {{- end -}}
+{{- $digest := .Values.image.digest | default "" | toString | trim -}}
+{{- $tag := .Values.image.tag | default "" | toString | trim -}}
+{{- if and $digest $tag -}}
+{{- printf "%s:%s@%s" $repo $tag $digest -}}
+{{- else if $digest -}}
+{{- printf "%s@%s" $repo $digest -}}
+{{- else -}}
 {{- printf "%s:%s" $repo (include "kafkafim.imageTag" .) -}}
+{{- end -}}
 {{- end -}}
 
 {{/*
@@ -131,6 +154,9 @@ cannot express.
 {{- define "kafkafim.validate" -}}
 {{- if not (include "kafkafim.imageTag" .) -}}
 {{- fail "image.tag is empty and the chart has no appVersion; set image.tag" -}}
+{{- end -}}
+{{- if contains "@" (.Values.image.tag | default "" | toString) -}}
+{{- fail (printf "image.tag %q contains \"@\"; put the tag in image.tag and the digest (sha256:<64 hex>) in image.digest" (.Values.image.tag | toString)) -}}
 {{- end -}}
 {{- $pipelines := .Values.config.kafkafim.pipelines | default dict -}}
 {{- $owner := dict -}}

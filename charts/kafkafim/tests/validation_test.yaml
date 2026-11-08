@@ -130,6 +130,40 @@ tests:
     asserts:
       - notFailedTemplate: {}
 
+  - it: fails when image.tag carries a digest, pointing at image.digest
+    set:
+      image.tag: 1.2.3@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+    asserts:
+      - failedTemplate:
+          errorMessage: 'image.tag "1.2.3@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" contains "@"; put the tag in image.tag and the digest (sha256:<64 hex>) in image.digest'
+
+  - it: accepts a well-formed image.digest
+    set:
+      image.digest: sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+    asserts:
+      - notFailedTemplate: {}
+
+  - it: rejects an image.digest without the sha256 prefix
+    set:
+      image.digest: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+    asserts:
+      - failedTemplate:
+          errorPattern: "image.digest.*does not match pattern"
+
+  - it: rejects a truncated image.digest
+    set:
+      image.digest: sha256:0123456789abcdef
+    asserts:
+      - failedTemplate:
+          errorPattern: "image.digest.*does not match pattern"
+
+  - it: rejects a full image reference in image.digest
+    set:
+      image.digest: ghcr.io/matabar/kafkafim@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+    asserts:
+      - failedTemplate:
+          errorPattern: "image.digest.*does not match pattern"
+
   - it: fails when a group's resource name exceeds 63 characters
     set:
       config.kafkafim.pipelines:
