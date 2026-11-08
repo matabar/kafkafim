@@ -178,7 +178,8 @@ behind. When a pipeline is restarted (reload), breaker and auth reasons are drop
 because only the old run's senders were probing the breaker or retrying the identity; the
 new sinks report them again if the cluster is still down, and the in-flight budget bounds
 what is fetched meanwhile. `dlq-blocked` stays until the shared DLQ writer's retries
-succeed. A pipeline that is stopping cannot be started until the stop returns.
+succeed, unless the restart gives the pipeline a new DLQ writer (§5.6), whose events are
+then the only ones that count. A pipeline that is stopping cannot be started until the stop returns.
 
 - **Batching**: a batch is sealed at `bulk.max-docs`, at `bulk.max-bytes` (an action
   that would push it over seals it first, so only a single action larger than
@@ -327,7 +328,7 @@ then the source starts, which fails for a missing source topic. All DLQ and
 Elasticsearch checks run before a verdict, so one ERROR line names every problem.
 Missing or undescribable topics, a 401/403, an unknown identity or unreadable trust
 material, and a Kafka authentication or authorization error are **configuration**
-failures (`failed_preflight` until reload or restart). An unreachable broker or cluster
+failures (`failed_preflight` until a reload changes the pipeline, or a restart). An unreachable broker or cluster
 (timeout, connection error, 5xx) is **transient**: the pipeline stays `starting` and
 retries (1s doubling to 30s), so a pod that starts during a short outage needs no
 restart. Elasticsearch answers 405 on that path when security is disabled; any status
@@ -700,15 +701,85 @@ agent all work. A changed secret file is picked up by the same reload path.
   connecting anywhere. It is meant for the infrastructure repository's CI, where the
   per-cluster values live. This repository's CI does not use it; it builds the image
   and smoke-tests it with a liveness probe ([DELIVERY.md](DELIVERY.md)).
-- **Reload**: a watcher on the config and secret directories (Java `WatchService` +
-  10s hash poll, because kubelet updates volumes by symlink swap with up to ~1 min
-  delay) plus `POST /actuator/reload`. The new tree is loaded with Spring's
-  `Binder` into a fresh model and validated as a whole. On success the supervisor
-  diffs by pipeline: changed pipelines are drained (stop fetching, flush in-flight,
-  commit, leave group) and restarted; added start; removed drain and stop; unchanged
-  are untouched. Cluster definition changes restart every pipeline using that
-  cluster; an identity change restarts only the pipelines referencing it. An invalid tree is rejected whole; the running config stays, a metric and
-  log record the failure.
+- **Reload** (ADR-0028): a watcher on the config and secret directories (Java
+  `WatchService` + 10s hash poll, because kubelet updates volumes by symlink swap with
+  up to ~1 min delay) plus `POST /actuator/reload`. The new tree is loaded with
+  Spring's `Binder` into a fresh model and validated as a whole. On success the
+  supervisor diffs by pipeline: changed pipelines are drained (stop fetching, flush
+  in-flight, commit, leave group) and restarted; added start; removed drain and stop;
+  unchanged are untouched. Cluster definition changes restart every pipeline using
+  that cluster; an identity change restarts only the pipelines referencing it. An
+  invalid tree is rejected whole; the running config stays, a metric and log record
+  the failure. In detail:
+  - **What is re-read.** A new Spring environment receives every property source of
+    the running one that did not come from config data, in the same order
+    (command-line arguments, `SPRING_APPLICATION_JSON`, system properties, environment
+    variables, random values, `SpringApplication` default properties, test
+    properties); then Spring Boot's own config data processing
+    (`ConfigDataEnvironmentPostProcessor`) runs on it, with the running application's
+    active profiles pinned. It reads `spring.config.location`,
+    `spring.config.additional-location` and `spring.config.import` from those sources
+    and loads, from disk, exactly what startup loaded: `application.yaml`, the
+    profile-specific files (`application-kafkafim.yaml` from the ConfigMap mount) and
+    every import (the `configtree:` secret directories, file by file). Precedence is
+    therefore startup's, highest first: command-line arguments, system properties,
+    environment variables, profile-specific files outside the jar, plain files outside
+    the jar, profile-specific files in the jar, `application.yaml` in the jar,
+    `SpringApplication` defaults; the `configtree` imports land where startup put them
+    (their names, `kafka.*` and `elasticsearch.*`, never overlap `kafkafim.*`).
+    Environment variables and system properties cannot change in a running process,
+    so a reload only sees file changes.
+  - **Validation**: the Kubernetes guard (§5.4: `kafkafim.allow-inline-secrets=true`
+    on Kubernetes), unknown keys under `kafkafim`, Bean Validation, the rules of §5.7
+    and the inline-secret check of §5.5 against the fresh property sources, all in
+    one pass (`config/ConfigLoader`). A secret file that disappeared leaves its
+    placeholder unresolved, which rejects the tree.
+  - **Diff** (`config/ConfigDiff`): a pipeline restarts when its own definition
+    changed (including its resolved group id and identities, so a new
+    `default-identity` restarts the pipelines that inherit it), when a cluster it
+    uses changed in anything but its identities and `default-identity` (its source
+    Kafka cluster serves both the consumer and the DLQ producer; every route's
+    Elasticsearch cluster), or when an identity it references changed (source
+    identity, DLQ identity, every route's identity). Secret values are part of the
+    bound identities, so a rotated secret file is an identity change. A change to a
+    cluster no pipeline uses restarts nothing.
+  - **Building blocks** (`supervisor/PipelineResources`): one Elasticsearch registry
+    (clients per `(cluster, identity)`, one breaker) and one set of DLQ producers and
+    consumer factories per *cluster definition*. A restarted pipeline gets the current
+    instance of each cluster it uses, so a pipeline restarted for its own change keeps
+    its clients, producer and DLQ writer; a changed cluster or identity makes a new
+    instance current; a pipeline that is new to the current DLQ producers, or whose
+    DLQ settings changed, also gets new DLQ producers (they cache each pipeline's
+    writer with its topic). An instance closes when its last pipeline stopped.
+    Meanwhile old and new instances coexist: briefly two producers or clients for the
+    same `(cluster, identity)`, and a breaker per instance; each pipeline follows only
+    the breaker and DLQ writer it uses, and `dlq-blocked` is dropped when a restart
+    gives the pipeline a new writer.
+  - **One reload at a time**: watcher and endpoint share one lock; a second caller
+    waits. The watcher reloads once the content hash has been stable for the debounce
+    (2s), so a kubelet update of several files is read once, and it does not retry a
+    rejected tree until the files change again. A reload waits for the drains it
+    causes (up to about 50s per pipeline, in parallel); a SIGTERM during a reload
+    waits for it before stopping the pipelines.
+  - **`POST /actuator/reload`** returns `{result, generation, added, removed,
+    restarted: [{pipeline, reasons}], unchanged, errors}`: 200 for `applied` or
+    `unchanged`, 400 with every violation for `rejected`, 503 while the supervisor is
+    not running. Names and violations only, never configuration values. It is
+    defined in `supervisor` (nothing depends on `supervisor`, so it cannot create a
+    `telemetry` ↔ `supervisor` cycle).
+  - **Metrics and logs**: `kafkafim_config_reload_total{result=success|failure}`
+    (`unchanged` counts as success) and `kafkafim_config_generation` (1 at startup,
+    +1 per applied change); one INFO line per applied reload with the plan, one ERROR
+    line per rejected reload listing every violation. `kafkafim_pipeline_state` gains
+    and loses series with added and removed pipelines.
+  - **Settings**: `kafkafim.reload.enabled` (default `true`), `poll-interval` (10s),
+    `debounce` (2s), read at startup only. The watched paths are the file and
+    `configtree:` locations of the three properties above; `classpath:` locations are
+    not watched. `POST /actuator/reload` works with the watcher disabled.
+  - Not reloaded: the `KafkafimProperties` bean stays the startup tree (the supervisor
+    holds the one in effect); OTLP export headers (§10) and everything outside
+    `kafkafim.*` need a restart. A pipeline in `failed_preflight` restarts only when a
+    reload changes it (or the pod restarts).
 
 ### 5.7 Defaults and validation rules
 
@@ -798,7 +869,7 @@ are reported together:
 | Missing topic, DLQ topic, or failed authentication at pipeline start | Pipeline stays stopped (`failed_preflight`), clear log naming resource and identity, alert. Other pipelines unaffected. kafkafim never creates the resource. |
 | DLQ produce fails | Block the partition and alert. Losing data is worse than lag. The send is retried forever (100ms doubling to 30s, ±25% jitter) and never completes the source offset until the broker acknowledged it (`acks=all`), so the committed offset stays put. The writer is *blocked* from its first failure until every failed send was acknowledged; the supervisor pauses the pipeline on `onBlocked` and resumes on `onUnblocked`. A missing DLQ topic, failed authentication or authorization, an invalid topic or a record larger than the producer or topic allows is a **configuration** failure (logged at `ERROR`, alert); anything else is **transient**. Both kinds are retried; neither drops the record. A producer error that kafka-clients makes fatal even for an idempotent producer (cluster authorization on `InitProducerId`, e.g. a missing `Write` ACL; authentication; unsupported version) replaces the shared producer, so fixing the ACL unblocks the next attempt without a restart. |
 | Kafka unavailable | Reconnect with backoff (kafka-clients); `kafkafim_kafka_connected` gauge drops, alert. A Kafka authentication or authorization failure after start is retried every 10s instead of stopping the consumer. |
-| Pod SIGTERM | Spring graceful shutdown, higher phases first: the pipeline supervisor (phase MAX-100) stops all pipelines in parallel; each pipeline's Kafka source pauses fetching, gives in-flight records up to 30s to complete (its bulk sinks and the DLQ writer are still open, so outcomes keep arriving), then stops its container (10s), which commits what completed on revoke and leaves the group; records still incomplete are re-delivered to the next owner; then the pipeline's bulk sinks close (up to 10s; outcomes after the revoke are ignored); then the DLQ producers (phase MAX-1000, so they outlive the source drain) flush for up to 10s and close, failing any send still unacknowledged so that its record is not committed; then the web server drains (phase MAX-1024, instant for actuator-only traffic). `spring.lifecycle.timeout-per-shutdown-phase` (60s, `application.yaml`) bounds each phase; the consumer phase must fit the pod's `terminationGracePeriodSeconds` (90s, chart default). |
+| Pod SIGTERM | Spring graceful shutdown, higher phases first: the pipeline supervisor (phase MAX-100) stops all pipelines in parallel; each pipeline's Kafka source pauses fetching, gives in-flight records up to 30s to complete (its bulk sinks and the DLQ writer are still open, so outcomes keep arriving), then stops its container (10s), which commits what completed on revoke and leaves the group; records still incomplete are re-delivered to the next owner; then the pipeline's bulk sinks close (up to 10s; outcomes after the revoke are ignored); then the DLQ producers (phase MAX-1000, so they outlive the source drain; closed by `supervisor/PipelineResources`, which owns every configuration generation's producers) flush for up to 10s and close, failing any send still unacknowledged so that its record is not committed; then the web server drains (phase MAX-1024, instant for actuator-only traffic). `spring.lifecycle.timeout-per-shutdown-phase` (60s, `application.yaml`) bounds each phase; the consumer phase must fit the pod's `terminationGracePeriodSeconds` (90s, chart default). |
 
 Error classification lives in one table (`sink/es/ErrorClassifier`) and is
 unit-tested against captured ES 8.19 responses (`src/test/resources/sink/es/`), because
@@ -926,7 +997,8 @@ secrets are read at startup; rotating one needs a pod restart.
 - `kafkafim_pipeline_state{pipeline,state=starting|running|paused|failed_preflight|stopped}`
   (1 for the current state, 0 for the others; `paused` means a supervisor reason: breaker
   open, identity rejected or DLQ blocked, not the byte-budget backpressure)
-- `kafkafim_config_reload_total{result}`, `kafkafim_config_generation`
+- `kafkafim_config_reload_total{result=success|failure}`, `kafkafim_config_generation`
+  (1 at startup, +1 per applied reload; §5.6)
 - `kafkafim_dlq_records_total`
 
 Label discipline: `route` is the route's position or `name`, never the resolved
@@ -995,13 +1067,13 @@ pom.xml, mvnw                    Maven build (Spring Boot parent)
 compose.yaml                     local Kafka + Elasticsearch + Grafana LGTM
 src/main/java/io/github/matabar/kafkafim/
   config/         @ConfigurationProperties model, validators, watcher, Binder reload, diff
-  supervisor/     pipeline lifecycle, hot reload orchestration
+  supervisor/     pipeline lifecycle, hot reload orchestration, reload endpoint
   source/kafka/   consumer factories per cluster, container per pipeline, offset tracker
   decode/         object / array-of-objects decoding, field extraction (JSON pointer), timestamp parsing
   route/          condition evaluation, index pattern resolution
   sink/es/        Rest5Client per (cluster, identity), batcher, bulk sender, body builder, item parser, error table, breaker
   dlq/            producer, record format
-  telemetry/      meters, spans, health indicators, reload endpoint
+  telemetry/      meters, spans, health indicators
 src/main/resources/application.yaml   defaults + local-dev sample pipeline
 src/test/java/...                     unit + Testcontainers integration tests
 charts/kafkafim/                      production Helm chart

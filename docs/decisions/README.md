@@ -31,3 +31,4 @@ One file per decision, MADR-style. Supersede with a new ADR rather than editing 
 | [0025](0025-own-offset-tracker-instead-of-async-acks.md) | Own per-partition offset tracker instead of spring-kafka `asyncAcks` (supersedes that part of 0004) |
 | [0026](0026-bulk-retry-loop-in-the-sink.md) | Bulk retries are a small loop in the sink; Resilience4j supplies the breaker and the backoff (refines 0016) |
 | [0027](0027-dlq-record-timestamp-and-headers.md) | DLQ records carry the send time; the original timestamp and a fresh `kafkafim.*` header set travel in headers (refines 0011) |
+| [0028](0028-hot-reload-rereads-config-data-and-shares-building-blocks-per-cluster.md) | Hot reload re-runs Spring Boot's config data loading and shares building blocks per cluster definition (refines 0012) |
