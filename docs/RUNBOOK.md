@@ -194,7 +194,7 @@ without being restarted.
 ### 3.3 Metrics to look at first
 
 Pipeline metrics carry `pipeline` and `kafka_cluster`; `kafkafim_pipeline_state` has only `pipeline` and `state`, `kafkafim_breaker_state` only `es_cluster`, the reload meters
-none ([DESIGN §10](DESIGN.md#10-observability)).
+neither (`kafkafim_config_reload_total` has `result`) ([DESIGN §10](DESIGN.md#10-observability)).
 
 | Question | Metric |
 |---|---|
@@ -269,7 +269,8 @@ The endpoint answers JSON (names and violations only, never values):
 
 Not reloaded (needs a pod restart): `kafkafim.reload.*` (a WARN says so), OTLP export
 headers and endpoint, and anything outside `kafkafim.*`. With the chart these only
-arrive through `otel.*`, `extraEnv` or the image, which roll the pods anyway (the
+arrive through `otel.*`, `extraEnv` or the image, which roll the pods anyway (except
+rotating the contents of an `otel.secretHeaders` Secret, which needs a restart; the
 chart's `config.kafkafim` accepts only `kafka`, `elasticsearch` and `pipelines`).
 A pipeline in
 `failed_preflight` is retried only when a reload **changes** it.
@@ -296,9 +297,9 @@ keystore file changes but its path and password stay the same (for example
 cert-manager renewing a keystore), the reload sees an identical configuration and
 answers `unchanged`; running Kafka and Elasticsearch clients keep the old material,
 read when they were built. After rotating TLS files, restart the affected groups'
-pods ([§2.4](#24-restart-pods)). A rotation that also changes the password reloads
-normally, but the restarted pipelines may still reuse clients built from the old
-files while those remain current, so restart anyway.
+pods ([§2.4](#24-restart-pods)). A rotation that also changes the file's password
+(a `configtree` property) reloads normally: the identity or cluster definition
+changed, so the restarted pipelines build new clients from the new files.
 
 A secret file that disappears (key removed from the `Secret`) leaves its
 `${...}` placeholder unresolved and the reload is **rejected**; the pods keep the old
