@@ -318,12 +318,22 @@ id is `kafkafim.<pipeline>`).
 - **Symptom**: pipelines routing to one ES cluster go `paused`; lag grows. Logs: WARN `Elasticsearch cluster '<es>' circuit breaker: State transition
   from CLOSED to OPEN`, WARN `Pipeline '<p>': pausing (es-breaker:<es>)`, WARN
   `Bulk sink ...: request failed (status <s>, attempt <n>), retrying in <ms>ms: ...`.
-  The text after the colon is Elasticsearch's `type=<error.type>, root_cause=[...]`
-  (or `non-JSON, <n> bytes` for a proxy page), never its `reason`, which can quote
-  document values (ADR-0030). To see the response body itself, cut to 1024
-  characters, set `LOGGING_LEVEL_IO_GITHUB_MATABAR_KAFKAFIM_SINK_ES_BULKSINK=DEBUG`
-  in the chart's `extraEnv` (this rolls every group's pods) and remove it when done: the body
-  can hold document field values.
+  For an HTTP answer the text after the colon is Elasticsearch's
+  `type=<error.type>, root_cause=[...]` (`non-JSON, <n> bytes` for a proxy page,
+  `empty body` for none), never its `reason`, which can quote document values
+  (ADR-0030); a connection error or timeout shows `transport error: <exception>`. To
+  see the response body itself, cut to 1024 characters, at DEBUG, add to the chart's
+  `extraEnv` (this rolls every group's pods):
+
+  ```yaml
+  extraEnv:
+    - name: SPRING_APPLICATION_JSON
+      value: '{"logging":{"level":{"io.github.matabar.kafkafim.sink.es.BulkSink":"DEBUG"}}}'
+  ```
+
+  A `LOGGING_LEVEL_..._BULKSINK` variable does not work: Spring lowercases
+  environment-variable keys, and logger names are case-sensitive. Remove the entry when
+  done: the body can hold document field values.
   **(telemetry)** `kafkafim_breaker_state{es_cluster="<es>"} == 2`,
   `kafkafim_bulk_requests_total{status=~"5..|429|io_error"}` rising.
 - **Check**: the ES cluster itself (its own monitoring; kafkafim never calls cluster
