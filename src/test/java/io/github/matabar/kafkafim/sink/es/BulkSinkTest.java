@@ -5,6 +5,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatIllegalStateException;
 import static org.awaitility.Awaitility.await;
 
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import io.github.matabar.kafkafim.config.Pipeline.OnVersionConflict;
 import io.github.matabar.kafkafim.config.Pipeline.Op;
 import io.github.matabar.kafkafim.sink.es.BulkTransport.Result;
@@ -27,6 +31,7 @@ import java.util.stream.IntStream;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.slf4j.LoggerFactory;
 
 class BulkSinkTest {
 
@@ -480,8 +485,91 @@ class BulkSinkTest {
     assertThat(outcomes.get("a")).isEqualTo(ActionOutcome.INDEXED);
     assertThat(sink.authFailing()).isFalse();
     assertThat(events.authRecovered).hasValue(1);
-    assertThat(events.lastAuthReason).contains("security_exception");
+    assertThat(events.lastAuthReason)
+        .startsWith("type=security_exception, root_cause=[security_exception], reason=")
+        .contains("unable to authenticate user [elastic]")
+        .doesNotContain("WWW-Authenticate");
     assertThat(breaker.getMetrics().getNumberOfFailedCalls()).isZero();
+  }
+
+  @Test
+  void retryLogNamesErrorTypesAndKeepsTheBodyForDebug() throws Exception {
+    Logger logger = (Logger) LoggerFactory.getLogger(BulkSink.class);
+    final Level level = logger.getLevel();
+    ListAppender<ILoggingEvent> appender = new ListAppender<>();
+    appender.start();
+    logger.addAppender(appender);
+    logger.setLevel(Level.DEBUG);
+    try {
+      FakeTransport transport =
+          new FakeTransport((request, call) ->
+              switch (call) {
+                case 1 -> new Result(500, ErrorSummaryTest.QUOTING_500.getBytes(UTF_8));
+                case 2 -> new Result(400, ErrorSummaryTest.QUOTING_500.getBytes(UTF_8));
+                case 3 -> new Result(404, "<html>4111-SECRET</html>".getBytes(UTF_8));
+                default -> FakeTransport.allOk();
+              });
+      breaker = CircuitBreaker.ofDefaults("never-opens");
+      BulkSink<String> sink = sink(settings(1, 1 << 20, HOUR, 1), transport);
+
+      submitAll(sink, "a");
+
+      assertThat(sink.awaitIdle(WAIT)).isTrue();
+      List<String> warnings = messages(appender, Level.WARN);
+      assertThat(warnings)
+          .hasSize(3)
+          .noneMatch(m -> m.contains("SECRET"))
+          .anyMatch(m ->
+              m.contains("status 500")
+                  && m.endsWith(
+                      ": type=document_parsing_exception,"
+                          + " root_cause=[document_parsing_exception, number_format_exception]"))
+          .anyMatch(m -> m.contains("status 400") && m.contains("unexpected: type="))
+          .anyMatch(m -> m.contains("status 404") && m.endsWith("unexpected: non-JSON, 24 bytes"));
+      assertThat(messages(appender, Level.DEBUG))
+          .filteredOn(m -> m.contains("response body of the failed request"))
+          .hasSize(3)
+          .allMatch(m -> m.contains("4111-SECRET"));
+    } finally {
+      logger.setLevel(level);
+      logger.detachAppender(appender);
+    }
+  }
+
+  @Test
+  void retryLogHasNoBodyAboveDebug() throws Exception {
+    Logger logger = (Logger) LoggerFactory.getLogger(BulkSink.class);
+    final Level level = logger.getLevel();
+    ListAppender<ILoggingEvent> appender = new ListAppender<>();
+    appender.start();
+    logger.addAppender(appender);
+    logger.setLevel(Level.INFO);
+    try {
+      FakeTransport transport =
+          new FakeTransport((request, call) ->
+              call == 1
+                  ? new Result(503, ErrorSummaryTest.QUOTING_500.getBytes(UTF_8))
+                  : FakeTransport.allOk());
+      breaker = CircuitBreaker.ofDefaults("never-opens");
+      BulkSink<String> sink = sink(settings(1, 1 << 20, HOUR, 1), transport);
+
+      submitAll(sink, "a");
+
+      assertThat(sink.awaitIdle(WAIT)).isTrue();
+      assertThat(appender.list)
+          .isNotEmpty()
+          .noneMatch(e -> e.getFormattedMessage().contains("SECRET"));
+    } finally {
+      logger.setLevel(level);
+      logger.detachAppender(appender);
+    }
+  }
+
+  static List<String> messages(ListAppender<ILoggingEvent> appender, Level level) {
+    return appender.list.stream()
+        .filter(e -> e.getLevel() == level)
+        .map(ILoggingEvent::getFormattedMessage)
+        .toList();
   }
 
   @Test
