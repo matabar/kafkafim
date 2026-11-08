@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.awaitility.Awaitility.await;
 
+import io.github.matabar.kafkafim.KafkaTestContainers;
 import io.github.matabar.kafkafim.config.KafkaCluster;
 import io.github.matabar.kafkafim.config.KafkafimProperties;
 import io.github.matabar.kafkafim.config.Pipeline;
@@ -37,7 +38,6 @@ import org.junit.jupiter.api.Test;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.kafka.KafkaContainer;
-import org.testcontainers.utility.DockerImageName;
 
 /**
  * {@link DlqWriter} against a real broker with topic auto-creation disabled: byte-for-byte round
@@ -50,8 +50,7 @@ class DlqWriterIntegrationTest {
 
   @Container
   static final KafkaContainer KAFKA =
-      new KafkaContainer(DockerImageName.parse("apache/kafka-native:4.1.0"))
-          .withEnv("KAFKA_AUTO_CREATE_TOPICS_ENABLE", "false");
+      KafkaTestContainers.kafka().withEnv("KAFKA_AUTO_CREATE_TOPICS_ENABLE", "false");
 
   private static final Duration TIMEOUT = Duration.ofSeconds(60);
   private static final DlqOptions OPTIONS =

@@ -3,6 +3,7 @@ package io.github.matabar.kafkafim.supervisor;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 
+import io.github.matabar.kafkafim.KafkaTestContainers;
 import io.github.matabar.kafkafim.KafkafimApplication;
 import io.github.matabar.kafkafim.source.kafka.KafkaPipelineSource;
 import io.github.matabar.kafkafim.telemetry.BatchTracer;
@@ -60,8 +61,7 @@ import org.testcontainers.utility.DockerImageName;
 class TelemetryIntegrationTest {
 
   private static final KafkaContainer KAFKA =
-      new KafkaContainer(DockerImageName.parse("apache/kafka-native:4.1.0"))
-          .withEnv("KAFKA_AUTO_CREATE_TOPICS_ENABLE", "false");
+      KafkaTestContainers.kafka().withEnv("KAFKA_AUTO_CREATE_TOPICS_ENABLE", "false");
 
   private static final ElasticsearchContainer ES =
       new ElasticsearchContainer(

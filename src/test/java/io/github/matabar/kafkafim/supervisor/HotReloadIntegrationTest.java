@@ -6,6 +6,7 @@ import static org.awaitility.Awaitility.await;
 import co.elastic.clients.transport.rest5_client.low_level.Request;
 import co.elastic.clients.transport.rest5_client.low_level.ResponseException;
 import co.elastic.clients.transport.rest5_client.low_level.Rest5Client;
+import io.github.matabar.kafkafim.KafkaTestContainers;
 import io.github.matabar.kafkafim.KafkafimApplication;
 import io.github.matabar.kafkafim.config.ElasticsearchCluster;
 import io.github.matabar.kafkafim.config.ElasticsearchCluster.ElasticsearchIdentity;
@@ -62,8 +63,7 @@ import tools.jackson.databind.json.JsonMapper;
 class HotReloadIntegrationTest {
 
   private static final KafkaContainer KAFKA =
-      new KafkaContainer(DockerImageName.parse("apache/kafka-native:4.1.0"))
-          .withEnv("KAFKA_AUTO_CREATE_TOPICS_ENABLE", "false");
+      KafkaTestContainers.kafka().withEnv("KAFKA_AUTO_CREATE_TOPICS_ENABLE", "false");
 
   private static final String ADMIN_PASSWORD = "admin-pw-7f1e";
 
