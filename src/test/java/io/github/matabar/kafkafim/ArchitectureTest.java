@@ -31,6 +31,7 @@ class ArchitectureTest {
   private static final String SOURCE = ROOT + ".source..";
   private static final String DLQ = ROOT + ".dlq..";
   private static final String TELEMETRY = ROOT + ".telemetry..";
+  private static final String SUPERVISOR = ROOT + ".supervisor..";
 
   /** The JDK and Jackson (data path), plus nullness annotations. */
   private static final String[] JDK_AND_JACKSON = {
@@ -95,6 +96,17 @@ class ArchitectureTest {
   static final ArchRule sourceDependsOnlyOnConfigAndTelemetry = onlyConfigAndTelemetry(SOURCE);
 
   @ArchTest static final ArchRule dlqDependsOnlyOnConfigAndTelemetry = onlyConfigAndTelemetry(DLQ);
+
+  /** The supervisor wires everything; nothing depends on it (ADR-0003). */
+  @ArchTest
+  static final ArchRule nothingDependsOnSupervisor =
+      noClasses()
+          .that()
+          .resideOutsideOfPackage(SUPERVISOR)
+          .should()
+          .dependOnClassesThat()
+          .resideInAPackage(SUPERVISOR)
+          .allowEmptyShould(true);
 
   @ArchTest
   static final ArchRule topLevelPackagesAreFreeOfCycles =

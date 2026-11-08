@@ -8,9 +8,11 @@ spring:
                                     # SPRING_PROFILES_ACTIVE=kafkafim, which disables this default
   lifecycle:
     timeout-per-shutdown-phase: 60s # per SmartLifecycle phase, not on the whole shutdown. Higher phases stop
-                                    # first: Spring Kafka containers (phase MAX-100) flush and commit, then
-                                    # the web server drains (phase MAX-1024, instant for actuator-only
-                                    # traffic). The 60s consumer phase must fit the pod's 90s grace period.
+                                    # first: the pipeline supervisor (phase MAX-100) drains every pipeline's
+                                    # source (<= 30s + 10s, committing what completed), then closes its bulk
+                                    # sinks (<= 10s); the DLQ producers (MAX-1000) flush (<= 10s); then the
+                                    # web server drains (MAX-1024, instant for actuator-only traffic). The
+                                    # 60s supervisor phase must fit the pod's 90s grace period.
 
 server:
   port: 8080
@@ -25,6 +27,9 @@ management:
     health:
       probes:
         enabled: true
+      group:
+        readiness:
+          include: readinessState,pipelines   # up while at least one pipeline runs (DESIGN §4.6)
       show-components: always
       show-details: when-authorized
   # OTLP export headers are not set here. Spring Boot maps OTEL_EXPORTER_OTLP_HEADERS onto
