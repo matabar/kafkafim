@@ -626,3 +626,4 @@ Current behaviour that this runbook works around; each is a follow-up, not a fea
 - Until the telemetry change ships, the only kafkafim meters are
   `kafkafim_pipeline_state`, `kafkafim_config_reload_total` and
   `kafkafim_config_generation`, and health has no `supervisor`/`kafka` components.
+
