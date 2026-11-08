@@ -64,6 +64,11 @@ public final class BulkSink<H> implements AutoCloseable {
 
   private static final int LOGGED_BODY_CHARS = 1024;
 
+  /** Item errors named in the one log line per bulk response with failures. */
+  static final int LOGGED_ITEM_ERRORS = 5;
+
+  private static final int LOGGED_REASON_CHARS = 512;
+
   private final SinkKey key;
   private final SinkSettings settings;
   private final BulkTransport transport;
@@ -291,6 +296,7 @@ public final class BulkSink<H> implements AutoCloseable {
   private Batch sealLocked(FlushReason reason) {
     Batch batch = open;
     batch.reason = reason;
+    batch.sealedAt = clock.instant();
     if (batch.ageTimer != null) {
       batch.ageTimer.cancel(false);
     }
@@ -366,32 +372,56 @@ public final class BulkSink<H> implements AutoCloseable {
       inFlight.release();
       return;
     }
+    Instant started = clock.instant();
+    List<BatchReport.Request> requests = new ArrayList<>();
     try {
-      send(batch.entries, batch.bytes);
+      send(batch.entries, batch.bytes, requests);
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt(); // stopped; the actions get no outcome
     } catch (RuntimeException e) {
-      if (stopped) {
-        return; // close() interrupted the request
-      }
-      // A bug, not an Elasticsearch answer. Retry the actions rather than leave them pending.
-      LOG.error("Bulk sink {}: unexpected failure, retrying the batch", key, e);
-      for (Entry entry : batch.entries) {
-        if (!entry.done && !entry.retryScheduled) {
-          scheduleRetry(entry, settings.backoff().max());
+      if (!stopped) {
+        // A bug, not an Elasticsearch answer. Retry the actions rather than leave them pending.
+        LOG.error("Bulk sink {}: unexpected failure, retrying the batch", key, e);
+        for (Entry entry : batch.entries) {
+          if (!entry.done && !entry.retryScheduled) {
+            scheduleRetry(entry, settings.backoff().max());
+          }
         }
       }
     } finally {
       inFlight.release();
     }
+    if (!stopped) {
+      report(batch, started, requests);
+    }
   }
 
-  private void send(List<Entry> entries, long bytes) throws InterruptedException {
+  private void report(Batch batch, Instant started, List<BatchReport.Request> requests) {
+    List<H> handles = new ArrayList<>(batch.entries.size());
+    for (Entry entry : batch.entries) {
+      handles.add(entry.action.handle());
+    }
+    Instant sealed = batch.sealedAt != null ? batch.sealedAt : started;
+    listener.onBatchSent(
+        key,
+        new BatchReport(
+            batch.reason,
+            batch.entries.size(),
+            batch.bytes,
+            sealed,
+            started,
+            clock.instant(),
+            requests,
+            handles));
+  }
+
+  private void send(List<Entry> entries, long bytes, List<BatchReport.Request> requests)
+      throws InterruptedException {
     int attempt = 0;
     while (!stopped) {
       Permit permit = awaitBreakerPermission();
       try {
-        attempt = attempt(entries, bytes, attempt, permit);
+        attempt = attempt(entries, bytes, attempt, permit, requests);
       } finally {
         permit.release(); // no-op unless an exception escaped before a verdict
       }
@@ -406,9 +436,15 @@ public final class BulkSink<H> implements AutoCloseable {
    *
    * @return {@code -1} when the actions are dealt with, else the failed-attempt count so far
    */
-  private int attempt(List<Entry> entries, long bytes, int attempt, Permit permit)
+  private int attempt(
+      List<Entry> entries,
+      long bytes,
+      int attempt,
+      Permit permit,
+      List<BatchReport.Request> requests)
       throws InterruptedException {
     byte[] body = BulkBody.build(entries, bytes);
+    Instant sentAt = clock.instant();
     long start = System.nanoTime();
     BulkTransport.Result result;
     try {
@@ -418,6 +454,7 @@ public final class BulkSink<H> implements AutoCloseable {
         return -1; // close() interrupted the request
       }
       permit.error(System.nanoTime() - start, e);
+      requests.add(request(sentAt, entries.size(), bytes, 0, e.toString(), attempt, 0));
       return retryRequest(0, e, attempt + 1, "transport error: " + e);
     }
     long elapsed = System.nanoTime() - start;
@@ -434,14 +471,21 @@ public final class BulkSink<H> implements AutoCloseable {
           }
         } catch (BulkResponse.MalformedResponseException e) {
           permit.error(elapsed, e);
+          requests.add(
+              request(sentAt, entries.size(), bytes, status, "malformed response", attempt, 0));
           return retryRequest(status, e, attempt + 1, "malformed response: " + e.getMessage());
         }
         permit.success(elapsed);
-        handleItems(entries, response);
+        Instant answeredAt = clock.instant();
+        int itemErrors = handleItems(entries, response);
+        requests.add(
+            new BatchReport.Request(
+                sentAt, answeredAt, entries.size(), bytes, status, null, attempt, itemErrors));
         return -1;
       }
       case SPLIT -> {
         permit.success(elapsed);
+        requests.add(request(sentAt, entries.size(), bytes, status, null, attempt, 0));
         if (entries.size() == 1) {
           Entry entry = entries.getFirst();
           entry.answered++;
@@ -463,12 +507,13 @@ public final class BulkSink<H> implements AutoCloseable {
         List<Entry> second = entries.subList(middle, entries.size());
         LOG.info(
             "Bulk sink {}: 413 for {} actions ({} bytes), splitting", key, entries.size(), bytes);
-        send(first, sizeOf(first));
-        send(second, sizeOf(second));
+        send(first, sizeOf(first), requests);
+        send(second, sizeOf(second), requests);
         return -1;
       }
       case AUTH_FAILURE -> {
         permit.release();
+        requests.add(request(sentAt, entries.size(), bytes, status, null, attempt, 0));
         String reason = text(result.body());
         updateAuth(() -> requestAuthFailing = true);
         listener.onAuthFailure(key, status, reason);
@@ -476,14 +521,28 @@ public final class BulkSink<H> implements AutoCloseable {
       }
       case RETRY_CLUSTER -> {
         permit.error(elapsed, new RequestFailure(status));
+        requests.add(request(sentAt, entries.size(), bytes, status, null, attempt, 0));
         return retryRequest(status, null, attempt + 1, text(result.body()));
       }
       case RETRY_UNEXPECTED -> {
         permit.release();
+        requests.add(request(sentAt, entries.size(), bytes, status, null, attempt, 0));
         return retryRequest(status, null, attempt + 1, "unexpected: " + text(result.body()));
       }
       default -> throw new IllegalStateException("unhandled request verdict");
     }
+  }
+
+  private BatchReport.Request request(
+      Instant sentAt,
+      int docs,
+      long bytes,
+      int status,
+      @Nullable String error,
+      int retries,
+      int itemErrors) {
+    return new BatchReport.Request(
+        sentAt, clock.instant(), docs, bytes, status, error, retries, itemErrors);
   }
 
   private int retryRequest(int status, @Nullable Throwable error, int attempt, String detail)
@@ -569,7 +628,12 @@ public final class BulkSink<H> implements AutoCloseable {
     }
   }
 
-  private void handleItems(List<Entry> entries, BulkResponse response) {
+  /**
+   * Applies the item results of an answered request.
+   *
+   * @return how many items did not succeed (retried, dead-lettered or rejected for auth)
+   */
+  private int handleItems(List<Entry> entries, BulkResponse response) {
     if (!response.errors()) {
       // Report a recovery before the outcomes, so a caller that sees the actions done has
       // already heard it.
@@ -581,22 +645,35 @@ public final class BulkSink<H> implements AutoCloseable {
         entry.answered++;
         complete(entry, ActionOutcome.INDEXED);
       }
-      return;
+      return 0;
     }
     BulkResponse.Item firstAuthFailure = null;
+    int failed = 0;
+    List<String> logged = new ArrayList<>(LOGGED_ITEM_ERRORS);
     for (int i = 0; i < entries.size(); i++) {
       Entry entry = entries.get(i);
       BulkResponse.Item item = response.items().get(i);
       entry.answered++;
       ItemVerdict verdict = ErrorClassifier.item(item, entry.action, settings.onVersionConflict());
       String reason = item.errorJson() != null ? item.errorJson() : "status " + item.status();
+      if (verdict != ItemVerdict.INDEXED && verdict != ItemVerdict.STALE) {
+        failed++;
+        if (logged.size() < LOGGED_ITEM_ERRORS) {
+          logged.add(
+              "#" + i + " " + item.status() + " " + errorType(item) + " " + truncate(reason));
+        }
+      }
       switch (verdict) {
         case INDEXED -> complete(entry, ActionOutcome.INDEXED);
         case STALE -> complete(entry, new ActionOutcome.Stale(reason));
-        case DLQ_ES_ERROR ->
-            complete(entry, dlq(entry, SinkErrorType.ES_ERROR, reason, item.status()));
-        case DLQ_VERSION_CONFLICT ->
-            complete(entry, dlq(entry, SinkErrorType.VERSION_CONFLICT, reason, item.status()));
+        case DLQ_ES_ERROR -> {
+          listener.onItemError(key, item.status(), errorType(item));
+          complete(entry, dlq(entry, SinkErrorType.ES_ERROR, reason, item.status()));
+        }
+        case DLQ_VERSION_CONFLICT -> {
+          listener.onItemError(key, item.status(), errorType(item));
+          complete(entry, dlq(entry, SinkErrorType.VERSION_CONFLICT, reason, item.status()));
+        }
         case RETRY -> {
           setAuthRetrying(entry, false);
           retryItem(entry, item, reason);
@@ -613,6 +690,17 @@ public final class BulkSink<H> implements AutoCloseable {
         default -> throw new IllegalStateException("unhandled item verdict " + verdict);
       }
     }
+    if (failed > 0) {
+      // One line per bulk response with failures (DESIGN §10, logs): the first item errors, by
+      // position in the request. Item reasons are Elasticsearch's error JSON, never a document.
+      LOG.warn(
+          "Bulk sink {}: {} of {} items failed; first {}: {}",
+          key,
+          failed,
+          entries.size(),
+          logged.size(),
+          String.join("; ", logged));
+    }
     if (firstAuthFailure != null) {
       // One event per response, not per item.
       BulkResponse.Item failure = firstAuthFailure;
@@ -624,6 +712,17 @@ public final class BulkSink<H> implements AutoCloseable {
     } else {
       updateAuth(() -> requestAuthFailing = false);
     }
+    return failed;
+  }
+
+  private static String errorType(BulkResponse.Item item) {
+    return item.errorType() != null ? item.errorType() : "status_" + item.status();
+  }
+
+  private static String truncate(String reason) {
+    return reason.length() <= LOGGED_REASON_CHARS
+        ? reason
+        : reason.substring(0, LOGGED_REASON_CHARS) + "…";
   }
 
   private void retryItem(Entry entry, BulkResponse.Item item, String reason) {
@@ -633,8 +732,7 @@ public final class BulkSink<H> implements AutoCloseable {
       entry.retrying = true;
       entry.firstRetryableNanos = System.nanoTime();
     }
-    String errorType = item.errorType() != null ? item.errorType() : "status_" + item.status();
-    listener.onItemRetry(key, item.status(), errorType, entry.itemFailures);
+    listener.onItemRetry(key, item.status(), errorType(item), entry.itemFailures);
     long elapsed = System.nanoTime() - entry.firstRetryableNanos;
     if (entry.itemFailures >= settings.maxAttempts()
         || elapsed >= settings.maxElapsed().toNanos()) {
@@ -691,6 +789,7 @@ public final class BulkSink<H> implements AutoCloseable {
     final List<Entry> entries = new ArrayList<>();
     long bytes;
     FlushReason reason = FlushReason.EXPLICIT;
+    @Nullable Instant sealedAt;
     @Nullable ScheduledFuture<?> ageTimer;
 
     Batch(long generation) {
@@ -781,6 +880,16 @@ public final class BulkSink<H> implements AutoCloseable {
     @Override
     public void onItemRetry(SinkKey key, int status, String errorType, int attempts) {
       guard(() -> delegate.onItemRetry(key, status, errorType, attempts));
+    }
+
+    @Override
+    public void onItemError(SinkKey key, int status, String errorType) {
+      guard(() -> delegate.onItemError(key, status, errorType));
+    }
+
+    @Override
+    public void onBatchSent(SinkKey key, BatchReport report) {
+      guard(() -> delegate.onBatchSent(key, report));
     }
 
     @Override
