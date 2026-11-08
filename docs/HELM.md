@@ -264,3 +264,19 @@ against the real application.
 - Secret rotation: update the `Secret`; kubelet refreshes the mounted files; the
   application reloads the identities that changed and restarts only their pipelines.
   OTLP header Secrets (`otel.secretHeaders`) are the exception: restart the pods.
+  Rotate in the order the target accepts: add the new credential in Kafka or
+  Elasticsearch (or keep the old one valid) before updating the `Secret`, since
+  pipelines keep using the old value until kubelet has refreshed the file.
+- When a change lands: kubelet refreshes mounted ConfigMaps and Secrets within about a
+  minute; the application notices within `kafkafim.reload.poll-interval` (10s) and
+  applies it after `debounce` (2s). `POST /actuator/reload` (port 8080, in-cluster)
+  reloads at once and answers with the plan or every violation; it does not make
+  kubelet refresh faster. Watch `kafkafim_config_reload_total{result="failure"}`
+  (alert) and `kafkafim_config_generation`; a rejected change is logged at `ERROR`
+  with every violation and the pod keeps running the previous configuration. A
+  rejected tree is retried only after the files change again.
+- What a reload restarts: a changed pipeline, every pipeline using a changed cluster,
+  and only the pipelines referencing a changed identity or secret (DESIGN §5.6).
+  Restarts drain first (in-flight records complete and are committed), so a reload
+  re-delivers nothing that finished; Kafka still rebalances the restarted
+  pipelines' groups across replicas.

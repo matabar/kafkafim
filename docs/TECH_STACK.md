@@ -48,11 +48,11 @@ Versions are the ones pinned at project creation (2026-11-07). Everything marked
 ```
 io.github.matabar.kafkafim
 ├── config/         @ConfigurationProperties model, validators, watcher, Binder reload, diff
-├── supervisor/     pipeline lifecycle, hot reload orchestration
+├── supervisor/     pipeline lifecycle, hot reload orchestration, reload endpoint (ADR-0028)
 ├── source/kafka/   consumer factories per cluster, container per pipeline, offset tracker
 ├── decode/         object / array-of-objects decoding, JSON-pointer field extraction, timestamp parsing
 ├── route/          condition evaluation, index pattern resolution
 ├── sink/es/        Rest5Client per (cluster, identity), batcher + bulk sender, NDJSON body builder, item parser, error table, breaker per cluster
 ├── dlq/            producer, record format
-└── telemetry/      meters, spans, health indicators, reload endpoint
+└── telemetry/      meters, spans, health indicators
 ```
