@@ -10,8 +10,15 @@ image:
   #   --set image.registry=registry.internal/kafkafim
   registry: ghcr.io/matabar
   repository: kafkafim
-  # Defaults to .Chart.AppVersion (set from the git tag at release time).
+  # Defaults to .Chart.AppVersion (set from the git tag at release time). A tag only,
+  # never "<tag>@sha256:...": the digest goes in image.digest.
   tag: ""
+  # Pins the exact signed image, e.g. sha256:<64 hex> from the release bundle's
+  # kafkafim-<ver>-image.digest (the part after "@"). When set, the image is
+  # <registry>/<repository>@<digest>, or <registry>/<repository>:<tag>@<digest> if
+  # image.tag is also set; the runtime pulls by digest either way. The
+  # app.kubernetes.io/version label still comes from image.tag or appVersion.
+  digest: ""
   pullPolicy: IfNotPresent
   # Names of existing image pull Secrets, e.g. [{name: internal-registry}].
   pullSecrets: []

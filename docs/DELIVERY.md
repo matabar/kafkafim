@@ -113,13 +113,45 @@ helm push kafkafim-1.2.3.tgz oci://registry.internal/charts
 
 The release is applied per Kubernetes cluster with plain `helm upgrade --install`, run
 by the infrastructure repository's CI inside the air gap with that cluster's values
-file; there is no Argo CD or Flux:
+file; there is no Argo CD or Flux. At import time, record the digest from the bundle
+in each per-cluster values file, next to the internal registry:
 
 ```bash
-helm upgrade --install kafkafim oci://registry.internal/charts/kafkafim --version 1.2.3 -f values-<cluster>.yaml --set image.registry=registry.internal/kafkafim
+cut -d@ -f2 kafkafim-1.2.3-image.digest
 ```
 
-Where `cosign` is unavailable inside the air gap, `skopeo copy --all oci:kafkafim-1.2.3-image docker://registry.internal/kafkafim/kafkafim:1.2.3` pushes the image without its signature.
+```yaml
+image:
+  registry: registry.internal/kafkafim
+  digest: sha256:...   # the output above
+```
+
+```bash
+helm upgrade --install kafkafim oci://registry.internal/charts/kafkafim --version 1.2.3 -f values-<cluster>.yaml
+```
+
+For a manual install from the extracted bundle, the same values can be passed as
+`--set image.registry=registry.internal/kafkafim --set image.digest="$(cut -d@ -f2 kafkafim-1.2.3-image.digest)"`.
+
+`image.digest` pins the pods to the exact image that was signed and checksummed,
+so a tag moved or overwritten in the internal registry cannot change what runs.
+`kafkafim-1.2.3-image.digest` holds the full reference
+(`ghcr.io/matabar/kafkafim@sha256:...`); the chart takes only the `sha256:<64 hex>`
+part after `@` (the registry comes from `image.registry`), and its schema rejects
+anything else. `cosign load` and `skopeo copy --all --preserve-digests` push the same
+bytes, so the digest is the same in the internal registry. To check (prints `OK` or
+`MISMATCH`):
+
+```bash
+[ "sha256:$(skopeo inspect --raw docker://registry.internal/kafkafim/kafkafim:1.2.3 | sha256sum | cut -d' ' -f1)" = "$(cut -d@ -f2 kafkafim-1.2.3-image.digest)" ] && echo OK || echo MISMATCH
+```
+
+The pod image is then `registry.internal/kafkafim/kafkafim@sha256:...`;
+the `app.kubernetes.io/version` label still reads `1.2.3` (the chart's appVersion).
+Leave `image.tag` empty, or set it to `1.2.3` for a `:1.2.3@sha256:...` reference; never put
+`1.2.3@sha256:...` in `image.tag` (the chart fails and points at `image.digest`).
+
+Where `cosign` is unavailable inside the air gap, `skopeo copy --all --preserve-digests oci:kafkafim-1.2.3-image docker://registry.internal/kafkafim/kafkafim:1.2.3` pushes the image without its signature (`--preserve-digests` makes skopeo fail rather than convert the manifests, which would change the digest).
 
 ## Local developer loop
 
