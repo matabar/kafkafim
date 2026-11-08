@@ -26,7 +26,10 @@
 - Scopes: `kafka`, `es`, `config`, `route`, `decode`, `dlq`, `supervisor`,
   `telemetry`, `helm`, `docker`, `ci`, `deps`, `style`, `docs`. Omit when global.
 - One commit, one responsibility. A commit builds and passes `./mvnw verify` on its
-  own. Formatting-only changes are their own commit (`style:`).
+  own; a commit that changes only documentation (`*.md`, `docs/**`, `LICENSE`) passes
+  `./mvnw -DskipTests verify`, matching CI, which skips the Java and image jobs for
+  docs-only pull requests (docs/DELIVERY.md). Formatting-only changes are their own
+  commit (`style:`).
 - Breaking changes carry `!` after the type and a `BREAKING CHANGE:` footer.
 
 ## Before you push
@@ -41,7 +44,8 @@
 
 `verify` runs Google Java Style checks (Spotless + Checkstyle), unit tests,
 Testcontainers integration tests and ArchUnit rules. CI runs the same, plus the
-Dockerfile build and Helm checks; all must pass before merge.
+Dockerfile build and Helm checks; all must pass before merge. A docs-only change
+needs only `./mvnw -DskipTests verify`; CI skips the Java and image jobs for it.
 
 ## Pull requests
 
