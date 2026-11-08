@@ -66,7 +66,9 @@ class PipelineSupervisorIntegrationTest {
       new ElasticsearchContainer(
               DockerImageName.parse("docker.elastic.co/elasticsearch/elasticsearch:8.19.0"))
           .withEnv("xpack.security.enabled", "false")
-          .withEnv("ES_JAVA_OPTS", "-Xms512m -Xmx512m");
+          .withEnv("ES_JAVA_OPTS", "-Xms512m -Xmx512m")
+          // Parallel Failsafe forks can boot several nodes at once; the 60 s default is tight.
+          .withStartupTimeout(Duration.ofMinutes(3));
 
   private static final Duration TIMEOUT = Duration.ofSeconds(90);
   private static final JsonMapper JSON = JsonMapper.builder().build();
@@ -324,7 +326,6 @@ class PipelineSupervisorIntegrationTest {
   private ConfigurableApplicationContext start(Map<String, Object> pipelines) {
     Map<String, Object> props = new LinkedHashMap<>();
     props.put("spring.docker.compose.enabled", false);
-    props.put("server.port", 0);
     props.put("management.otlp.metrics.export.enabled", false);
     props.put("management.tracing.sampling.probability", 0.0);
     props.put("kafkafim.kafka.clusters.local.bootstrap-servers[0]", KAFKA.getBootstrapServers());
@@ -335,7 +336,8 @@ class PipelineSupervisorIntegrationTest {
         new SpringApplicationBuilder(KafkafimApplication.class)
             .profiles("supervisor-it") // not `local`: no sample pipeline, no compose stack
             .properties(props)
-            .run();
+            // application.yaml sets 8080; a command-line argument beats it (defaults do not).
+            .run("--server.port=0");
     contexts.add(context);
     return context;
   }
