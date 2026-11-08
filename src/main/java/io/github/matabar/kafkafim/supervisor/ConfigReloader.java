@@ -147,7 +147,8 @@ final class ConfigReloader implements SmartLifecycle {
       try {
         loaded = ConfigLoader.load(environments.get());
       } catch (RuntimeException e) {
-        loaded = new ConfigLoader.Result(null, List.of("configuration cannot be read: " + e));
+        loaded =
+            new ConfigLoader.Result(null, List.of("configuration cannot be read: " + firstLine(e)));
       }
       if (!loaded.isValid()) {
         return rejected(trigger, loaded.problems());
@@ -172,12 +173,35 @@ final class ConfigReloader implements SmartLifecycle {
           diff.removed(),
           diff.restarted(),
           diff.unchanged());
-      supervisor.apply(next, diff);
+      try {
+        supervisor.apply(next, diff);
+      } catch (RuntimeException e) {
+        failures.increment();
+        LOG.error(
+            "Configuration reload ({}) failed while applying generation {}; pipelines may be"
+                + " partly reconfigured",
+            trigger,
+            generation() + 1,
+            e);
+        throw e;
+      }
       generation.incrementAndGet();
       successes.increment();
       LOG.info("Configuration reload ({}): generation {} applied", trigger, generation());
       return result(ReloadResult.APPLIED, diff);
     }
+  }
+
+  /**
+   * The exception type and the first line of its message: a YAML parser appends a snippet of the
+   * offending file, which stays out of the response and the log.
+   */
+  static String firstLine(Throwable e) {
+    String message = String.valueOf(e.getMessage()).strip();
+    int newline = message.indexOf('\n');
+    return e.getClass().getSimpleName()
+        + ": "
+        + (newline < 0 ? message : message.substring(0, newline).strip());
   }
 
   private ReloadResult rejected(String trigger, List<String> problems) {

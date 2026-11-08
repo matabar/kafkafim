@@ -28,6 +28,7 @@ import java.util.TreeSet;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
+import java.util.function.Predicate;
 import org.apache.kafka.common.KafkaException;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.errors.AuthenticationException;
@@ -172,6 +173,24 @@ final class PipelineRuntime {
   /** Whether this pipeline sends to {@code cluster} through {@code owner}'s sinks. */
   boolean usesSinks(String cluster, @Nullable Object owner) {
     return owner != null && context.sinks().get(cluster) == owner;
+  }
+
+  /**
+   * Pauses or resumes for {@code reason} if {@code owns} holds for the current context, as one step
+   * under the lock, so an event of a building block the pipeline is leaving cannot land after
+   * {@link #reconfigure} or a restart dropped the reason.
+   */
+  void pauseIfOwner(Predicate<PipelineRuntime> owns, String reason, boolean pause) {
+    synchronized (lock) {
+      if (!owns.test(this)) {
+        return;
+      }
+      if (pause) {
+        pause(reason);
+      } else {
+        resume(reason);
+      }
+    }
   }
 
   String name() {

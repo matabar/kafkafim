@@ -43,7 +43,8 @@ import org.springframework.context.SmartLifecycle;
  *       definition. {@code DlqProducers} caches a pipeline's writer with its topic, so a pipeline
  *       whose DLQ settings changed, or a pipeline the current instance does not know, also makes a
  *       new instance current. A restarted pipeline whose DLQ settings and cluster are unchanged
- *       keeps its writer (and with it a {@code dlq-blocked} state).
+ *       keeps its writer (and with it a {@code dlq-blocked} state) while its instance is still the
+ *       current one.
  * </ul>
  *
  * <p>Every instance counts its pipelines and is closed when its last pipeline releases it (an

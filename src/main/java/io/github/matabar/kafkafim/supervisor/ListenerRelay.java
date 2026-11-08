@@ -25,7 +25,9 @@ import org.slf4j.LoggerFactory;
  * <p>Since hot reload, several {@code ElasticsearchSinks} and {@code DlqProducers} instances may be
  * alive at once (DESIGN §5.6): each gets its own listener, bound to its <em>owner</em> (the
  * instance itself), so the supervisor only applies a breaker or DLQ-blocked event to the pipelines
- * that currently use that instance.
+ * that currently use that instance. Auth events need no owner: the supervisor re-reads the current
+ * sink's auth state for every one. Events forwarded to telemetry listeners are not filtered: a DLQ
+ * writer a pipeline left behind still reports under that pipeline's name (ADR-0028).
  */
 final class ListenerRelay {
 

@@ -120,6 +120,34 @@ class ConfigWatcherTest {
   }
 
   @Test
+  void closingDuringTheCallbackDoesNotInterruptIt() throws Exception {
+    Path file = Files.writeString(dir.resolve("app.yaml"), "1");
+    java.util.concurrent.CountDownLatch inCallback = new java.util.concurrent.CountDownLatch(1);
+    java.util.concurrent.atomic.AtomicBoolean interrupted =
+        new java.util.concurrent.atomic.AtomicBoolean();
+    watcher =
+        new ConfigWatcher(
+            List.of(file),
+            Duration.ofMillis(100),
+            Duration.ofMillis(50),
+            () -> {
+              inCallback.countDown();
+              try {
+                Thread.sleep(500); // a reload draining pipelines
+              } catch (InterruptedException e) {
+                interrupted.set(true);
+              }
+              changes.incrementAndGet();
+            });
+    watcher.start();
+    Files.writeString(file, "2");
+    assertThat(inCallback.await(10, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+    watcher.close();
+    await().atMost(Duration.ofSeconds(5)).until(() -> changes.get() == 1);
+    assertThat(interrupted).isFalse();
+  }
+
+  @Test
   void pathsComeFromFileAndConfigtreeLocations() {
     assertThat(
             ConfigWatcher.paths(

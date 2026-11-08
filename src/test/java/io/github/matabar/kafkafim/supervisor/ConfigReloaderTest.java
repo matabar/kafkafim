@@ -165,6 +165,15 @@ class ConfigReloaderTest {
   }
 
   @Test
+  void parseErrorsKeepOnlyTheirFirstLine() {
+    assertThat(
+            ConfigReloader.firstLine(
+                new IllegalStateException(
+                    "mapping values are not allowed here\n in 'reader', line 3:\n    password: x")))
+        .isEqualTo("IllegalStateException: mapping values are not allowed here");
+  }
+
+  @Test
   void reloadsNeedRunningSupervisor() {
     ConfigReloader reloader = start(A);
     assertThat(new ReloadEndpoint(reloader).reload().getStatus()).isEqualTo(200);

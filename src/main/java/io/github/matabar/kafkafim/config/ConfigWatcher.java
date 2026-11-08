@@ -63,7 +63,9 @@ public final class ConfigWatcher implements AutoCloseable {
   private final Set<Path> registered = new HashSet<>();
   private final @Nullable WatchService watchService;
   private final Thread thread;
+  private final Object callbackLock = new Object();
   private volatile boolean closed;
+  private boolean inCallback; // guarded by callbackLock
   private String lastHash;
 
   /**
@@ -106,19 +108,24 @@ public final class ConfigWatcher implements AutoCloseable {
     thread.start();
   }
 
-  /** Stops watching. Does not wait for a callback in progress, which finishes on its own thread. */
+  /**
+   * Stops watching. Does not wait for a callback in progress, which finishes on its own thread
+   * without being interrupted (a reload must not be cut short in the middle of its drains).
+   */
   @Override
   public void close() {
-    closed = true;
+    synchronized (callbackLock) {
+      closed = true;
+      if (!inCallback && Thread.currentThread() != thread) {
+        thread.interrupt();
+      }
+    }
     if (watchService != null) {
       try {
         watchService.close();
       } catch (IOException e) {
         LOG.debug("Closing the watch service failed", e);
       }
-    }
-    if (Thread.currentThread() != thread) {
-      thread.interrupt();
     }
   }
 
@@ -135,8 +142,21 @@ public final class ConfigWatcher implements AutoCloseable {
           return;
         }
         lastHash = current;
+        synchronized (callbackLock) {
+          if (closed) {
+            return;
+          }
+          inCallback = true;
+          Thread.interrupted(); // a stale interrupt must not reach the callback
+        }
         LOG.info("Configuration files under {} changed; reloading", roots);
-        onChange.run();
+        try {
+          onChange.run();
+        } finally {
+          synchronized (callbackLock) {
+            inCallback = false;
+          }
+        }
       } catch (InterruptedException | ClosedWatchServiceException e) {
         if (closed) {
           return;

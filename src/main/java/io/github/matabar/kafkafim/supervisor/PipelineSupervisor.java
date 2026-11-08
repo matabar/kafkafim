@@ -231,7 +231,14 @@ public final class PipelineSupervisor implements SmartLifecycle {
           runtime = new PipelineRuntime(name, resources.acquire(name, next), this::stateChanged);
           toStart.add(runtime);
         } else if (diff.restarted().containsKey(name)) {
-          PipelineRuntime.Context previous = runtime.reconfigure(resources.acquire(name, next));
+          PipelineRuntime.Context acquired = resources.acquire(name, next);
+          PipelineRuntime.Context previous;
+          try {
+            previous = runtime.reconfigure(acquired);
+          } catch (RuntimeException e) {
+            resources.release(acquired);
+            throw e;
+          }
           resources.release(previous);
           toStart.add(runtime);
         }
@@ -245,26 +252,42 @@ public final class PipelineSupervisor implements SmartLifecycle {
       }
       resources.retireStale(next);
       properties = next;
-      toStart.forEach(PipelineRuntime::start);
+      if (running) {
+        toStart.forEach(PipelineRuntime::start);
+      } else {
+        // A shutdown began during the drains: stop() runs next and would stop them again.
+        LOG.info("Shutdown in progress; {} pipeline(s) of the reload not started", toStart.size());
+      }
     }
     if (!diff.added().isEmpty() || !diff.removed().isEmpty()) {
       topologyListeners.forEach(Runnable::run);
     }
   }
 
+  /**
+   * Stops pipelines in parallel and waits for every drain, also when interrupted (the flag is kept
+   * for the caller): returning early would let a reload reconfigure or release a pipeline that is
+   * still draining.
+   */
   private static void stopAll(Collection<PipelineRuntime> runtimes) {
     List<Thread> stoppers = new ArrayList<>(runtimes.size());
     for (PipelineRuntime pipeline : runtimes) {
       stoppers.add(
           Thread.ofVirtual().name("kafkafim-stop-" + pipeline.name()).start(pipeline::stop));
     }
+    boolean interrupted = false;
     for (Thread stopper : stoppers) {
-      try {
-        stopper.join();
-      } catch (InterruptedException e) {
-        Thread.currentThread().interrupt();
-        return;
+      while (true) {
+        try {
+          stopper.join();
+          break;
+        } catch (InterruptedException e) {
+          interrupted = true;
+        }
       }
+    }
+    if (interrupted) {
+      Thread.currentThread().interrupt();
     }
   }
 
@@ -285,17 +308,15 @@ public final class PipelineSupervisor implements SmartLifecycle {
   void onBreakerStateChange(@Nullable Object owner, String cluster, CircuitBreaker.State to) {
     String reason = PipelineRuntime.BREAKER_REASON_PREFIX + cluster;
     boolean open = PipelineRuntime.isOpen(to);
-    for (PipelineRuntime pipeline : pipelines.values()) {
-      if (pipeline.usesSinks(cluster, owner)) {
-        if (open) {
-          pipeline.pause(reason);
-        } else if (to == CircuitBreaker.State.CLOSED
+    boolean closed =
+        to == CircuitBreaker.State.CLOSED
             || to == CircuitBreaker.State.DISABLED
-            || to == CircuitBreaker.State.METRICS_ONLY) {
-          // HALF_OPEN keeps the pause: only the probes decide whether the cluster is back.
-          pipeline.resume(reason);
-        }
-      }
+            || to == CircuitBreaker.State.METRICS_ONLY;
+    if (!open && !closed) {
+      return; // HALF_OPEN keeps the pause: only the probes decide whether the cluster is back.
+    }
+    for (PipelineRuntime pipeline : pipelines.values()) {
+      pipeline.pauseIfOwner(p -> p.usesSinks(cluster, owner), reason, open);
     }
   }
 
@@ -316,13 +337,8 @@ public final class PipelineSupervisor implements SmartLifecycle {
    */
   void onDlqBlocked(@Nullable Object owner, String pipeline, boolean blocked) {
     PipelineRuntime runtime = pipelines.get(pipeline);
-    if (runtime == null || !runtime.usesDlq(owner)) {
-      return;
-    }
-    if (blocked) {
-      runtime.pause(PipelineRuntime.DLQ_BLOCKED_REASON);
-    } else {
-      runtime.resume(PipelineRuntime.DLQ_BLOCKED_REASON);
+    if (runtime != null) {
+      runtime.pauseIfOwner(r -> r.usesDlq(owner), PipelineRuntime.DLQ_BLOCKED_REASON, blocked);
     }
   }
 
