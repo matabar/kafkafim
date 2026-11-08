@@ -868,8 +868,8 @@ are reported together:
 |---|---|
 | ES returns 429 / 5xx / connection error or timeout for a bulk request | Retried with the same documents **forever**, exponential backoff with jitter (100ms doubling to 30s, ±50%); counts as a breaker failure. The pipeline's container is paused when in-flight bytes (key + value of every delivered, incomplete record) reach `max-in-flight-bytes`, and resumes once they drop to half of it. A poll that crosses the budget is delivered whole, so the overshoot is at most one poll per consumer. Kafka lag grows. No local buffering. Never DLQ. |
 | Repeated cluster-level failures | Circuit breaker per ES cluster (Resilience4j, shared by all identities and pipelines): count window of 20 requests, opens at ≥50% failures after at least 10, stays open 10s, then lets 2 probes through. While it is open every sender for that cluster waits; pipelines routing to that cluster pause (supervisor reason `es-breaker:<cluster>`, from open until the breaker is closed again; half-open keeps the pause), others proceed. |
-| Bulk request rejected with 401 / 403 | Configuration failure, not data failure: retried with backoff forever and reported through the sink listener (the supervisor pauses the pipeline; `kafkafim_auth_failures_total` and an alert fire). Not a breaker failure. Nothing goes to the DLQ. An **item** with 401/403 (the identity may not write that index) is handled the same way. |
-| Bulk request with any other unexpected status (a 400 for the whole request, a 404 from a proxy or a wrong path, a 3xx) or a 2xx body that is not a bulk response | Retried forever with backoff and logged with the body: it cannot be attributed to one document, so it never reaches the DLQ. An unexpected status is not a cluster-health signal and does not open the breaker; an unparsable 2xx body does. |
+| Bulk request rejected with 401 / 403 | Configuration failure, not data failure: retried with backoff forever and reported through the sink listener (the supervisor pauses the pipeline; `kafkafim_auth_failures_total` and an alert fire). Not a breaker failure. Nothing goes to the DLQ. The log line and the listener event keep the security error's type and `reason` (user, roles, action, index), never the raw body (ADR-0030). An **item** with 401/403 (the identity may not write that index) is handled the same way. |
+| Bulk request with any other unexpected status (a 400 for the whole request, a 404 from a proxy or a wrong path, a 3xx) or a 2xx body that is not a bulk response | Retried forever with backoff and logged with Elasticsearch's `error.type` and `root_cause[].type`s, never its `reason`, which can quote field values (ADR-0030; a body that is not JSON is logged by its size, an unparsable 2xx body by what was wrong with it; the body itself only at DEBUG on the `BulkSink` logger): it cannot be attributed to one document, so it never reaches the DLQ. An unexpected status is not a cluster-health signal and does not open the breaker; an unparsable 2xx body does. |
 | An action Elasticsearch would reject for the whole request (`op: create` with an external version, an empty ingest `pipeline` name, an `_id` outside 1 to 512 UTF-8 bytes) | Rejected when the action is built (`BulkAction`), because a whole-request 400 could only be retried forever. `op: create` together with `document.version-field` is therefore rejected by config validation (§5.7); ES answers "create operations only support internal versioning". |
 | Bulk partial failure | Only failed items are retried; successful items are acked immediately. |
 | Non-retryable item error: the 400 family (`mapper_parsing_exception`, `document_parsing_exception`, `strict_dynamic_mapping_exception`, `illegal_argument_exception` such as a missing ingest pipeline) and any other 4xx item not listed here | DLQ immediately with `error.type=es_error`, partition continues. |
@@ -1056,10 +1056,15 @@ to Elasticsearch.
 ECS-structured JSON on stdout (Spring Boot structured logging); OTLP log export
 optional. One WARN line per bulk response with failed items, naming the first 5 by
 position, status and error type (not Elasticsearch's reason, which quotes field values
-of the document; it travels in the DLQ record), plus the existing line per
-request-level retry; one WARN line per DLQ record (pipeline, source
-coordinates, error type, attempts, target, where the DLQ record landed; never the reason
-or the record); one INFO or ERROR line per reload (§5.6). Document bodies are never
+of the document; it travels in the DLQ record); one WARN line per request-level retry
+(429, 5xx, 401/403, unexpected status) with the status and Elasticsearch's error types,
+plus the security `reason` for 401/403, or, for an unparsable 2xx body, what was wrong
+with it; never other response text, which can quote field values (the response body,
+cut to 1024 characters, only at DEBUG on the
+`io.github.matabar.kafkafim.sink.es.BulkSink` logger, ADR-0030); one WARN line per DLQ
+record (pipeline, source coordinates, error type, attempts, target, where the DLQ
+record landed; never the reason or the record);
+one INFO or ERROR line per reload (§5.6). Document bodies are never
 logged by default.
 
 ### Health
