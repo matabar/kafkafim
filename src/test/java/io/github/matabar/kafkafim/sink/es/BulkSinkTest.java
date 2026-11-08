@@ -245,6 +245,45 @@ class BulkSinkTest {
   }
 
   @Test
+  void failedItemsAreLoggedOnceWithoutTheirReason() throws Exception {
+    ch.qos.logback.classic.Logger logger =
+        (ch.qos.logback.classic.Logger) org.slf4j.LoggerFactory.getLogger(BulkSink.class);
+    ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent> appender =
+        new ch.qos.logback.core.read.ListAppender<>();
+    appender.start();
+    logger.addAppender(appender);
+    try {
+      FakeTransport transport =
+          new FakeTransport((request, call) ->
+              FakeTransport.items(
+                  request,
+                  sent ->
+                      sent.id().equals("ok")
+                          ? new String[] {"201"}
+                          : new String[] {"400", "document_parsing_exception"}));
+      BulkSink<String> sink = sink(settings(3, 1 << 20, HOUR, 1), transport);
+
+      submitAll(sink, "ok", "bad1", "bad2");
+
+      assertThat(sink.awaitIdle(WAIT)).isTrue();
+      List<String> lines =
+          appender.list.stream()
+              .map(ch.qos.logback.classic.spi.ILoggingEvent::getFormattedMessage)
+              .filter(m -> m.contains("items failed"))
+              .toList();
+      // Elasticsearch's reason quotes field values of the document: never logged (DESIGN §10).
+      assertThat(lines)
+          .singleElement()
+          .asString()
+          .contains("2 of 3 items failed")
+          .contains("#1 400 document_parsing_exception; #2 400 document_parsing_exception")
+          .doesNotContain("scripted");
+    } finally {
+      logger.detachAppender(appender);
+    }
+  }
+
+  @Test
   void versionConflictIsStaleUnderIgnoreAndDlqUnderDlq() throws Exception {
     FakeTransport.Handler conflict =
         (request, call) ->

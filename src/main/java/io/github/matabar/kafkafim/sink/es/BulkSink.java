@@ -67,8 +67,6 @@ public final class BulkSink<H> implements AutoCloseable {
   /** Item errors named in the one log line per bulk response with failures. */
   static final int LOGGED_ITEM_ERRORS = 5;
 
-  private static final int LOGGED_REASON_CHARS = 512;
-
   private final SinkKey key;
   private final SinkSettings settings;
   private final BulkTransport transport;
@@ -659,8 +657,7 @@ public final class BulkSink<H> implements AutoCloseable {
       if (verdict != ItemVerdict.INDEXED && verdict != ItemVerdict.STALE) {
         failed++;
         if (logged.size() < LOGGED_ITEM_ERRORS) {
-          logged.add(
-              "#" + i + " " + item.status() + " " + errorType(item) + " " + truncate(reason));
+          logged.add("#" + i + " " + item.status() + " " + errorType(item));
         }
       }
       switch (verdict) {
@@ -692,7 +689,8 @@ public final class BulkSink<H> implements AutoCloseable {
     }
     if (failed > 0) {
       // One line per bulk response with failures (DESIGN §10, logs): the first item errors, by
-      // position in the request. Item reasons are Elasticsearch's error JSON, never a document.
+      // position, status and error type only. Elasticsearch's reason is not logged: for parsing
+      // errors it quotes the document's field values. It travels in the DLQ record instead.
       LOG.warn(
           "Bulk sink {}: {} of {} items failed; first {}: {}",
           key,
@@ -717,12 +715,6 @@ public final class BulkSink<H> implements AutoCloseable {
 
   private static String errorType(BulkResponse.Item item) {
     return item.errorType() != null ? item.errorType() : "status_" + item.status();
-  }
-
-  private static String truncate(String reason) {
-    return reason.length() <= LOGGED_REASON_CHARS
-        ? reason
-        : reason.substring(0, LOGGED_REASON_CHARS) + "…";
   }
 
   private void retryItem(Entry entry, BulkResponse.Item item, String reason) {
