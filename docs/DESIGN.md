@@ -827,8 +827,9 @@ are reported together:
   route has at least one `when` condition (an unconditional route would hide the rest);
   in `all` at most one default, and unconditional routes are allowed (fan-out). The
   default route is last and has no conditions. A route's ingest `pipeline` is optional
-  but, when set, not blank (`pipeline: ""` would make Elasticsearch reject the whole bulk
-  request; omit it instead).
+  but, when set, not blank: `pipeline: ""`, whitespace, or a bare `pipeline:` (which binds
+  as an empty string) would make Elasticsearch reject the whole bulk request; omit the key
+  instead.
 - **Conditions**: exactly one subject (`field`, `header` or `topic`). A `field` takes
   exactly one of `equals`, `in` (non-empty), `exists`, `prefix`, `matches` (the regex
   must compile); a `header` takes `equals`; a `topic` takes nothing and must be one of
