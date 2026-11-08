@@ -66,15 +66,10 @@
 			<groupId>co.elastic.clients</groupId>
 			<artifactId>elasticsearch-rest5-client</artifactId>
 		</dependency>
-		<!-- Circuit breaker + retry per Elasticsearch cluster -->
+		<!-- Circuit breaker per Elasticsearch cluster (bulk retry is the sink's own loop, ADR-0026) -->
 		<dependency>
 			<groupId>io.github.resilience4j</groupId>
 			<artifactId>resilience4j-circuitbreaker</artifactId>
-			<version>${resilience4j.version}</version>
-		</dependency>
-		<dependency>
-			<groupId>io.github.resilience4j</groupId>
-			<artifactId>resilience4j-retry</artifactId>
 			<version>${resilience4j.version}</version>
 		</dependency>
 
