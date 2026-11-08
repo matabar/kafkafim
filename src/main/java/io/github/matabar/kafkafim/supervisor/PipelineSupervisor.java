@@ -1,14 +1,20 @@
 package io.github.matabar.kafkafim.supervisor;
 
+import io.github.matabar.kafkafim.config.ConfigDiff;
+import io.github.matabar.kafkafim.config.KafkafimProperties;
 import io.github.matabar.kafkafim.source.kafka.KafkaPipelineSource;
 import io.github.resilience4j.circuitbreaker.CircuitBreaker;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.function.Consumer;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -16,23 +22,27 @@ import org.springframework.context.SmartLifecycle;
 
 /**
  * Runs every configured pipeline of the pod (DESIGN §4): starts each one with its own preflight
- * when the application starts, turns sink and DLQ events into pause reasons, and stops all of them
- * gracefully on shutdown.
+ * when the application starts, turns sink and DLQ events into pause reasons, applies reloaded
+ * configurations pipeline by pipeline, and stops all of them gracefully on shutdown.
  *
  * <p><b>Lifecycle</b> (DESIGN §7, SIGTERM): a {@link SmartLifecycle} in the sources' phase ({@link
  * KafkaPipelineSource#PHASE}, {@code MAX_VALUE - 100}), so Spring stops it first. Every pipeline
  * stops in parallel: its source drains (up to 30s) and leaves the group (up to 10s), then its bulk
  * sinks close (up to {@link #SINK_CLOSE_TIMEOUT}); together within the 60s {@code
- * timeout-per-shutdown-phase}. The DLQ producers (phase {@code MAX_VALUE - 1000}) stop after that,
- * because draining records may still dead-letter documents; then the web server.
+ * timeout-per-shutdown-phase}. The DLQ producers ({@link PipelineResources}, phase {@code MAX_VALUE
+ * - 1000}) close after that, because draining records may still dead-letter documents; then the web
+ * server. A shutdown that arrives during a reload waits for the reload to finish.
  *
  * <p><b>Pausing</b>: an Elasticsearch cluster's breaker opening pauses every pipeline routing to it
- * until it closes again; an identity rejected with 401/403 pauses the pipeline owning that bulk
- * stream until a request succeeds; a blocked DLQ writer pauses its pipeline until every failed send
- * was acknowledged. Nothing is dropped: paused pipelines keep committing what completes.
+ * through that breaker until it closes again; an identity rejected with 401/403 pauses the pipeline
+ * owning that bulk stream until a request succeeds; a blocked DLQ writer pauses its pipeline until
+ * every failed send was acknowledged. Nothing is dropped: paused pipelines keep committing what
+ * completes. Events from building blocks a pipeline no longer uses (a previous configuration
+ * generation's breaker or DLQ writer) are ignored for it.
  *
- * <p><b>Per-pipeline control</b> ({@link #startPipeline}, {@link #stopPipeline}) is the hook for
- * hot reload (DESIGN §5.6), which builds on it in a later slice.
+ * <p><b>Reload</b> ({@link #apply}, DESIGN §5.6): removed and changed pipelines drain and stop in
+ * parallel; changed ones get a new context and start again, added ones start, unchanged ones are
+ * not touched.
  */
 public final class PipelineSupervisor implements SmartLifecycle {
 
@@ -42,54 +52,60 @@ public final class PipelineSupervisor implements SmartLifecycle {
   public static final int PHASE = KafkaPipelineSource.PHASE;
 
   /** How long a stopping pipeline waits for its sinks' outstanding requests after the source. */
-  public static final java.time.Duration SINK_CLOSE_TIMEOUT = java.time.Duration.ofSeconds(10);
+  public static final Duration SINK_CLOSE_TIMEOUT = Duration.ofSeconds(10);
 
-  private final Map<String, PipelineRuntime> pipelines;
+  private final PipelineResources resources;
   private final List<SupervisorListener> listeners;
+  private final List<Runnable> topologyListeners = new CopyOnWriteArrayList<>();
+
+  /** Held by start, stop and apply: one of them at a time. */
+  private final Object lifecycle = new Object();
+
+  private volatile Map<String, PipelineRuntime> pipelines;
+  private volatile KafkafimProperties properties;
   private volatile boolean running;
 
   /**
-   * Creates a supervisor over one bound configuration; nothing starts until {@link #start()}.
+   * Creates a supervisor over the startup configuration; nothing starts until {@link #start()}.
    *
-   * @param context what the pipelines share
+   * @param properties the validated startup configuration
+   * @param resources where pipelines get their building blocks
    * @param listeners state hooks (telemetry)
    */
-  PipelineSupervisor(PipelineRuntime.Context context, List<SupervisorListener> listeners) {
+  PipelineSupervisor(
+      KafkafimProperties properties,
+      PipelineResources resources,
+      List<SupervisorListener> listeners) {
+    this.resources = resources;
     this.listeners = List.copyOf(listeners);
+    this.properties = properties;
     Map<String, PipelineRuntime> runtimes = new LinkedHashMap<>();
-    for (String name : context.properties().pipelines().keySet()) {
-      runtimes.put(name, new PipelineRuntime(name, context, this::stateChanged));
+    for (String name : properties.pipelines().keySet()) {
+      runtimes.put(
+          name, new PipelineRuntime(name, resources.acquire(name, properties), this::stateChanged));
     }
-    this.pipelines = java.util.Collections.unmodifiableMap(runtimes);
+    this.pipelines = Collections.unmodifiableMap(runtimes);
   }
 
   /** Starts every pipeline in the background; each one runs its own preflight. */
   @Override
   public void start() {
-    running = true;
-    if (pipelines.isEmpty()) {
-      LOG.warn("No pipelines configured; kafkafim is idle");
+    synchronized (lifecycle) {
+      running = true;
+      if (pipelines.isEmpty()) {
+        LOG.warn("No pipelines configured; kafkafim is idle");
+      }
+      pipelines.values().forEach(PipelineRuntime::start);
     }
-    pipelines.values().forEach(PipelineRuntime::start);
   }
 
   @Override
   public void stop() {
     running = false;
-    List<Thread> stoppers = new ArrayList<>(pipelines.size());
-    for (PipelineRuntime pipeline : pipelines.values()) {
-      stoppers.add(
-          Thread.ofVirtual().name("kafkafim-stop-" + pipeline.name()).start(pipeline::stop));
+    synchronized (lifecycle) {
+      stopAll(pipelines.values());
+      LOG.info("All pipelines stopped");
     }
-    for (Thread stopper : stoppers) {
-      try {
-        stopper.join();
-      } catch (InterruptedException e) {
-        Thread.currentThread().interrupt();
-        return;
-      }
-    }
-    LOG.info("All pipelines stopped");
   }
 
   /** Stops every pipeline in parallel without blocking the lifecycle thread. */
@@ -116,6 +132,11 @@ public final class PipelineSupervisor implements SmartLifecycle {
     return PHASE;
   }
 
+  /** The configuration the pipelines were last applied from. */
+  public KafkafimProperties properties() {
+    return properties;
+  }
+
   /** Pipeline names, in configuration order. */
   public Set<String> pipelineNames() {
     return pipelines.keySet();
@@ -137,6 +158,12 @@ public final class PipelineSupervisor implements SmartLifecycle {
     return runtime(pipeline).state();
   }
 
+  /** One pipeline's state, or {@code null} if there is no such pipeline (any more). */
+  public @Nullable PipelineState stateOrNull(String pipeline) {
+    PipelineRuntime runtime = pipelines.get(pipeline);
+    return runtime == null ? null : runtime.state();
+  }
+
   /** Why a pipeline failed preflight, or {@code null}. */
   public @Nullable String failure(String pipeline) {
     return runtime(pipeline).failure();
@@ -148,7 +175,7 @@ public final class PipelineSupervisor implements SmartLifecycle {
   }
 
   /**
-   * Starts one pipeline in the background (reload hook); no-op while starting or started.
+   * Starts one pipeline in the background; no-op while starting or started.
    *
    * @throws IllegalStateException while the pipeline is being stopped
    */
@@ -156,7 +183,7 @@ public final class PipelineSupervisor implements SmartLifecycle {
     runtime(pipeline).start();
   }
 
-  /** Stops one pipeline gracefully and waits for it (reload hook). */
+  /** Stops one pipeline gracefully and waits for it. */
   public void stopPipeline(String pipeline) {
     runtime(pipeline).stop();
   }
@@ -164,6 +191,81 @@ public final class PipelineSupervisor implements SmartLifecycle {
   /** The source of a started pipeline, or {@code null}; for tests and telemetry. */
   @Nullable KafkaPipelineSource source(String pipeline) {
     return runtime(pipeline).source();
+  }
+
+  /** Runs {@code listener} after every reload that added or removed pipelines. */
+  void onTopologyChange(Runnable listener) {
+    topologyListeners.add(listener);
+  }
+
+  /**
+   * Applies a validated configuration (DESIGN §5.6) and waits for the drains: removed and restarted
+   * pipelines stop in parallel (each drains its in-flight records and commits what completed);
+   * restarted ones get the building blocks of {@code next} and start in the background, as do added
+   * ones; unchanged ones keep running on what they have.
+   *
+   * @param next the new configuration, valid as a whole
+   * @param diff {@code ConfigDiff.between(properties(), next)}
+   * @throws IllegalStateException if the supervisor is not running
+   */
+  void apply(KafkafimProperties next, ConfigDiff diff) {
+    synchronized (lifecycle) {
+      if (!running) {
+        throw new IllegalStateException("The pipeline supervisor is not running");
+      }
+      Map<String, PipelineRuntime> current = pipelines;
+      List<PipelineRuntime> toStop = new ArrayList<>();
+      for (String name : diff.removed()) {
+        toStop.add(current.get(name));
+      }
+      for (String name : diff.restarted().keySet()) {
+        toStop.add(current.get(name));
+      }
+      stopAll(toStop);
+
+      Map<String, PipelineRuntime> updated = new LinkedHashMap<>();
+      List<PipelineRuntime> toStart = new ArrayList<>();
+      for (String name : next.pipelines().keySet()) {
+        PipelineRuntime runtime = current.get(name);
+        if (runtime == null) {
+          runtime = new PipelineRuntime(name, resources.acquire(name, next), this::stateChanged);
+          toStart.add(runtime);
+        } else if (diff.restarted().containsKey(name)) {
+          PipelineRuntime.Context previous = runtime.reconfigure(resources.acquire(name, next));
+          resources.release(previous);
+          toStart.add(runtime);
+        }
+        updated.put(name, runtime);
+      }
+      pipelines = Collections.unmodifiableMap(updated);
+      for (String name : diff.removed()) {
+        resources.release(current.get(name).context());
+        lastStates.remove(name);
+        lastReasons.remove(name);
+      }
+      resources.retireStale(next);
+      properties = next;
+      toStart.forEach(PipelineRuntime::start);
+    }
+    if (!diff.added().isEmpty() || !diff.removed().isEmpty()) {
+      topologyListeners.forEach(Runnable::run);
+    }
+  }
+
+  private static void stopAll(Collection<PipelineRuntime> runtimes) {
+    List<Thread> stoppers = new ArrayList<>(runtimes.size());
+    for (PipelineRuntime pipeline : runtimes) {
+      stoppers.add(
+          Thread.ofVirtual().name("kafkafim-stop-" + pipeline.name()).start(pipeline::stop));
+    }
+    for (Thread stopper : stoppers) {
+      try {
+        stopper.join();
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        return;
+      }
+    }
   }
 
   private PipelineRuntime runtime(String pipeline) {
@@ -176,12 +278,15 @@ public final class PipelineSupervisor implements SmartLifecycle {
 
   // ---- events from the sinks and the DLQ writers (ListenerRelay) ----
 
-  /** An Elasticsearch cluster's breaker changed state. */
-  void onBreakerStateChange(String cluster, CircuitBreaker.State to) {
+  /**
+   * An Elasticsearch cluster's breaker changed state; applies to the pipelines that send to that
+   * cluster through {@code owner} (the {@code ElasticsearchSinks} that owns the breaker).
+   */
+  void onBreakerStateChange(@Nullable Object owner, String cluster, CircuitBreaker.State to) {
     String reason = PipelineRuntime.BREAKER_REASON_PREFIX + cluster;
     boolean open = PipelineRuntime.isOpen(to);
     for (PipelineRuntime pipeline : pipelines.values()) {
-      if (pipeline.clusters().contains(cluster)) {
+      if (pipeline.usesSinks(cluster, owner)) {
         if (open) {
           pipeline.pause(reason);
         } else if (to == CircuitBreaker.State.CLOSED
@@ -205,10 +310,13 @@ public final class PipelineSupervisor implements SmartLifecycle {
     }
   }
 
-  /** A pipeline's DLQ writer became blocked or unblocked. */
-  void onDlqBlocked(String pipeline, boolean blocked) {
+  /**
+   * A pipeline's DLQ writer became blocked or unblocked; ignored unless the pipeline still writes
+   * through {@code owner} (the {@code DlqProducers} that owns the writer).
+   */
+  void onDlqBlocked(@Nullable Object owner, String pipeline, boolean blocked) {
     PipelineRuntime runtime = pipelines.get(pipeline);
-    if (runtime == null) {
+    if (runtime == null || !runtime.usesDlq(owner)) {
       return;
     }
     if (blocked) {
@@ -237,7 +345,7 @@ public final class PipelineSupervisor implements SmartLifecycle {
     }
   }
 
-  private void notify(java.util.function.Consumer<SupervisorListener> event) {
+  private void notify(Consumer<SupervisorListener> event) {
     for (SupervisorListener listener : listeners) {
       try {
         event.accept(listener);

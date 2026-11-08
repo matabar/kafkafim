@@ -53,6 +53,11 @@ import org.slf4j.LoggerFactory;
  *
  * <p><b>Pause reasons</b> set by the supervisor (breaker, auth, DLQ blocked) are kept here, so they
  * survive a restart of the source and are applied to a source created later.
+ *
+ * <p><b>Reload</b> (DESIGN §5.6): while stopped, {@link #reconfigure} gives the runtime a new
+ * {@link Context} (configuration generation and building blocks); the next {@link #start()} runs
+ * with it. Its state history and pause reasons carry over, except {@code dlq-blocked} when the DLQ
+ * writer changes with the context.
  */
 final class PipelineRuntime {
 
@@ -70,22 +75,35 @@ final class PipelineRuntime {
   private static final Duration FIRST_RETRY = Duration.ofSeconds(1);
   private static final Duration MAX_RETRY = Duration.ofSeconds(30);
 
-  /** What every runtime of one configuration shares. */
+  /**
+   * What a run of the pipeline is built from: one configuration generation and the building blocks
+   * the {@link PipelineResources} handed out for it.
+   *
+   * @param properties the validated configuration the pipeline runs with
+   * @param consumerFactories consumer settings per {@code (cluster, identity)}
+   * @param dlqProducers the DLQ producers that own this pipeline's writer
+   * @param sinks the Elasticsearch registry of every cluster the routes use, by cluster name
+   * @param authCheck preflight identity check
+   * @param sourceOptions source timings
+   * @param sinkCloseTimeout how long a stop waits for the sinks
+   * @param clock record processor clock
+   */
   record Context(
       KafkafimProperties properties,
       ConsumerFactories consumerFactories,
       DlqProducers dlqProducers,
-      ElasticsearchSinks sinks,
+      Map<String, ElasticsearchSinks> sinks,
       Preflight.AuthCheck authCheck,
       SourceOptions sourceOptions,
       Duration sinkCloseTimeout,
       Clock clock) {}
 
   private final String name;
-  private final Pipeline config;
-  private final Context context;
   private final Consumer<PipelineRuntime> onChange;
-  private final Set<String> clusters;
+  // Replaced only by reconfigure(), while stopped; read by the start thread and event handlers.
+  private volatile Context context;
+  private volatile Pipeline config;
+  private volatile Set<String> clusters;
 
   private final Object lock = new Object();
   private PipelineState state = PipelineState.STOPPED; // guarded by lock
@@ -100,17 +118,60 @@ final class PipelineRuntime {
 
   PipelineRuntime(String name, Context context, Consumer<PipelineRuntime> onChange) {
     this.name = name;
-    this.context = context;
-    this.config = context.properties().pipelines().get(name);
-    if (config == null) {
+    this.onChange = onChange;
+    apply(context);
+  }
+
+  private void apply(Context next) {
+    Pipeline pipeline = next.properties().pipelines().get(name);
+    if (pipeline == null) {
       throw new IllegalArgumentException("Unknown pipeline '" + name + "'");
     }
-    this.onChange = onChange;
     Set<String> routed = new LinkedHashSet<>();
-    for (Pipeline.Route route : config.routes()) {
+    for (Pipeline.Route route : pipeline.routes()) {
       routed.add(route.cluster());
     }
+    this.config = pipeline;
     this.clusters = Set.copyOf(routed);
+    this.context = next;
+  }
+
+  /** The context the pipeline runs (or will next run) with. */
+  Context context() {
+    return context;
+  }
+
+  /**
+   * Gives a stopped pipeline a new context for its next start (reload). {@code dlq-blocked} is
+   * dropped when the DLQ writer changes: the new writer has failed nothing, and the old one's
+   * events are ignored from now on ({@link #usesDlq}).
+   *
+   * @return the previous context, for the caller to release
+   * @throws IllegalStateException unless stopped
+   */
+  Context reconfigure(Context next) {
+    synchronized (lock) {
+      if (stops > 0 || starter != null || state.isStarted() || state == PipelineState.STARTING) {
+        throw new IllegalStateException("Pipeline '" + name + "' must be stopped to reconfigure");
+      }
+      Context previous = context;
+      apply(next);
+      if (next.dlqProducers() != previous.dlqProducers()
+          && pauseReasons.remove(DLQ_BLOCKED_REASON)) {
+        report();
+      }
+      return previous;
+    }
+  }
+
+  /** Whether this pipeline's DLQ writer belongs to {@code owner} (a {@code DlqProducers}). */
+  boolean usesDlq(@Nullable Object owner) {
+    return context.dlqProducers() == owner;
+  }
+
+  /** Whether this pipeline sends to {@code cluster} through {@code owner}'s sinks. */
+  boolean usesSinks(String cluster, @Nullable Object owner) {
+    return owner != null && context.sinks().get(cluster) == owner;
   }
 
   String name() {
@@ -203,6 +264,8 @@ final class PipelineRuntime {
   }
 
   private Attempt attemptStart(CountDownLatch signal) {
+    Context context = this.context;
+    Pipeline config = this.config;
     CompiledPipeline compiled;
     DlqWriter writer;
     try {
@@ -235,14 +298,17 @@ final class PipelineRuntime {
         for (Map.Entry<RouteTarget.StreamKey, SinkSettings> stream :
             compiled.streams().entrySet()) {
           RouteTarget.StreamKey key = stream.getKey();
+          ElasticsearchSinks registry = context.sinks().get(key.cluster());
+          if (registry == null) {
+            throw new IllegalArgumentException(
+                "no Elasticsearch registry for cluster '" + key.cluster() + "'");
+          }
           opened.put(
               key,
-              context
-                  .sinks()
-                  .open(
-                      new SinkKey(name, key.cluster(), key.identity()),
-                      stream.getValue(),
-                      (action, outcome) -> processor[0].onOutcome(action, outcome)));
+              registry.open(
+                  new SinkKey(name, key.cluster(), key.identity()),
+                  stream.getValue(),
+                  (action, outcome) -> processor[0].onOutcome(action, outcome)));
         }
         Map<RouteTarget.StreamKey, RecordProcessor.ActionSink> actionSinks = new LinkedHashMap<>();
         opened.forEach((key, sink) -> actionSinks.put(key, adapt(sink)));

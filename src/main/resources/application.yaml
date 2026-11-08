@@ -22,7 +22,7 @@ management:
   endpoints:
     web:
       exposure:
-        include: health,info,prometheus,metrics,reload
+        include: health,info,prometheus,metrics,reload   # reload: POST /actuator/reload (DESIGN §5.6)
   endpoint:
     health:
       probes:
@@ -50,6 +50,12 @@ management:
           endpoint: ${OTEL_EXPORTER_OTLP_ENDPOINT:http://localhost:4318}/v1/traces
     resource-attributes:
       service.namespace: kafkafim
+
+kafkafim:
+  reload:                           # hot reload of the config and secret directories (DESIGN §5.6);
+    enabled: true                   # read at startup only. The watched paths are the file and
+    poll-interval: 10s              # configtree locations of spring.config.(additional-)location and
+    debounce: 2s                    # spring.config.import. POST /actuator/reload works regardless.
 
 logging:
   structured:
