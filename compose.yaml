@@ -9,14 +9,39 @@ services:
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
       KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
-      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,INTERNAL://0.0.0.0:19092,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092,INTERNAL://kafka:19092
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,INTERNAL:PLAINTEXT
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
-      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'true'
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'false'   # mirrors production (ADR-0021); topics come from kafka-init
+    healthcheck:
+      test: ['CMD-SHELL', 'nc -z localhost 9092']   # the native image ships no Kafka CLI scripts
+      interval: 5s
+      timeout: 10s
+      retries: 20
+      start_period: 5s
+  # One-shot: provisions the topics the `local` profile's `demo` pipeline needs. kafkafim
+  # itself never creates topics (ADR-0021). Idempotent; exits 0 when done. The ignore label
+  # keeps Spring Boot Docker Compose support from treating it as a service connection.
+  # Uses the JVM image of the same version: the native broker image has no kafka-topics.sh.
+  kafka-init:
+    image: 'apache/kafka:4.1.0'
+    labels:
+      org.springframework.boot.ignore: 'true'
+    depends_on:
+      kafka:
+        condition: service_healthy
+    restart: 'no'
+    entrypoint: ['/bin/sh', '-c']
+    command:
+      - |
+        for t in demo.events demo.events.kafkafim-dlq; do
+          /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:19092 --create --if-not-exists \
+            --topic "$$t" --partitions 3 --replication-factor 1 || exit 1
+        done
   elasticsearch:
     image: 'docker.elastic.co/elasticsearch/elasticsearch:8.19.0'
     ports:
