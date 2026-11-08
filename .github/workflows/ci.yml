@@ -108,7 +108,7 @@ jobs:
           if [ ${#files[@]} -eq 0 ]; then echo "no charts/kafkafim/ci/*-values.yaml; add at least one" >&2; exit 1; fi
           # go install verifies the module against sum.golang.org; the cached binary skips the proxy.
           [ -x "$TOOLS/bin/kubeconform" ] || GOBIN="$TOOLS/bin" go install github.com/yannh/kubeconform/cmd/kubeconform@v0.8.0
-          "$TOOLS/bin/kubeconform" -v
+          "$TOOLS/bin/kubeconform" -v >/dev/null   # smoke test only: a go-install build reports "development"
           for v in "${files[@]}"; do
             helm template kafkafim charts/kafkafim -f "$v" | "$TOOLS/bin/kubeconform" -strict -summary
           done
@@ -116,11 +116,13 @@ jobs:
         name: Chart unit tests
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          ASSET_TOKEN: ${{ github.token }}   # passed to gh api only, not to the plugin hook or tests
           TOOLS: ${{ runner.temp }}/chart-tools
           # helm-unittest 1.2.1: the signed all-platform plugin tarball, its provenance file
           # (release asset ids are immutable), their SHA-256 and the release key's fingerprint.
-          # The key is .github/keys/helm-unittest-public-key.asc, copied from the v1.2.1 tag.
+          # The key is .github/keys/helm-unittest-public-key.asc, copied from the v1.2.1 tag; it
+          # expires 2028-05-06, so re-copy it from upstream before then. A version bump changes
+          # the asset ids, both SHA-256s and the cache key above.
           TGZ: unittest-1.2.1.tgz
           TGZ_ASSET: '607406094'
           TGZ_SHA256: bbcebd42631dff9fc595462fad839c49a1b06f9635e952e7e837d7e5fe82865f
@@ -135,10 +137,10 @@ jobs:
           fetch() {
             [ -s "$d/$1" ] && return 0
             for i in 1 2 3 4 5; do
-              if gh api -H 'Accept: application/octet-stream' "repos/helm-unittest/helm-unittest/releases/assets/$2" > "$d/$1.part"; then
+              if GH_TOKEN="$ASSET_TOKEN" gh api -H 'Accept: application/octet-stream' "repos/helm-unittest/helm-unittest/releases/assets/$2" > "$d/$1.part"; then
                 mv "$d/$1.part" "$d/$1"; return 0
               fi
-              echo "download of $1 failed (attempt $i)" >&2; sleep $((i * 10))
+              echo "download of $1 failed (attempt $i)" >&2; [ "$i" -lt 5 ] && sleep $((i * 10))
             done
             return 1
           }
@@ -150,8 +152,8 @@ jobs:
           gpg --batch --no-autostart --quiet --import .github/keys/helm-unittest-public-key.asc
           fprs=$(gpg --batch --no-autostart --with-colons --list-keys | awk -F: '$1 == "pub" {p = 1; next} p && $1 == "fpr" {print $10; p = 0}')
           if [ "$fprs" != "$KEY_FPR" ]; then echo "unexpected key(s) in keyring: $fprs" >&2; exit 1; fi
-          gpg --batch --no-autostart --export > "$GNUPGHOME/pubring.gpg"   # Helm reads the legacy keyring format
+          gpg --batch --no-autostart --export > "$RUNNER_TEMP/helm-unittest.gpg"   # Helm reads the legacy keyring format
           # Helm 4 checks the tarball against the signed .prov next to it.
-          helm plugin install "$d/$TGZ" --keyring "$GNUPGHOME/pubring.gpg"
+          helm plugin install "$d/$TGZ" --keyring "$RUNNER_TEMP/helm-unittest.gpg"
           helm plugin list | grep -E '^unittest[[:space:]]+1\.2\.1[[:space:]].*[[:space:]]signed[[:space:]]'
           helm unittest charts/kafkafim
