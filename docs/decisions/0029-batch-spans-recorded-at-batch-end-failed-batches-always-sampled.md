@@ -48,9 +48,16 @@ always. Two things do not fit a plain implementation:
   is down produces its span only afterwards; the metrics (`kafkafim_retries_total`,
   `kafkafim_bulk_requests_total{status}`, `kafkafim_breaker_state`) cover the outage.
 - No trace context is sent to Elasticsearch with the bulk request.
-- Every batch costs one small report and, unsampled, two non-recording spans.
-- Health and the existing `kafkafim_pipeline_state` / reload meters stay in
-  `supervisor`, which owns the state they read.
+- Every batch costs one small report, a `traceparent` header lookup per document
+  (at most 128 distinct links kept) and, unsampled, 1 + N non-recording spans for N
+  requests.
+- A retryable item error (for example a 429 `es_rejected_execution_exception`) makes
+  a batch "failed", so under sustained Elasticsearch backpressure nearly every batch
+  is traced: trace volume rises exactly while Elasticsearch is overloaded.
+- The `pipelines` readiness contributor and the existing `kafkafim_pipeline_state` /
+  reload meters stay in `supervisor`, which owns the state they read; the new
+  `supervisor` and `kafka` contributors are `telemetry` classes fed by supervisor
+  suppliers.
 
 ## Alternatives
 - **Live spans in the sink** (the sink depends on Micrometer Tracing): the outcome is

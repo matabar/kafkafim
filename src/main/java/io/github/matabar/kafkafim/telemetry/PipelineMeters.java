@@ -62,6 +62,7 @@ public final class PipelineMeters {
   // Hot-path caches (per record, per document): no key building per event.
   private final Map<String, Counter[]> consumedByTopic = new ConcurrentHashMap<>();
   private final Map<String, Counter[]> docsByRoute = new ConcurrentHashMap<>();
+  private final @Nullable Timer e2e;
   private volatile SourceProbe probe;
   private volatile boolean closed;
 
@@ -71,6 +72,7 @@ public final class PipelineMeters {
     this.spec = new PipelineSpec("", List.of(), List.of(), Set.of(), SourceProbe.NONE);
     this.base = Tags.empty();
     this.probe = SourceProbe.NONE;
+    this.e2e = null;
     this.closed = true;
   }
 
@@ -99,7 +101,7 @@ public final class PipelineMeters {
       bulkDocs(cluster);
       bulkBytes(cluster);
     }
-    timer(TelemetryNames.E2E_LATENCY, E2E_SLOS_SECONDS, Tags.empty());
+    this.e2e = timer(TelemetryNames.E2E_LATENCY, E2E_SLOS_SECONDS, Tags.empty());
   }
 
   /** The pipeline name. */
@@ -161,17 +163,21 @@ public final class PipelineMeters {
   public void document(String route, DocOutcome outcome) {
     Counter[] counters = docsByRoute.get(route);
     if (counters == null) {
-      DocOutcome[] outcomes = DocOutcome.values();
-      counters = new Counter[outcomes.length];
-      for (DocOutcome each : outcomes) {
-        counters[each.ordinal()] =
-            counter(TelemetryNames.DOCS, Tags.of("route", route, "outcome", each.label()));
-      }
+      counters = new Counter[DocOutcome.values().length];
       if (!closed) {
-        docsByRoute.putIfAbsent(route, counters);
+        Counter[] raced = docsByRoute.putIfAbsent(route, counters);
+        if (raced != null) {
+          counters = raced;
+        }
       }
     }
-    counters[outcome.ordinal()].increment();
+    Counter counter = counters[outcome.ordinal()];
+    if (counter == null) {
+      // Registered per outcome on first use, so route="none" only ever gets outcome="dlq".
+      counter = counter(TelemetryNames.DOCS, Tags.of("route", route, "outcome", outcome.label()));
+      counters[outcome.ordinal()] = counter;
+    }
+    counter.increment();
   }
 
   /**
@@ -179,8 +185,9 @@ public final class PipelineMeters {
    * Negative values (clock skew) count as zero.
    */
   public void endToEnd(Duration latency) {
-    timer(TelemetryNames.E2E_LATENCY, E2E_SLOS_SECONDS, Tags.empty())
-        .record(latency.isNegative() ? Duration.ZERO : latency);
+    if (!closed && e2e != null) {
+      e2e.record(latency.isNegative() ? Duration.ZERO : latency);
+    }
   }
 
   // ---- Elasticsearch ----

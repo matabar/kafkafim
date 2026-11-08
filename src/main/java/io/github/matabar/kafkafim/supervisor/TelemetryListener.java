@@ -25,8 +25,8 @@ import org.jspecify.annotations.Nullable;
 /**
  * Feeds the sink and DLQ events to the §10 meters and the batch spans (DESIGN §10). Lives in {@code
  * supervisor} because it is the one place that knows both the building blocks' listener interfaces
- * and the telemetry package (ADR-0003: {@code telemetry} depends on no other kafkafim package), and
- * because only the supervisor knows that a batch's handles are {@link
+ * and the telemetry package (ADR-0003, ADR-0029: {@code telemetry} depends on no kafkafim package
+ * but {@code config}), and because only the supervisor knows that a batch's handles are {@link
  * RecordProcessor.DocumentRef}s, whose records carry the {@code traceparent} headers that become
  * span links.
  *

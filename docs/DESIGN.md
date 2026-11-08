@@ -1022,7 +1022,8 @@ gets fresh series, and an unchanged one keeps its counters across a restart.
 
 Lag is read by one extra consumer per running pipeline (its identity and group, never
 joining the group) every 10s; a partition without a committed offset yet is left out,
-and a failed poll keeps the previous values. `kafkafim_kafka_connected` is 1 while every
+and a failed poll keeps the previous values; a pipeline without a running source (stopped,
+failed) or without owned partitions reads 0 on this pod. `kafkafim_kafka_connected` is 1 while every
 consumer of the pipeline holds a broker connection (kafka-clients'
 `connection-count`); a stopped pipeline reads 0, as do its in-flight bytes and
 assigned partitions.
@@ -1040,7 +1041,8 @@ A failure sets `error.type` (`io_error`, `malformed_response`, the HTTP status, 
 `item_errors`) and the span status. Incoming `traceparent` Kafka headers of the batch's
 records are attached as **span links** (distinct, at most 128), not parents. Head
 sampling: 1% of batches (`management.tracing.sampling.probability`); a failed batch is
-always kept (`telemetry/BatchSampler`). Spans are recorded when the batch ends, with
+always kept (`telemetry/BatchSampler`), retryable item errors such as a 429 included, so
+trace volume rises while Elasticsearch pushes back. Spans are recorded when the batch ends, with
 their real timestamps, which is what lets the sampler see the failure (ADR-0029); a
 batch still retrying has no span yet. No per-document spans; no trace context is sent
 to Elasticsearch.
@@ -1048,9 +1050,10 @@ to Elasticsearch.
 ### Logs
 
 ECS-structured JSON on stdout (Spring Boot structured logging); OTLP log export
-optional. One WARN line per bulk response with failed items, naming the first 5 (position,
-status, error type, Elasticsearch's error JSON cut to 512 characters), plus the existing
-line per request-level retry; one WARN line per DLQ record (pipeline, source
+optional. One WARN line per bulk response with failed items, naming the first 5 by
+position, status and error type (not Elasticsearch's reason, which quotes field values
+of the document; it travels in the DLQ record), plus the existing line per
+request-level retry; one WARN line per DLQ record (pipeline, source
 coordinates, error type, attempts, target, where the DLQ record landed; never the reason
 or the record); one INFO or ERROR line per reload (§5.6). Document bodies are never
 logged by default.
