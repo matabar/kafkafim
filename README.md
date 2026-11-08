@@ -30,7 +30,7 @@ required beyond a JDK 27 on `PATH`.
 
 The stack also runs a one-shot `kafka-init` service that creates the topics the `local`
 profile's `demo` pipeline needs (`demo.events`, `demo.events.kafkafim-dlq`; 3 partitions,
-replication 1). kafkafim itself never creates topics ([ADR-0021](docs/decisions/0021-no-provisioning.md)),
+replication 1). kafkafim itself never creates topics ([ADR-0021](docs/decisions/0021-no-resource-provisioning.md)),
 and the local broker has topic auto-creation disabled to mirror production. Smoke test once
 the `demo` pipeline is `running`
 (`curl -s localhost:8080/actuator/prometheus | grep 'kafkafim_pipeline_state{pipeline="demo",state="running"}'`):
