@@ -10,6 +10,7 @@ import io.github.resilience4j.circuitbreaker.CircuitBreaker;
 import java.time.Duration;
 import java.util.List;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
 import org.apache.kafka.clients.producer.RecordMetadata;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
@@ -20,6 +21,13 @@ import org.slf4j.LoggerFactory;
  * exists before the {@link PipelineSupervisor} (which needs the sinks and DLQ producers), turns
  * events into supervisor pause decisions once the supervisor is attached, and forwards every event
  * to further listeners (the telemetry slice's meters).
+ *
+ * <p>Since hot reload, several {@code ElasticsearchSinks} and {@code DlqProducers} instances may be
+ * alive at once (DESIGN §5.6): each gets its own listener, bound to its <em>owner</em> (the
+ * instance itself), so the supervisor only applies a breaker or DLQ-blocked event to the pipelines
+ * that currently use that instance. Auth events need no owner: the supervisor re-reads the current
+ * sink's auth state for every one. Events forwarded to telemetry listeners are not filtered: a DLQ
+ * writer a pipeline left behind still reports under that pipeline's name (ADR-0028).
  */
 final class ListenerRelay {
 
@@ -60,8 +68,12 @@ final class ListenerRelay {
     }
   }
 
-  /** The listener for {@code ElasticsearchSinks}. */
-  SinkListener sinkListener() {
+  /**
+   * The listener for one {@code ElasticsearchSinks} instance.
+   *
+   * @param owner the instance, once constructed
+   */
+  SinkListener sinkListener(Supplier<Object> owner) {
     return new SinkListener() {
       @Override
       public void onFlush(SinkKey key, FlushReason reason, int docs, long bytes) {
@@ -99,14 +111,18 @@ final class ListenerRelay {
       @Override
       public void onBreakerStateChange(
           String cluster, CircuitBreaker.State from, CircuitBreaker.State to) {
-        toSupervisor(s -> s.onBreakerStateChange(cluster, to));
+        toSupervisor(s -> s.onBreakerStateChange(owner.get(), cluster, to));
         forward(sinkListeners, l -> l.onBreakerStateChange(cluster, from, to));
       }
     };
   }
 
-  /** The listener for {@code DlqProducers}. */
-  DlqListener dlqListener() {
+  /**
+   * The listener for one {@code DlqProducers} instance.
+   *
+   * @param owner the instance, once constructed
+   */
+  DlqListener dlqListener(Supplier<Object> owner) {
     return new DlqListener() {
       @Override
       public void onWritten(String pipeline, DlqRequest request, RecordMetadata metadata) {
@@ -120,13 +136,13 @@ final class ListenerRelay {
 
       @Override
       public void onBlocked(String pipeline, DlqFailure failure) {
-        toSupervisor(s -> s.onDlqBlocked(pipeline, true));
+        toSupervisor(s -> s.onDlqBlocked(owner.get(), pipeline, true));
         forward(dlqListeners, l -> l.onBlocked(pipeline, failure));
       }
 
       @Override
       public void onUnblocked(String pipeline) {
-        toSupervisor(s -> s.onDlqBlocked(pipeline, false));
+        toSupervisor(s -> s.onDlqBlocked(owner.get(), pipeline, false));
         forward(dlqListeners, l -> l.onUnblocked(pipeline));
       }
     };

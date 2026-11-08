@@ -6,12 +6,10 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import io.github.matabar.kafkafim.config.KafkafimProperties;
 import io.github.matabar.kafkafim.dlq.DlqListener;
 import io.github.matabar.kafkafim.dlq.DlqOptions;
-import io.github.matabar.kafkafim.dlq.DlqProducers;
 import io.github.matabar.kafkafim.sink.es.BreakerSettings;
 import io.github.matabar.kafkafim.sink.es.ClientSettings;
-import io.github.matabar.kafkafim.sink.es.ElasticsearchSinks;
 import io.github.matabar.kafkafim.sink.es.SinkKey;
-import io.github.matabar.kafkafim.source.kafka.ConsumerFactories;
+import io.github.matabar.kafkafim.sink.es.SinkListener;
 import io.github.matabar.kafkafim.source.kafka.SourceOptions;
 import io.github.resilience4j.circuitbreaker.CircuitBreaker;
 import java.time.Clock;
@@ -43,26 +41,23 @@ class PipelineSupervisorTest {
             routes: [ { default: true, cluster: es2, index: c } ]
           """);
 
-  private final List<String> events = new ArrayList<>();
-  private final ListenerRelay relay = new ListenerRelay(List.of(), List.of());
-  private final DlqProducers dlq = new DlqProducers(properties, DlqListener.NONE);
-  private final ElasticsearchSinks sinks =
-      new ElasticsearchSinks(
-          properties.elasticsearch().clusters(),
+  static final PipelineResources.Settings SETTINGS =
+      new PipelineResources.Settings(
+          SourceOptions.defaults(),
+          Duration.ofSeconds(1),
+          DlqOptions.DEFAULTS,
           ClientSettings.DEFAULT,
           BreakerSettings.DEFAULT,
-          relay.sinkListener());
+          Clock.systemUTC());
+
+  private final List<String> events = new ArrayList<>();
+  private final ListenerRelay relay = new ListenerRelay(List.of(), List.of());
+  private final PipelineResources resources =
+      new PipelineResources(relay, p -> (cluster, identity) -> Preflight.Status.OK, SETTINGS);
   private final PipelineSupervisor supervisor =
       new PipelineSupervisor(
-          new PipelineRuntime.Context(
-              properties,
-              new ConsumerFactories(properties),
-              dlq,
-              sinks,
-              (cluster, identity) -> Preflight.Status.OK,
-              SourceOptions.defaults(),
-              Duration.ofSeconds(1),
-              Clock.systemUTC()),
+          properties,
+          resources,
           List.of(
               new SupervisorListener() {
                 @Override
@@ -77,26 +72,37 @@ class PipelineSupervisorTest {
 
   @AfterEach
   void close() {
-    sinks.close();
-    dlq.close();
+    resources.close();
+  }
+
+  private PipelineRuntime runtime(String name) {
+    return supervisor.runtimes().stream().filter(r -> r.name().equals(name)).findFirst().get();
+  }
+
+  /** The listener of the Elasticsearch registry that pipeline {@code to-es} sends through. */
+  private SinkListener esListener() {
+    Object owner = runtime("to-es").context().sinks().get("es");
+    return relay.sinkListener(() -> owner);
+  }
+
+  /** The listener of the DLQ producers that pipeline {@code to-es} writes through. */
+  private DlqListener dlqListener() {
+    Object owner = runtime("to-es").context().dlqProducers();
+    return relay.dlqListener(() -> owner);
   }
 
   @Test
   void breakerOpenPausesEveryPipelineRoutingToTheClusterUntilItCloses() {
-    relay
-        .sinkListener()
-        .onBreakerStateChange("es", CircuitBreaker.State.CLOSED, CircuitBreaker.State.OPEN);
+    esListener().onBreakerStateChange("es", CircuitBreaker.State.CLOSED, CircuitBreaker.State.OPEN);
     assertThat(supervisor.pauseReasons("to-es")).containsExactly("es-breaker:es");
     assertThat(supervisor.pauseReasons("to-both")).containsExactly("es-breaker:es");
     assertThat(supervisor.pauseReasons("to-es2")).isEmpty();
 
-    relay
-        .sinkListener()
+    esListener()
         .onBreakerStateChange("es", CircuitBreaker.State.OPEN, CircuitBreaker.State.HALF_OPEN);
     assertThat(supervisor.pauseReasons("to-es")).containsExactly("es-breaker:es");
 
-    relay
-        .sinkListener()
+    esListener()
         .onBreakerStateChange("es", CircuitBreaker.State.HALF_OPEN, CircuitBreaker.State.CLOSED);
     assertThat(supervisor.pauseReasons("to-es")).isEmpty();
     assertThat(supervisor.pauseReasons("to-both")).isEmpty();
@@ -110,39 +116,35 @@ class PipelineSupervisorTest {
     // A late event from a sink of an earlier run (or of a pipeline that is not started) must not
     // pause a source that nothing would ever resume: the current sink's auth state decides.
     SinkKey key = new SinkKey("to-both", "es2", null);
-    relay.sinkListener().onAuthFailure(key, 401, "{}");
+    esListener().onAuthFailure(key, 401, "{}");
     assertThat(supervisor.pauseReasons("to-both")).isEmpty();
-    relay.sinkListener().onAuthRecovered(key);
+    esListener().onAuthRecovered(key);
     assertThat(supervisor.pauseReasons("to-both")).isEmpty();
   }
 
   @Test
   void restartDropsBreakerReasonsButKeepsTheDlqBlockedReason() {
-    relay
-        .sinkListener()
-        .onBreakerStateChange("es", CircuitBreaker.State.CLOSED, CircuitBreaker.State.OPEN);
-    relay.dlqListener().onBlocked("to-es", null);
+    esListener().onBreakerStateChange("es", CircuitBreaker.State.CLOSED, CircuitBreaker.State.OPEN);
+    dlqListener().onBlocked("to-es", null);
     assertThat(supervisor.pauseReasons("to-es"))
         .containsExactlyInAnyOrder("dlq-blocked", "es-breaker:es");
-    PipelineRuntime toEs =
-        supervisor.runtimes().stream().filter(r -> r.name().equals("to-es")).findFirst().get();
-    toEs.resetReasonsForStart();
+    runtime("to-es").resetReasonsForStart();
     // The new run's senders probe the breaker again; the DLQ writer's retries clear dlq-blocked.
     assertThat(supervisor.pauseReasons("to-es")).containsExactly("dlq-blocked");
   }
 
   @Test
   void blockedDlqPausesItsPipeline() {
-    relay.dlqListener().onBlocked("to-es", null);
+    dlqListener().onBlocked("to-es", null);
     assertThat(supervisor.pauseReasons("to-es")).containsExactly("dlq-blocked");
-    relay.dlqListener().onUnblocked("to-es");
+    dlqListener().onUnblocked("to-es");
     assertThat(supervisor.pauseReasons("to-es")).isEmpty();
   }
 
   @Test
   void eventsForUnknownPipelinesAreIgnored() {
-    relay.dlqListener().onBlocked("gone", null);
-    relay.sinkListener().onAuthFailure(new SinkKey("gone", "es", null), 403, "{}");
+    dlqListener().onBlocked("gone", null);
+    esListener().onAuthFailure(new SinkKey("gone", "es", null), 403, "{}");
     assertThat(supervisor.states()).containsOnlyKeys("to-es", "to-both", "to-es2");
   }
 
@@ -157,18 +159,7 @@ class PipelineSupervisorTest {
   @Test
   void noPipelinesIsReady() {
     KafkafimProperties empty = TestConfigs.withPipelines("{}");
-    PipelineSupervisor idle =
-        new PipelineSupervisor(
-            new PipelineRuntime.Context(
-                empty,
-                new ConsumerFactories(empty),
-                dlq,
-                sinks,
-                (cluster, identity) -> Preflight.Status.OK,
-                SourceOptions.defaults(),
-                Duration.ofSeconds(1),
-                Clock.systemUTC()),
-            List.of());
+    PipelineSupervisor idle = new PipelineSupervisor(empty, resources, List.of());
     assertThat(new PipelinesHealthIndicator(idle).health().getStatus()).isEqualTo(Status.UP);
   }
 
@@ -191,27 +182,22 @@ class PipelineSupervisorTest {
                   source: { cluster: k, topics: [a] }
                   routes: [ { default: true, cluster: es, identity: ghost, index: a } ]
             """);
-    DlqProducers brokenDlq =
-        new DlqProducers(
-            broken,
-            DlqListener.NONE,
-            new DlqOptions(
-                Duration.ofMillis(100),
-                Duration.ofSeconds(1),
-                Duration.ofMillis(500),
-                Duration.ofSeconds(1)));
-    PipelineSupervisor failing =
-        new PipelineSupervisor(
-            new PipelineRuntime.Context(
-                broken,
-                new ConsumerFactories(broken),
-                brokenDlq,
-                sinks,
-                new ElasticsearchAuthCheck(broken.elasticsearch().clusters()),
+    PipelineResources brokenResources =
+        new PipelineResources(
+            relay,
+            p -> new ElasticsearchAuthCheck(p.elasticsearch().clusters()),
+            new PipelineResources.Settings(
                 SourceOptions.defaults(),
                 Duration.ofSeconds(1),
-                Clock.systemUTC()),
-            List.of());
+                new DlqOptions(
+                    Duration.ofMillis(100),
+                    Duration.ofSeconds(1),
+                    Duration.ofMillis(500),
+                    Duration.ofSeconds(1)),
+                ClientSettings.DEFAULT,
+                BreakerSettings.DEFAULT,
+                Clock.systemUTC()));
+    PipelineSupervisor failing = new PipelineSupervisor(broken, brokenResources, List.of());
     failing.startPipeline("bad");
     long deadline = System.nanoTime() + Duration.ofSeconds(30).toNanos();
     while (failing.state("bad") == PipelineState.STARTING && System.nanoTime() < deadline) {
@@ -221,6 +207,6 @@ class PipelineSupervisorTest {
     assertThat(failing.failure("bad")).contains("identity 'ghost'").contains("cluster 'es'");
     failing.stop();
     assertThat(failing.state("bad")).isEqualTo(PipelineState.FAILED_PREFLIGHT);
-    brokenDlq.close();
+    brokenResources.close();
   }
 }
