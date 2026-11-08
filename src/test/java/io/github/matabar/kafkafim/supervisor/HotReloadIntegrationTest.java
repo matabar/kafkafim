@@ -71,7 +71,9 @@ class HotReloadIntegrationTest {
       new ElasticsearchContainer(
               DockerImageName.parse("docker.elastic.co/elasticsearch/elasticsearch:8.19.0"))
           .withPassword(ADMIN_PASSWORD)
-          .withEnv("ES_JAVA_OPTS", "-Xms512m -Xmx512m");
+          .withEnv("ES_JAVA_OPTS", "-Xms512m -Xmx512m")
+          // Parallel Failsafe forks can boot several nodes at once; the 60 s default is tight.
+          .withStartupTimeout(Duration.ofMinutes(3));
 
   private static final Duration TIMEOUT = Duration.ofSeconds(90);
   private static final JsonMapper JSON = JsonMapper.builder().build();
