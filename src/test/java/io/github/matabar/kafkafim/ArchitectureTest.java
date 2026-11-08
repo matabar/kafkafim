@@ -97,6 +97,21 @@ class ArchitectureTest {
 
   @ArchTest static final ArchRule dlqDependsOnlyOnConfigAndTelemetry = onlyConfigAndTelemetry(DLQ);
 
+  /**
+   * {@code telemetry} is an inner package (ADR-0003): it uses no kafkafim package but {@code
+   * config}, so {@code sink}, {@code source} and {@code dlq} could use it, and the supervisor
+   * adapts the building blocks' listener interfaces to it. Third-party libraries are unrestricted.
+   */
+  @ArchTest
+  static final ArchRule telemetryDependsOnlyOnConfig =
+      noClasses()
+          .that()
+          .resideInAPackage(TELEMETRY)
+          .should()
+          .dependOnClassesThat(
+              resideInAPackage(ROOT + "..").and(resideOutsideOfPackages(TELEMETRY, CONFIG)))
+          .allowEmptyShould(true);
+
   /** The supervisor wires everything; nothing depends on it (ADR-0003). */
   @ArchTest
   static final ArchRule nothingDependsOnSupervisor =

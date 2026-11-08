@@ -3,6 +3,7 @@ package io.github.matabar.kafkafim.supervisor;
 import io.github.matabar.kafkafim.dlq.DlqFailure;
 import io.github.matabar.kafkafim.dlq.DlqListener;
 import io.github.matabar.kafkafim.dlq.DlqRequest;
+import io.github.matabar.kafkafim.sink.es.BatchReport;
 import io.github.matabar.kafkafim.sink.es.FlushReason;
 import io.github.matabar.kafkafim.sink.es.SinkKey;
 import io.github.matabar.kafkafim.sink.es.SinkListener;
@@ -106,6 +107,16 @@ final class ListenerRelay {
       @Override
       public void onItemRetry(SinkKey key, int status, String errorType, int attempts) {
         forward(sinkListeners, l -> l.onItemRetry(key, status, errorType, attempts));
+      }
+
+      @Override
+      public void onItemError(SinkKey key, int status, String errorType) {
+        forward(sinkListeners, l -> l.onItemError(key, status, errorType));
+      }
+
+      @Override
+      public void onBatchSent(SinkKey key, BatchReport report) {
+        forward(sinkListeners, l -> l.onBatchSent(key, report));
       }
 
       @Override

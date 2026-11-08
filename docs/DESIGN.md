@@ -335,8 +335,8 @@ restart. Elasticsearch answers 405 on that path when security is disabled; any s
 other than 401, 403 and 5xx passes. The consumer group's permission is not checked
 before the first join; a denied join is retried by the source every 10s and logged.
 
-Readiness (`pipelines` health contributor in the readiness group): up while at least one
-pipeline is `running` or `paused`; out of service while every pipeline is still
+Readiness (`pipelines` health contributor in the readiness group, next to `kafka`,
+§10): up while at least one pipeline is `running` or `paused`; out of service while every pipeline is still
 `starting` or has failed, so a rollout of a broken configuration stops at the first
 pod; up with zero pipelines configured (valid, with a startup warning). A breaker or
 auth pause never affects readiness.
@@ -990,44 +990,81 @@ secrets are read at startup; rotating one needs a pod restart.
 
 ### Metrics (all with `pipeline`, `kafka_cluster`; `topic`/`es_cluster`/`route` where it applies)
 
-- `kafkafim_records_consumed_total`, `kafkafim_bytes_consumed_total`
-- `kafkafim_docs_total{outcome=indexed|stale|dlq}`
-- `kafkafim_bulk_requests_total{status}`, `kafkafim_bulk_latency_seconds`,
-  `kafkafim_bulk_docs`, `kafkafim_bulk_bytes` (histograms)
-- `kafkafim_item_errors_total{error_type,retryable}`
-- `kafkafim_retries_total`, `kafkafim_breaker_state{es_cluster}`,
-  `kafkafim_auth_failures_total{es_cluster,identity}`
-- `kafkafim_consumer_lag{topic}` (owned partitions, end offsets polled every 10s)
-- `kafkafim_e2e_latency_seconds` (ack time minus Kafka record timestamp)
-- `kafkafim_batch_flush_total{reason=docs|bytes|age}`
-- `kafkafim_in_flight_bytes`, `kafkafim_assigned_partitions`
-- `kafkafim_pipeline_state{pipeline,state=starting|running|paused|failed_preflight|stopped}`
-  (1 for the current state, 0 for the others; `paused` means a supervisor reason: breaker
-  open, identity rejected or DLQ blocked, not the byte-budget backpressure)
-- `kafkafim_config_reload_total{result=success|failure}`, `kafkafim_config_generation`
-  (1 at startup, +1 per applied reload; §5.6)
-- `kafkafim_dlq_records_total`
+Exact label sets (`telemetry/TelemetryNames`, `telemetry/PipelineMeters`):
 
-Label discipline: `route` is the route's position or `name`, never the resolved
-index (daily indices would explode cardinality). Partition labels are opt-in.
+| Series | Labels besides `pipeline`, `kafka_cluster` | Fed by |
+|---|---|---|
+| `kafkafim_records_consumed_total`, `kafkafim_bytes_consumed_total` (key + value) | `topic` | every record the source delivers |
+| `kafkafim_docs_total` | `route`, `outcome=indexed\|stale\|dlq` | one per routed copy or failed document, when it is done (ES ack, or DLQ record acknowledged) |
+| `kafkafim_bulk_requests_total` | `es_cluster`, `status` (HTTP code, or `io_error` without a response) | every bulk request attempt |
+| `kafkafim_bulk_latency_seconds`, `kafkafim_bulk_docs`, `kafkafim_bulk_bytes` (histograms) | `es_cluster` | every answered bulk request |
+| `kafkafim_item_errors_total` | `es_cluster`, `error_type` (Elasticsearch error type, `status_<n>` without one), `retryable` | every failed item: retried, or dead-lettered as `es_error` / `version_conflict` |
+| `kafkafim_retries_total` | `es_cluster`, `scope=request\|item` | every retryable failure of a whole request, and of an item (an item whose poison bound is reached also counts its last failure) |
+| `kafkafim_auth_failures_total` | `es_cluster`, `identity` (`none` for an unauthenticated cluster) | every 401/403 response |
+| `kafkafim_batch_flush_total` | `es_cluster`, `reason=docs\|bytes\|age\|explicit` | every sealed batch (`explicit`: revoke, stop) |
+| `kafkafim_e2e_latency_seconds` (histogram) | — | every Elasticsearch ack: ack time minus the Kafka record timestamp (DLQ'd documents are not counted) |
+| `kafkafim_consumer_lag` | `topic` | owned partitions summed: log end offset minus committed offset, polled every 10s |
+| `kafkafim_in_flight_bytes`, `kafkafim_assigned_partitions`, `kafkafim_kafka_connected` (1/0) | — | the pipeline's running source, read on scrape |
+| `kafkafim_dlq_records_total` | `error_type` | every DLQ record the broker acknowledged |
+| `kafkafim_breaker_state` | only `es_cluster`: 0 closed, 1 half-open, 2 open | the breakers the pipelines send through (the worst one while a reload leaves two generations alive) |
+| `kafkafim_pipeline_state` | only `pipeline`, `state=starting\|running\|paused\|failed_preflight\|stopped` | 1 for the current state, 0 for the others; `paused` means a supervisor reason: breaker open, identity rejected or DLQ blocked, not the byte-budget backpressure |
+| `kafkafim_config_reload_total{result=success\|failure}`, `kafkafim_config_generation` | none | §5.6 (1 at startup, +1 per applied reload) |
+
+Label discipline: `route` is the route's `name`, or its zero-based position, never the
+resolved index (daily indices would explode cardinality); `route="none"` counts
+documents that failed before a route was selected (`decode`, `missing_id`,
+`bad_timestamp`, `no_route`). There are no partition labels. Series known from the
+configuration (per topic, per route and outcome, the bulk histograms per cluster, the
+gauges) exist from startup with 0; status and error-type series appear with their first
+event. On a reload (§5.6, ADR-0028) a removed pipeline loses every series, an added one
+gains them, a pipeline whose labels changed (source cluster, topics, routes, clusters)
+gets fresh series, and an unchanged one keeps its counters across a restart.
+
+Lag is read by one extra consumer per running pipeline (its identity and group, never
+joining the group) every 10s; a partition without a committed offset yet is left out,
+and a failed poll keeps the previous values. `kafkafim_kafka_connected` is 1 while every
+consumer of the pipeline holds a broker connection (kafka-clients'
+`connection-count`); a stopped pipeline reads 0, as do its in-flight bytes and
+assigned partitions.
 
 ### Traces
 
-One span per bulk request (`es.bulk`: cluster, docs, bytes, status, retries) under a
-`pipeline.batch` span. Incoming `traceparent` Kafka headers are attached as **span
-links**, not parents. Head sampling 1% of batches; errors always. No per-document spans.
+One `pipeline.batch` span per sealed bulk batch (kind consumer, from sealing to the end
+of its last request; attributes `kafkafim.pipeline`, `kafkafim.kafka_cluster`,
+`kafkafim.es_cluster`, `kafkafim.es_identity`, `kafkafim.flush_reason`,
+`kafkafim.docs`, `kafkafim.bytes`, `kafkafim.requests`) with one `es.bulk` child per
+bulk request, retries and 413 halves included (kind client; `kafkafim.es_cluster`,
+`kafkafim.docs`, `kafkafim.bytes`, `http.response.status_code` when answered,
+`kafkafim.retries` = failed attempts of that request before it, `kafkafim.item_errors`).
+A failure sets `error.type` (`io_error`, `malformed_response`, the HTTP status, or
+`item_errors`) and the span status. Incoming `traceparent` Kafka headers of the batch's
+records are attached as **span links** (distinct, at most 128), not parents. Head
+sampling: 1% of batches (`management.tracing.sampling.probability`); a failed batch is
+always kept (`telemetry/BatchSampler`). Spans are recorded when the batch ends, with
+their real timestamps, which is what lets the sampler see the failure (ADR-0029); a
+batch still retrying has no span yet. No per-document spans; no trace context is sent
+to Elasticsearch.
 
 ### Logs
 
 ECS-structured JSON on stdout (Spring Boot structured logging); OTLP log export
-optional. One line per bulk failure (first N item errors), per DLQ record, per
-reload. Document bodies are never logged by default.
+optional. One WARN line per bulk response with failed items, naming the first 5 (position,
+status, error type, Elasticsearch's error JSON cut to 512 characters), plus the existing
+line per request-level retry; one WARN line per DLQ record (pipeline, source
+coordinates, error type, attempts, target, where the DLQ record landed; never the reason
+or the record); one INFO or ERROR line per reload (§5.6). Document bodies are never
+logged by default.
 
 ### Health
 
-- `/actuator/health/liveness`: process alive, supervisor running.
-- `/actuator/health/readiness`: config bound and valid, Kafka clients connected.
-  Deliberately **not** gated on ES health.
+- `/actuator/health/liveness`: `livenessState` and `supervisor` (up while the pipeline
+  supervisor runs, and while a graceful shutdown drains it). Nothing about pipelines,
+  Kafka or Elasticsearch: a restart would not fix them.
+- `/actuator/health/readiness`: `readinessState` (config bound and valid: an invalid
+  configuration never finishes startup), `pipelines` (§4.6) and `kafka` (Kafka clients
+  connected: up while at least one started pipeline's consumers hold broker
+  connections, or while none is started; out of service when every started pipeline
+  lost its brokers). Deliberately **not** gated on ES health.
 
 ### Shipped with the repo
 
