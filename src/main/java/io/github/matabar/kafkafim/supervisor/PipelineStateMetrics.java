@@ -14,8 +14,8 @@ import java.util.Set;
  * {@code kafkafim_pipeline_state{pipeline,state}} (DESIGN §4.6, §10): one gauge per pipeline and
  * state, 1 for the pipeline's current state and 0 for the others, so an alert can fire on {@code
  * state="failed_preflight"} and a dashboard can sum by state. Pipelines added by a reload get their
- * gauges, removed ones lose them. The rest of the §10 meters belong to the telemetry slice ({@link
- * SupervisorListener} and the sink and DLQ listeners are its hooks).
+ * gauges, removed ones lose them. The rest of the §10 meters are in {@code telemetry}, fed by
+ * {@link TelemetryListener} and {@link TelemetryBinder}.
  */
 final class PipelineStateMetrics implements MeterBinder {
 

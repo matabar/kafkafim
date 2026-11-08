@@ -5,6 +5,8 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -15,6 +17,8 @@ import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.common.KafkaException;
+import org.apache.kafka.common.Metric;
+import org.apache.kafka.common.MetricName;
 import org.apache.kafka.common.PartitionInfo;
 import org.apache.kafka.common.TopicPartition;
 import org.jspecify.annotations.Nullable;
@@ -76,6 +80,9 @@ public final class KafkaPipelineSource implements SmartLifecycle {
   private final OffsetTracker tracker;
   private final Map<Consumer<?, ?>, Long> lastCommitNanos = new ConcurrentHashMap<>();
   private final Object lifecycle = new Object();
+  private final Object lagLock = new Object();
+  private @Nullable Consumer<byte[], byte[]> lagConsumer; // guarded by lagLock
+  private volatile @Nullable Consumer<byte[], byte[]> lagConsumerToWake;
   private volatile @Nullable ConcurrentMessageListenerContainer<byte[], byte[]> container;
   private volatile int concurrency;
 
@@ -199,6 +206,7 @@ public final class KafkaPipelineSource implements SmartLifecycle {
       tracker.revokeAll();
       lastCommitNanos.clear();
       container = null;
+      closeLagConsumer();
       pauseReasons.remove(STOPPING_REASON);
       LOG.info("Pipeline '{}': stopped", pipeline);
     }
@@ -299,6 +307,97 @@ public final class KafkaPipelineSource implements SmartLifecycle {
   /** Records delivered to the handler and not yet completed or abandoned. */
   public long inFlightRecords() {
     return tracker.pendingRecords();
+  }
+
+  /**
+   * Consumer lag of the partitions this source owns (DESIGN §10, {@code kafkafim_consumer_lag}):
+   * log end offset minus the group's committed offset, per partition. Partitions without a
+   * committed offset yet are left out. Uses one extra consumer of the pipeline's identity and group
+   * that never joins the group; it is created on first use and closed when the source stops. Call
+   * from one thread at a time (the telemetry poller); blocks up to {@code timeout} per request.
+   *
+   * @param timeout bound on each of the two broker requests
+   * @return lag per owned partition; empty while nothing is assigned
+   * @throws KafkaException if the broker cannot answer in time
+   */
+  public Map<TopicPartition, Long> consumerLag(Duration timeout) {
+    Set<TopicPartition> owned = new HashSet<>(assignedPartitions());
+    if (owned.isEmpty()) {
+      return Map.of();
+    }
+    synchronized (lagLock) {
+      if (container == null) {
+        return Map.of();
+      }
+      Consumer<byte[], byte[]> consumer = lagConsumer;
+      if (consumer == null) {
+        consumer =
+            consumerFactory.createConsumer(
+                source.groupId(), clientId + "-lag", null, ConsumerSettings.forPipeline(source));
+        lagConsumer = consumer;
+        lagConsumerToWake = consumer;
+      }
+      Map<TopicPartition, OffsetAndMetadata> committed = consumer.committed(owned, timeout);
+      Map<TopicPartition, Long> ends = consumer.endOffsets(owned, timeout);
+      Map<TopicPartition, Long> lag = new LinkedHashMap<>();
+      for (Map.Entry<TopicPartition, Long> end : ends.entrySet()) {
+        OffsetAndMetadata offset = committed.get(end.getKey());
+        if (offset != null && end.getValue() != null) {
+          lag.put(end.getKey(), Math.max(0, end.getValue() - offset.offset()));
+        }
+      }
+      return lag;
+    }
+  }
+
+  private void closeLagConsumer() {
+    Consumer<byte[], byte[]> waking = lagConsumerToWake;
+    if (waking != null) {
+      waking.wakeup(); // a lag request in progress gives up instead of delaying the stop
+    }
+    synchronized (lagLock) {
+      if (lagConsumer != null) {
+        try {
+          lagConsumer.close(Duration.ZERO);
+        } catch (KafkaException e) {
+          LOG.debug("Pipeline '{}': closing the lag consumer failed: {}", pipeline, e.toString());
+        }
+        lagConsumer = null;
+        lagConsumerToWake = null;
+      }
+    }
+  }
+
+  /**
+   * Whether every consumer of the running container holds at least one broker connection (kafka
+   * clients' {@code connection-count}), for readiness and {@code kafkafim_kafka_connected}. {@code
+   * false} while stopped or before the consumers exist.
+   */
+  public boolean kafkaConnected() {
+    ConcurrentMessageListenerContainer<byte[], byte[]> running = container;
+    if (running == null || !running.isRunning()) {
+      return false;
+    }
+    Map<String, Map<MetricName, ? extends Metric>> metrics = running.metrics();
+    if (metrics.isEmpty()) {
+      return false;
+    }
+    for (Map<MetricName, ? extends Metric> client : metrics.values()) {
+      if (!hasConnection(client)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  private static boolean hasConnection(Map<MetricName, ? extends Metric> client) {
+    for (Map.Entry<MetricName, ? extends Metric> metric : client.entrySet()) {
+      MetricName name = metric.getKey();
+      if ("connection-count".equals(name.name()) && "consumer-metrics".equals(name.group())) {
+        return metric.getValue().metricValue() instanceof Number count && count.doubleValue() > 0;
+      }
+    }
+    return false;
   }
 
   /** Whether the container's consumers are actually paused (not just requested). */

@@ -81,6 +81,26 @@ public interface SinkListener {
   default void onItemRetry(SinkKey key, int status, String errorType, int attempts) {}
 
   /**
+   * An item failed with an error that is not retried: the document goes to the DLQ ({@code
+   * es_error} or {@code version_conflict}; {@code kafkafim_item_errors_total{retryable=false}}).
+   *
+   * @param key the bulk stream
+   * @param status item status
+   * @param errorType Elasticsearch error type, for example {@code mapper_parsing_exception}, or
+   *     {@code status_<n>} when the item carried none
+   */
+  default void onItemError(SinkKey key, int status, String errorType) {}
+
+  /**
+   * A sealed batch is done: every action has an outcome or went back into the batcher for an item
+   * retry. Called on the sender thread, once per batch, for the {@code pipeline.batch} span.
+   *
+   * @param key the bulk stream
+   * @param report what the batch did
+   */
+  default void onBatchSent(SinkKey key, BatchReport report) {}
+
+  /**
    * A cluster's circuit breaker changed state ({@code kafkafim_breaker_state{es_cluster}}).
    *
    * @param cluster Elasticsearch cluster name

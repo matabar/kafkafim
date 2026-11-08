@@ -3,6 +3,7 @@ package io.github.matabar.kafkafim.sink.es;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatIllegalStateException;
+import static org.assertj.core.api.Assertions.tuple;
 import static org.awaitility.Awaitility.await;
 
 import io.github.matabar.kafkafim.config.Pipeline.OnVersionConflict;
@@ -244,6 +245,45 @@ class BulkSinkTest {
   }
 
   @Test
+  void failedItemsAreLoggedOnceWithoutTheirReason() throws Exception {
+    ch.qos.logback.classic.Logger logger =
+        (ch.qos.logback.classic.Logger) org.slf4j.LoggerFactory.getLogger(BulkSink.class);
+    ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent> appender =
+        new ch.qos.logback.core.read.ListAppender<>();
+    appender.start();
+    logger.addAppender(appender);
+    try {
+      FakeTransport transport =
+          new FakeTransport((request, call) ->
+              FakeTransport.items(
+                  request,
+                  sent ->
+                      sent.id().equals("ok")
+                          ? new String[] {"201"}
+                          : new String[] {"400", "document_parsing_exception"}));
+      BulkSink<String> sink = sink(settings(3, 1 << 20, HOUR, 1), transport);
+
+      submitAll(sink, "ok", "bad1", "bad2");
+
+      assertThat(sink.awaitIdle(WAIT)).isTrue();
+      List<String> lines =
+          appender.list.stream()
+              .map(ch.qos.logback.classic.spi.ILoggingEvent::getFormattedMessage)
+              .filter(m -> m.contains("items failed"))
+              .toList();
+      // Elasticsearch's reason quotes field values of the document: never logged (DESIGN §10).
+      assertThat(lines)
+          .singleElement()
+          .asString()
+          .contains("2 of 3 items failed")
+          .contains("#1 400 document_parsing_exception; #2 400 document_parsing_exception")
+          .doesNotContain("scripted");
+    } finally {
+      logger.detachAppender(appender);
+    }
+  }
+
+  @Test
   void versionConflictIsStaleUnderIgnoreAndDlqUnderDlq() throws Exception {
     FakeTransport.Handler conflict =
         (request, call) ->
@@ -265,6 +305,8 @@ class BulkSinkTest {
         .isInstanceOfSatisfying(
             ActionOutcome.Dlq.class,
             dlq -> assertThat(dlq.errorType()).isEqualTo(SinkErrorType.VERSION_CONFLICT));
+    // Only the dead-lettered conflict is a non-retryable item error; stale and create-dup are not.
+    assertThat(events.itemErrors).containsExactly("409 version_conflict_engine_exception");
   }
 
   @Test
@@ -482,6 +524,87 @@ class BulkSinkTest {
     assertThat(events.authRecovered).hasValue(1);
     assertThat(events.lastAuthReason).contains("security_exception");
     assertThat(breaker.getMetrics().getNumberOfFailedCalls()).isZero();
+  }
+
+  // ---- batch reports (spans, DESIGN §10) ----
+
+  @Test
+  void batchReportListsEveryRequestWithItsRetriesStatusAndItemErrors() throws Exception {
+    FakeTransport transport =
+        new FakeTransport((request, call) -> {
+          if (call == 1) {
+            throw new ConnectException("Connection refused");
+          }
+          if (call == 2) {
+            return FakeTransport.status(503);
+          }
+          return FakeTransport.items(
+              request,
+              sent ->
+                  sent.id().equals("bad")
+                      ? new String[] {"400", "mapper_parsing_exception"}
+                      : new String[] {"201"});
+        });
+    BulkSink<String> sink = sink(settings(3, 1 << 20, HOUR, 1), transport);
+
+    submitAll(sink, "a", "bad", "c");
+
+    assertThat(sink.awaitIdle(WAIT)).isTrue();
+    await().atMost(WAIT).until(() -> events.reports.size() == 1);
+    BatchReport report = events.reports.getFirst();
+    assertThat(report.reason()).isEqualTo(FlushReason.DOCS);
+    assertThat(report.docs()).isEqualTo(3);
+    assertThat(report.handles()).map(Object::toString).containsExactly("a", "bad", "c");
+    assertThat(report.failed()).isTrue();
+    assertThat(report.sealed()).isBeforeOrEqualTo(report.started());
+    assertThat(report.started()).isBeforeOrEqualTo(report.ended());
+    assertThat(report.requests())
+        .extracting(
+            BatchReport.Request::status,
+            BatchReport.Request::retries,
+            BatchReport.Request::itemErrors,
+            BatchReport.Request::docs)
+        .containsExactly(tuple(0, 0, 0, 3), tuple(503, 1, 0, 3), tuple(200, 2, 1, 3));
+    assertThat(report.requests().getFirst().error()).contains("Connection refused");
+    assertThat(report.requests().get(2).failed()).isTrue();
+    assertThat(events.itemErrors).containsExactly("400 mapper_parsing_exception");
+  }
+
+  @Test
+  void successfulBatchReportsOneRequestWithoutFailure() throws Exception {
+    BulkSink<String> sink =
+        sink(settings(2, 1 << 20, HOUR, 1), new FakeTransport((r, c) -> FakeTransport.allOk()));
+
+    submitAll(sink, "a", "b");
+
+    assertThat(sink.awaitIdle(WAIT)).isTrue();
+    await().atMost(WAIT).until(() -> events.reports.size() == 1);
+    BatchReport report = events.reports.getFirst();
+    assertThat(report.failed()).isFalse();
+    assertThat(report.requests())
+        .singleElement()
+        .satisfies(r -> {
+          assertThat(r.status()).isEqualTo(200);
+          assertThat(r.retries()).isZero();
+          assertThat(r.error()).isNull();
+        });
+    assertThat(events.itemErrors).isEmpty();
+  }
+
+  @Test
+  void splitBatchReportsEveryHalfAsItsOwnRequest() throws Exception {
+    FakeTransport transport =
+        new FakeTransport((request, call) ->
+            request.actions().size() > 2 ? FakeTransport.status(413) : FakeTransport.allOk());
+    BulkSink<String> sink = sink(settings(4, 1 << 20, HOUR, 1), transport);
+
+    submitAll(sink, ids(4));
+
+    assertThat(sink.awaitIdle(WAIT)).isTrue();
+    await().atMost(WAIT).until(() -> events.reports.size() == 1);
+    assertThat(events.reports.getFirst().requests())
+        .extracting(BatchReport.Request::status, BatchReport.Request::docs)
+        .containsExactly(tuple(413, 4), tuple(200, 2), tuple(200, 2));
   }
 
   @Test
@@ -761,7 +884,19 @@ class BulkSinkTest {
     final AtomicInteger itemRetries = new AtomicInteger();
     final AtomicInteger authFailures = new AtomicInteger();
     final AtomicInteger authRecovered = new AtomicInteger();
+    final List<String> itemErrors = new CopyOnWriteArrayList<>();
+    final List<BatchReport> reports = new CopyOnWriteArrayList<>();
     volatile String lastAuthReason = "";
+
+    @Override
+    public void onItemError(SinkKey key, int status, String errorType) {
+      itemErrors.add(status + " " + errorType);
+    }
+
+    @Override
+    public void onBatchSent(SinkKey key, BatchReport report) {
+      reports.add(report);
+    }
 
     @Override
     public void onFlush(SinkKey key, FlushReason reason, int docs, long bytes) {

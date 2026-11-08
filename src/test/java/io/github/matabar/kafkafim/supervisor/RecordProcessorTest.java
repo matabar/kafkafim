@@ -12,8 +12,16 @@ import io.github.matabar.kafkafim.dlq.DlqWriter;
 import io.github.matabar.kafkafim.sink.es.ActionOutcome;
 import io.github.matabar.kafkafim.sink.es.BulkAction;
 import io.github.matabar.kafkafim.sink.es.SinkErrorType;
+import io.github.matabar.kafkafim.telemetry.KafkafimMeters;
+import io.github.matabar.kafkafim.telemetry.PipelineMeters;
+import io.github.matabar.kafkafim.telemetry.PipelineSpec;
+import io.github.matabar.kafkafim.telemetry.SourceProbe;
+import io.github.matabar.kafkafim.telemetry.TelemetryNames;
+import io.micrometer.core.instrument.Timer;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
@@ -21,7 +29,9 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.common.header.internals.RecordHeader;
 import org.apache.kafka.common.header.internals.RecordHeaders;
@@ -138,6 +148,10 @@ class RecordProcessorTest {
   }
 
   private RecordProcessor processor(String pipelines) {
+    return processor(pipelines, PipelineMeters.NOOP);
+  }
+
+  private RecordProcessor processor(String pipelines, PipelineMeters meters) {
     CompiledPipeline compiled = PipelineMapping.compile("p", TestConfigs.withPipelines(pipelines));
     sinks.clear();
     for (RouteTarget.StreamKey key : compiled.streams().keySet()) {
@@ -151,7 +165,8 @@ class RecordProcessorTest {
           dlq.add(sent);
           return sent.future();
         },
-        Clock.fixed(NOW, ZoneOffset.UTC));
+        Clock.fixed(NOW, ZoneOffset.UTC),
+        meters);
   }
 
   private static FakeRecord record(String value) {
@@ -182,6 +197,49 @@ class RecordProcessorTest {
 
   private void ack(BulkAction<RecordProcessor.DocumentRef> action) {
     processor.onOutcome(action, ActionOutcome.INDEXED);
+  }
+
+  @Test
+  void documentsAreCountedPerRouteAndOutcomeWithTheirEndToEndLatency() {
+    SimpleMeterRegistry registry = new SimpleMeterRegistry();
+    try (KafkafimMeters meters = new KafkafimMeters(registry, Duration.ofHours(1))) {
+      meters.sync(
+          Map.of(
+              "p",
+              new PipelineSpec(
+                  "k", List.of("t"), List.of("0", "1"), Set.of("es", "es2"), SourceProbe.NONE)),
+          Set.of("es", "es2"),
+          cluster -> null);
+      processor = processor(FAN_OUT, meters.pipeline("p"));
+
+      FakeRecord both = record("{\"id\":\"a\",\"region\":\"eu\",\"copy\":1,\"tenant\":\"x\"}");
+      FakeRecord broken = record("not json");
+      processor.process(List.of(both, broken));
+      processor.onOutcome(actions(ES).getFirst(), ActionOutcome.INDEXED);
+      processor.onOutcome(
+          actions(ES2).getFirst(),
+          new ActionOutcome.Dlq(SinkErrorType.ES_ERROR, "{}", 400, 1, NOW));
+      dlq.forEach(Sent::ack);
+
+      assertThat(docs(registry, "0", "indexed")).isOne();
+      assertThat(docs(registry, "1", "dlq")).isOne();
+      assertThat(docs(registry, TelemetryNames.NO_ROUTE, "dlq")).isOne();
+      assertThat(docs(registry, "1", "indexed")).isZero();
+      Timer e2e = registry.get(TelemetryNames.E2E_LATENCY).tag("pipeline", "p").timer();
+      assertThat(e2e.count()).isOne(); // only Elasticsearch acknowledgements
+      assertThat(e2e.max(TimeUnit.MILLISECONDS))
+          .isEqualTo((double) (NOW.toEpochMilli() - RECORD_TS));
+      assertThat(both.isComplete()).isTrue();
+      assertThat(broken.isComplete()).isTrue();
+    }
+  }
+
+  private static double docs(SimpleMeterRegistry registry, String route, String outcome) {
+    return registry
+        .get(TelemetryNames.DOCS)
+        .tags("pipeline", "p", "kafka_cluster", "k", "route", route, "outcome", outcome)
+        .counter()
+        .count();
   }
 
   @Test

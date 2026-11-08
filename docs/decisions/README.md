@@ -32,3 +32,4 @@ One file per decision, MADR-style. Supersede with a new ADR rather than editing 
 | [0026](0026-bulk-retry-loop-in-the-sink.md) | Bulk retries are a small loop in the sink; Resilience4j supplies the breaker and the backoff (refines 0016) |
 | [0027](0027-dlq-record-timestamp-and-headers.md) | DLQ records carry the send time; the original timestamp and a fresh `kafkafim.*` header set travel in headers (refines 0011) |
 | [0028](0028-hot-reload-rereads-config-data-and-shares-building-blocks-per-cluster.md) | Hot reload re-runs Spring Boot's config data loading and shares building blocks per cluster definition (refines 0012) |
+| [0029](0029-batch-spans-recorded-at-batch-end-failed-batches-always-sampled.md) | Batch spans are recorded when the batch ends, failed batches are always sampled, and the supervisor feeds telemetry (refines 0013) |

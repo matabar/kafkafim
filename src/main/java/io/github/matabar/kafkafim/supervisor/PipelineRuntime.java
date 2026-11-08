@@ -14,6 +14,7 @@ import io.github.matabar.kafkafim.source.kafka.MissingTopicsException;
 import io.github.matabar.kafkafim.source.kafka.SourceOptions;
 import io.github.matabar.kafkafim.source.kafka.SourceRecord;
 import io.github.matabar.kafkafim.source.kafka.SourceRecordHandler;
+import io.github.matabar.kafkafim.telemetry.PipelineMeters;
 import io.github.resilience4j.circuitbreaker.CircuitBreaker;
 import java.time.Clock;
 import java.time.Duration;
@@ -29,6 +30,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 import java.util.function.Predicate;
+import java.util.function.Supplier;
 import org.apache.kafka.common.KafkaException;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.errors.AuthenticationException;
@@ -101,6 +103,7 @@ final class PipelineRuntime {
 
   private final String name;
   private final Consumer<PipelineRuntime> onChange;
+  private final Supplier<PipelineMeters> meters;
   // Replaced only by reconfigure(), while stopped; read by the start thread and event handlers.
   private volatile Context context;
   private volatile Pipeline config;
@@ -118,8 +121,23 @@ final class PipelineRuntime {
       Map.of(); // guarded by lock
 
   PipelineRuntime(String name, Context context, Consumer<PipelineRuntime> onChange) {
+    this(name, context, onChange, () -> PipelineMeters.NOOP);
+  }
+
+  /**
+   * Creates a stopped pipeline.
+   *
+   * @param meters the pipeline's current meters, looked up at every start (a reload may relabel
+   *     them)
+   */
+  PipelineRuntime(
+      String name,
+      Context context,
+      Consumer<PipelineRuntime> onChange,
+      Supplier<PipelineMeters> meters) {
     this.name = name;
     this.onChange = onChange;
+    this.meters = meters;
     apply(context);
   }
 
@@ -331,8 +349,10 @@ final class PipelineRuntime {
         }
         Map<RouteTarget.StreamKey, RecordProcessor.ActionSink> actionSinks = new LinkedHashMap<>();
         opened.forEach((key, sink) -> actionSinks.put(key, adapt(sink)));
+        PipelineMeters pipelineMeters = meters.get();
         processor[0] =
-            new RecordProcessor(compiled, actionSinks::get, writer::send, context.clock());
+            new RecordProcessor(
+                compiled, actionSinks::get, writer::send, context.clock(), pipelineMeters);
         created =
             new KafkaPipelineSource(
                 name,
@@ -340,7 +360,7 @@ final class PipelineRuntime {
                 context
                     .consumerFactories()
                     .get(config.source().cluster(), config.source().identity()),
-                new Handler(processor[0], actionSinks.values()),
+                new Handler(processor[0], actionSinks.values(), pipelineMeters),
                 context.sourceOptions());
       } catch (IllegalArgumentException | KafkaException e) {
         closeSinks(opened, Duration.ZERO);
@@ -602,15 +622,21 @@ final class PipelineRuntime {
 
     private final RecordProcessor processor;
     private final Collection<RecordProcessor.ActionSink> sinks;
+    private final PipelineMeters meters;
 
-    Handler(RecordProcessor processor, Collection<RecordProcessor.ActionSink> sinks) {
+    Handler(
+        RecordProcessor processor,
+        Collection<RecordProcessor.ActionSink> sinks,
+        PipelineMeters meters) {
       this.processor = processor;
       this.sinks = List.copyOf(sinks);
+      this.meters = meters;
     }
 
     @Override
     public void onBatch(List<SourceRecord> records) {
       for (SourceRecord record : records) {
+        meters.consumed(record.record().topic(), record.sizeBytes());
         processor.process(InboundRecord.of(record));
       }
     }

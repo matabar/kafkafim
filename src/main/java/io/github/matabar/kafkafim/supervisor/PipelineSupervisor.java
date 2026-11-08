@@ -2,12 +2,16 @@ package io.github.matabar.kafkafim.supervisor;
 
 import io.github.matabar.kafkafim.config.ConfigDiff;
 import io.github.matabar.kafkafim.config.KafkafimProperties;
+import io.github.matabar.kafkafim.sink.es.ElasticsearchSinks;
 import io.github.matabar.kafkafim.source.kafka.KafkaPipelineSource;
+import io.github.matabar.kafkafim.telemetry.KafkafimMeters;
+import io.github.matabar.kafkafim.telemetry.PipelineMeters;
 import io.github.resilience4j.circuitbreaker.CircuitBreaker;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -15,6 +19,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.Consumer;
+import java.util.function.Function;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -61,9 +66,11 @@ public final class PipelineSupervisor implements SmartLifecycle {
   /** Held by start, stop and apply: one of them at a time. */
   private final Object lifecycle = new Object();
 
+  private final Function<String, PipelineMeters> meters;
   private volatile Map<String, PipelineRuntime> pipelines;
   private volatile KafkafimProperties properties;
   private volatile boolean running;
+  private volatile boolean stopRequested;
 
   /**
    * Creates a supervisor over the startup configuration; nothing starts until {@link #start()}.
@@ -76,15 +83,33 @@ public final class PipelineSupervisor implements SmartLifecycle {
       KafkafimProperties properties,
       PipelineResources resources,
       List<SupervisorListener> listeners) {
+    this(properties, resources, listeners, name -> PipelineMeters.NOOP);
+  }
+
+  /**
+   * Creates a supervisor whose pipelines record the §10 meters.
+   *
+   * @param meters the meters of a pipeline by name ({@link KafkafimMeters#pipeline}), looked up
+   *     whenever a pipeline starts
+   */
+  PipelineSupervisor(
+      KafkafimProperties properties,
+      PipelineResources resources,
+      List<SupervisorListener> listeners,
+      Function<String, PipelineMeters> meters) {
     this.resources = resources;
     this.listeners = List.copyOf(listeners);
     this.properties = properties;
+    this.meters = meters;
     Map<String, PipelineRuntime> runtimes = new LinkedHashMap<>();
     for (String name : properties.pipelines().keySet()) {
-      runtimes.put(
-          name, new PipelineRuntime(name, resources.acquire(name, properties), this::stateChanged));
+      runtimes.put(name, newRuntime(name, resources.acquire(name, properties)));
     }
     this.pipelines = Collections.unmodifiableMap(runtimes);
+  }
+
+  private PipelineRuntime newRuntime(String name, PipelineRuntime.Context context) {
+    return new PipelineRuntime(name, context, this::stateChanged, () -> meters.apply(name));
   }
 
   /** Starts every pipeline in the background; each one runs its own preflight. */
@@ -101,6 +126,7 @@ public final class PipelineSupervisor implements SmartLifecycle {
 
   @Override
   public void stop() {
+    stopRequested = true;
     running = false;
     synchronized (lifecycle) {
       stopAll(pipelines.values());
@@ -125,6 +151,11 @@ public final class PipelineSupervisor implements SmartLifecycle {
   @Override
   public boolean isRunning() {
     return running;
+  }
+
+  /** Whether a shutdown stopped, or is stopping, the supervisor (liveness stays up meanwhile). */
+  public boolean isShuttingDown() {
+    return stopRequested;
   }
 
   @Override
@@ -193,7 +224,38 @@ public final class PipelineSupervisor implements SmartLifecycle {
     return runtime(pipeline).source();
   }
 
-  /** Runs {@code listener} after every reload that added or removed pipelines. */
+  /** The source of a started pipeline, or {@code null}, also for an unknown pipeline. */
+  @Nullable KafkaPipelineSource sourceOrNull(String pipeline) {
+    PipelineRuntime runtime = pipelines.get(pipeline);
+    return runtime == null ? null : runtime.source();
+  }
+
+  /**
+   * The worst state of the circuit breakers of an Elasticsearch cluster that the pipelines send
+   * through (open over half-open over closed), or {@code null} if no pipeline routes to it. After a
+   * reload, pipelines may use different configuration generations' breakers (DESIGN §5.6).
+   */
+  CircuitBreaker.@Nullable State breakerState(String cluster) {
+    Map<ElasticsearchSinks, Boolean> seen = new IdentityHashMap<>();
+    CircuitBreaker.State worst = null;
+    for (PipelineRuntime runtime : pipelines.values()) {
+      ElasticsearchSinks sinks = runtime.context().sinks().get(cluster);
+      if (sinks == null || seen.put(sinks, Boolean.TRUE) != null) {
+        continue;
+      }
+      CircuitBreaker.State state = sinks.breaker(cluster).getState();
+      if (worst == null
+          || KafkafimMeters.breakerValue(state) > KafkafimMeters.breakerValue(worst)) {
+        worst = state;
+      }
+    }
+    return worst;
+  }
+
+  /**
+   * Runs {@code listener} once a reload is applied (every applied reload, before the restarted and
+   * added pipelines start), so that metrics follow added, removed and relabelled pipelines.
+   */
   void onTopologyChange(Runnable listener) {
     topologyListeners.add(listener);
   }
@@ -228,7 +290,7 @@ public final class PipelineSupervisor implements SmartLifecycle {
       for (String name : next.pipelines().keySet()) {
         PipelineRuntime runtime = current.get(name);
         if (runtime == null) {
-          runtime = new PipelineRuntime(name, resources.acquire(name, next), this::stateChanged);
+          runtime = newRuntime(name, resources.acquire(name, next));
           toStart.add(runtime);
         } else if (diff.restarted().containsKey(name)) {
           PipelineRuntime.Context acquired = resources.acquire(name, next);
@@ -252,6 +314,7 @@ public final class PipelineSupervisor implements SmartLifecycle {
       }
       resources.retireStale(next);
       properties = next;
+      topologyListeners.forEach(PipelineSupervisor::runQuietly);
       if (running) {
         toStart.forEach(PipelineRuntime::start);
       } else {
@@ -259,8 +322,13 @@ public final class PipelineSupervisor implements SmartLifecycle {
         LOG.info("Shutdown in progress; {} pipeline(s) of the reload not started", toStart.size());
       }
     }
-    if (!diff.added().isEmpty() || !diff.removed().isEmpty()) {
-      topologyListeners.forEach(Runnable::run);
+  }
+
+  private static void runQuietly(Runnable listener) {
+    try {
+      listener.run();
+    } catch (RuntimeException e) {
+      LOG.warn("Topology listener {} failed", listener, e);
     }
   }
 
