@@ -28,6 +28,24 @@ required beyond a JDK 27 on `PATH`.
 ./mvnw spring-boot:run      # starts Kafka, Elasticsearch and Grafana via compose.yaml
 ```
 
+The stack also runs a one-shot `kafka-init` service that creates the topics the `local`
+profile's `demo` pipeline needs (`demo.events`, `demo.events.kafkafim-dlq`; 3 partitions,
+replication 1). kafkafim itself never creates topics ([ADR-0021](docs/decisions/0021-no-resource-provisioning.md)),
+and the local broker has topic auto-creation disabled to mirror production. Smoke test once
+the `demo` pipeline is `running`
+(`curl -s localhost:8080/actuator/prometheus | grep 'kafkafim_pipeline_state{pipeline="demo",state="running"}'`):
+
+```bash
+echo '{"id":"smoke-1","region":"eu","@timestamp":"2026-11-08T10:00:00Z"}' | \
+  docker compose run --rm -T --no-deps --entrypoint /opt/kafka/bin/kafka-console-producer.sh \
+  kafka-init --bootstrap-server kafka:19092 --topic demo.events
+curl -s 'localhost:9200/demo-*/_search?pretty'     # the document appears in demo-eu-<date>
+docker compose down -v                             # reset the stack and its data
+```
+
+(The native broker image ships no Kafka CLI scripts, hence the JVM `apache/kafka` image of the
+`kafka-init` service for topic and producer commands.)
+
 ```bash
 ./mvnw verify               # unit + integration tests (Testcontainers)
 ```
