@@ -169,7 +169,8 @@ without one), except that a pipeline without `document.timestamp-field` reading 
 that carries `kafkafim.source.timestamp` (a DLQ record being replayed, ADR-0027) uses that
 original timestamp. The supervisor also refuses to start a pipeline whose configuration
 would make Elasticsearch reject whole bulk requests (`op: create` with
-`document.version-field`, a blank ingest `pipeline`).
+`document.version-field`, a blank ingest `pipeline`); config validation rejects both
+already (§5.7), so this guards a tree that bypassed it.
 
 Pause reasons (`es-breaker:<cluster>`, `es-auth:<cluster>/<identity>`, `dlq-blocked`)
 belong to the pipeline, not to its source. Auth events are hints: the supervisor re-reads
@@ -825,7 +826,9 @@ are reported together:
 - **Routes**: in `route-mode: first` exactly one `default: true` route, and every other
   route has at least one `when` condition (an unconditional route would hide the rest);
   in `all` at most one default, and unconditional routes are allowed (fan-out). The
-  default route is last and has no conditions.
+  default route is last and has no conditions. A route's ingest `pipeline` is optional
+  but, when set, not blank (`pipeline: ""` would make Elasticsearch reject the whole bulk
+  request; omit it instead).
 - **Conditions**: exactly one subject (`field`, `header` or `topic`). A `field` takes
   exactly one of `equals`, `in` (non-empty), `exists`, `prefix`, `matches` (the regex
   must compile); a `header` takes `equals`; a `topic` takes nothing and must be one of

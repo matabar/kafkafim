@@ -570,6 +570,40 @@ class ConfigValidationTest {
     }
 
     @Test
+    void acceptsNamedIngestPipeline() {
+      assertValid(
+          pipeline(
+              """
+              routes:
+                - { default: true, cluster: es, index: a, pipeline: orders-enrich }
+              """));
+    }
+
+    @Test
+    void rejectsAnEmptyIngestPipeline() {
+      assertInvalid(
+          pipeline(
+              """
+              routes:
+                - { default: true, cluster: es, index: a, pipeline: "" }
+              """),
+          P
+              + ".routes[0].pipeline: must not be blank; omit it to index without an ingest"
+              + " pipeline");
+    }
+
+    @Test
+    void rejectsWhitespaceIngestPipeline() {
+      assertInvalid(
+          pipeline(
+              """
+              routes:
+                - { default: true, cluster: es, index: a, pipeline: "  " }
+              """),
+          P + ".routes[0].pipeline: must not be blank");
+    }
+
+    @Test
     void rejectsAnEmptyRouteList() {
       assertInvalid(pipeline("route-mode: first\n"), "pipelines[p].routes: must not be empty");
     }

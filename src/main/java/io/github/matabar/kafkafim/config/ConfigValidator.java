@@ -422,6 +422,12 @@ public final class ConfigValidator {
         checkCondition(routePath + ".when[" + c + "]", route.when().get(c), pipeline);
       }
       checkRouteTarget(routePath, route, properties);
+      if (route.pipeline() != null && route.pipeline().isBlank()) {
+        // Elasticsearch rejects the whole bulk request for an empty ingest pipeline name.
+        error(
+            routePath + ".pipeline",
+            "must not be blank; omit it to index without an ingest pipeline");
+      }
       if (route.index() != null) {
         for (String problem : IndexPatternSyntax.errors(route.index())) {
           error(routePath + ".index", problem);
