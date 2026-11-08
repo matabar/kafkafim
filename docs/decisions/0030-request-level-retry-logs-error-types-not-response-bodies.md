@@ -49,6 +49,10 @@ change. Option 4 is the leak.
   reason), never the raw body, for request-level and item-level auth failures.
   `SinkListener.onRequestRetry` carries a throwable only for a transport error; a
   malformed 2xx passes none, because the JSON parser's message can quote the body.
+- The same holds for what leaves the process in telemetry: a request's
+  `BatchReport.Request.error`, which becomes the `es.bulk` span's exception message
+  (ADR-0029), is the transport exception or the fixed text "malformed response", never
+  response text.
 
 ## Consequences
 Logs at the default level hold no Elasticsearch text that can quote documents. Diagnosing
