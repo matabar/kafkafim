@@ -30,7 +30,6 @@ class SecretRedactionIntegrationTest {
             .properties(
                 "spring.main.cloud-platform=none",
                 "spring.docker.compose.enabled=false",
-                "server.port=0",
                 K + ".bootstrap-servers[0]=k1:9092",
                 K + ".security-protocol=SASL_SSL",
                 K + ".ssl.truststore-location=/trust.p12",
@@ -45,7 +44,8 @@ class SecretRedactionIntegrationTest {
                 ES + ".identities.w.ssl.keystore-location=",
                 ES + ".identities.w.ssl.keystore-password=S3CRET-keystore");
 
-    assertThatThrownBy(application::run).isNotNull();
+    // A command-line argument beats application.yaml's 8080; a default property does not.
+    assertThatThrownBy(() -> application.run("--server.port=0")).isNotNull();
 
     assertThat(output.toString())
         .contains("APPLICATION FAILED TO START")

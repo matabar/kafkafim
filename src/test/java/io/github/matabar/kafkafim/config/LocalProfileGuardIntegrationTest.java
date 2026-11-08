@@ -20,11 +20,10 @@ class LocalProfileGuardIntegrationTest {
     SpringApplicationBuilder application =
         new SpringApplicationBuilder(KafkafimApplication.class)
             .properties(
-                "spring.main.cloud-platform=kubernetes",
-                "spring.docker.compose.enabled=false",
-                "server.port=0");
+                "spring.main.cloud-platform=kubernetes", "spring.docker.compose.enabled=false");
 
-    assertThatThrownBy(application::run)
+    // A command-line argument beats application.yaml's 8080; a default property does not.
+    assertThatThrownBy(() -> application.run("--server.port=0"))
         .isInstanceOf(IllegalStateException.class)
         .hasMessageContaining("SPRING_PROFILES_ACTIVE=kafkafim");
   }
@@ -35,11 +34,9 @@ class LocalProfileGuardIntegrationTest {
         new SpringApplicationBuilder(KafkafimApplication.class)
             .profiles("local")
             .properties(
-                "spring.main.cloud-platform=kubernetes",
-                "spring.docker.compose.enabled=false",
-                "server.port=0");
+                "spring.main.cloud-platform=kubernetes", "spring.docker.compose.enabled=false");
 
-    assertThatThrownBy(application::run)
+    assertThatThrownBy(() -> application.run("--server.port=0"))
         .isInstanceOf(IllegalStateException.class)
         .hasMessageContaining("'local' profile")
         .hasMessageContaining("SPRING_PROFILES_ACTIVE=kafkafim");
@@ -54,10 +51,9 @@ class LocalProfileGuardIntegrationTest {
             .properties(
                 "spring.main.cloud-platform=kubernetes",
                 "kafkafim.allow-inline-secrets=true",
-                "spring.docker.compose.enabled=false",
-                "server.port=0");
+                "spring.docker.compose.enabled=false");
 
-    assertThatThrownBy(application::run)
+    assertThatThrownBy(() -> application.run("--server.port=0"))
         .isInstanceOf(IllegalStateException.class)
         .hasMessageContaining("kafkafim.allow-inline-secrets=true is set on Kubernetes")
         .hasMessageContaining("configtree");
