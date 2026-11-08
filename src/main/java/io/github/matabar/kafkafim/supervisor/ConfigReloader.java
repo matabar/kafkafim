@@ -176,6 +176,9 @@ final class ConfigReloader implements SmartLifecycle {
       try {
         supervisor.apply(next, diff);
       } catch (RuntimeException e) {
+        if (!supervisor.isRunning()) {
+          throw e; // a shutdown began before apply took over: nothing was applied, no failure
+        }
         failures.increment();
         LOG.error(
             "Configuration reload ({}) failed while applying generation {}; pipelines may be"
@@ -197,7 +200,10 @@ final class ConfigReloader implements SmartLifecycle {
    * offending file, which stays out of the response and the log.
    */
   static String firstLine(Throwable e) {
-    String message = String.valueOf(e.getMessage()).strip();
+    if (e.getMessage() == null) {
+      return e.getClass().getSimpleName();
+    }
+    String message = e.getMessage().strip();
     int newline = message.indexOf('\n');
     return e.getClass().getSimpleName()
         + ": "

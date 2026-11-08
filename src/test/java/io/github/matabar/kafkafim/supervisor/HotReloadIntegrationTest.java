@@ -287,7 +287,6 @@ class HotReloadIntegrationTest {
   private ConfigurableApplicationContext start() {
     Map<String, Object> props = new LinkedHashMap<>();
     props.put("spring.docker.compose.enabled", false);
-    props.put("server.port", 0);
     props.put("management.otlp.metrics.export.enabled", false);
     props.put("management.tracing.sampling.probability", 0.0);
     props.put("spring.config.additional-location", "file:" + dir.resolve("config") + "/");
@@ -296,7 +295,8 @@ class HotReloadIntegrationTest {
         new SpringApplicationBuilder(KafkafimApplication.class)
             .profiles("reload-it") // reads application-reload-it.yaml; not `local`
             .properties(props)
-            .run();
+            // application.yaml sets 8080; a command-line argument beats it (defaults do not).
+            .run("--server.port=0");
     contexts.add(context);
     return context;
   }
