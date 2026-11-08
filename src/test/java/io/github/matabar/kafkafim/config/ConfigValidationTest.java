@@ -570,6 +570,59 @@ class ConfigValidationTest {
     }
 
     @Test
+    void acceptsNamedIngestPipeline() {
+      assertValid(
+          pipeline(
+              """
+              routes:
+                - { default: true, cluster: es, index: a, pipeline: orders-enrich }
+              """));
+    }
+
+    @Test
+    void rejectsAnEmptyIngestPipeline() {
+      assertInvalid(
+          pipeline(
+              """
+              routes:
+                - { default: true, cluster: es, index: a, pipeline: "" }
+              """),
+          P
+              + ".routes[0].pipeline: must not be blank; omit it to index without an ingest"
+              + " pipeline");
+    }
+
+    @Test
+    void rejectsWhitespaceIngestPipeline() {
+      assertInvalid(
+          pipeline(
+              """
+              routes:
+                - { default: true, cluster: es, index: a, pipeline: "  " }
+              """),
+          P
+              + ".routes[0].pipeline: must not be blank; omit it to index without an ingest"
+              + " pipeline");
+    }
+
+    @Test
+    void rejectsValuelessIngestPipeline() {
+      // Boot flattens a YAML null to "", so a bare `pipeline:` binds as blank, not as absent.
+      assertInvalid(
+          pipeline(
+              """
+              routes:
+                - default: true
+                  cluster: es
+                  index: a
+                  pipeline:
+              """),
+          P
+              + ".routes[0].pipeline: must not be blank; omit it to index without an ingest"
+              + " pipeline");
+    }
+
+    @Test
     void rejectsAnEmptyRouteList() {
       assertInvalid(pipeline("route-mode: first\n"), "pipelines[p].routes: must not be empty");
     }
