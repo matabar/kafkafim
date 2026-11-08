@@ -51,7 +51,8 @@ change. Option 4 is the leak.
   malformed 2xx passes none, because the JSON parser's message can quote the body.
 - The same holds for what leaves the process in telemetry: a request's
   `BatchReport.Request.error`, which becomes the `es.bulk` span's exception message
-  (ADR-0029), is the transport exception or the fixed text "malformed response", never
+  ([ADR-0029](0029-batch-spans-recorded-at-batch-end-failed-batches-always-sampled.md)),
+  is the transport exception or the fixed text "malformed response", never
   response text.
 
 ## Consequences

@@ -1053,12 +1053,14 @@ ECS-structured JSON on stdout (Spring Boot structured logging); OTLP log export
 optional. One WARN line per bulk response with failed items, naming the first 5 by
 position, status and error type (not Elasticsearch's reason, which quotes field values
 of the document; it travels in the DLQ record); one WARN line per request-level retry
-(429, 5xx, 401/403, unexpected status, unparsable 2xx body) with the status and
-Elasticsearch's error types, plus the security `reason` for 401/403, never other
-response text, which can quote field values (the response body, cut to 1024
-characters, only at DEBUG on the `io.github.matabar.kafkafim.sink.es.BulkSink` logger,
-ADR-0030); one WARN line per DLQ record (pipeline, source coordinates, error type,
-attempts, target, where the DLQ record landed; never the reason or the record); one INFO or ERROR line per reload (§5.6). Document bodies are never
+(429, 5xx, 401/403, unexpected status) with the status and Elasticsearch's error types,
+plus the security `reason` for 401/403, or, for an unparsable 2xx body, what was wrong
+with it; never other response text, which can quote field values (the response body,
+cut to 1024 characters, only at DEBUG on the
+`io.github.matabar.kafkafim.sink.es.BulkSink` logger, ADR-0030); one WARN line per DLQ
+record (pipeline, source coordinates, error type, attempts, target, where the DLQ
+record landed; never the reason or the record);
+one INFO or ERROR line per reload (§5.6). Document bodies are never
 logged by default.
 
 ### Health
