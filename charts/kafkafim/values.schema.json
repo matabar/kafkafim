@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "kafkafim chart values",
-  "description": "Shape of the values. Cross-field rules (pipeline/group assignment, secret mount paths, replica floor, image tag) are enforced by `fail` in templates/_helpers.tpl.",
+  "description": "Shape of the values. Cross-field rules (pipeline/group assignment, secret mount paths, replica floor, image tag without @) are enforced by `fail` in templates/_helpers.tpl.",
   "type": "object",
   "additionalProperties": false,
   "definitions": {
@@ -87,6 +87,11 @@
         "registry": { "type": "string" },
         "repository": { "type": "string", "minLength": 1 },
         "tag": { "type": "string" },
+        "digest": {
+          "description": "Image digest to pin, sha256:<64 lowercase hex>; empty for none. Not a full reference: the registry and repository come from image.registry and image.repository.",
+          "type": "string",
+          "pattern": "^(sha256:[a-f0-9]{64})?$"
+        },
         "pullPolicy": { "enum": ["Always", "IfNotPresent", "Never"] },
         "pullSecrets": {
           "type": "array",

@@ -25,7 +25,8 @@ in [DELIVERY.md](DELIVERY.md#importing-into-the-air-gapped-environment).
 image:
   registry: ghcr.io/matabar          # overridden to the internal registry in the air gap
   repository: kafkafim
-  tag: ""                            # defaults to .Chart.AppVersion
+  tag: ""                            # defaults to .Chart.AppVersion; a tag only, never "<tag>@sha256:..."
+  digest: ""                         # sha256:<64 hex> pins the exact signed image (DELIVERY.md)
   pullPolicy: IfNotPresent
   pullSecrets: []
 
@@ -99,6 +100,17 @@ For each `groups.<g>`:
   anti-affinity on hostname; topology spread across zones when enabled.
 - `HorizontalPodAutoscaler` (autoscaling/v2, CPU) when `autoscaling.enabled`;
   `replicas` is omitted from the Deployment in that case so Helm and the HPA do not fight.
+- Image: `<registry>/<repository>:<tag>`, the tag defaulting to the chart's
+  `appVersion`. With `image.digest` set the image is pinned:
+  `<registry>/<repository>@<digest>`, or `<registry>/<repository>:<tag>@<digest>`
+  when `image.tag` is also set (the runtime pulls by digest; the tag is only there
+  for people reading `kubectl get pod -o yaml`). The tag is not added from
+  `appVersion` next to a digest, so a reference never shows a tag the values did not
+  name. The `app.kubernetes.io/version` label comes from `image.tag` or `appVersion`,
+  never the digest, made a valid label value: characters outside `[A-Za-z0-9_.-]`
+  (such as `+`) become `_`, cut to 63 characters, leading and trailing
+  non-alphanumerics dropped. It is on the resources, not on the
+  pod template, so a version change alone does not roll the pods.
 - Names: a group's resources are `<fullname>-<group>`; with the conventional release
   name `kafkafim` that is `kafkafim-<group>`. The ServiceAccount (and the opt-in
   `NetworkPolicy` / `ServiceMonitor`) are named `<fullname>` and select every group.
@@ -144,6 +156,9 @@ For each `groups.<g>`:
   group must have a `resources.requests.cpu` (the CPU HPA has nothing to scale on
   otherwise).
 - `image.tag` or `.Chart.AppVersion` is non-empty.
+- `image.tag` contains no `@`: a `<tag>@sha256:...` there would make an invalid
+  version label; the digest belongs in `image.digest`, which the schema requires to
+  be `sha256:<64 lowercase hex>` (or empty), not a full image reference.
 - `<fullname>-<group>` fits in 63 characters (Service names are DNS labels; the
   chart fails rather than truncate, which could make two groups collide).
 - `podLabels` does not set a selector label (`app.kubernetes.io/name`, `instance`,
@@ -232,7 +247,8 @@ against the real application.
 
 ## Chart testing
 
-- `charts/kafkafim/ci/*-values.yaml`: minimal, two-groups, hpa, network-policy.
+- `charts/kafkafim/ci/*-values.yaml`: minimal, two-groups, hpa, network-policy,
+  digest (internal registry, image pinned by digest).
 - `helm lint`, `helm template` + `kubeconform -strict`, `helm unittest` asserting the
   pipeline-subset rendering, every `fail` condition, and that each `Deployment` sets
   `SPRING_PROFILES_ACTIVE=kafkafim` and the non-optional config location.
