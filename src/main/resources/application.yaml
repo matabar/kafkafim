@@ -28,8 +28,11 @@ management:
       probes:
         enabled: true
       group:
+        liveness:
+          include: livenessState,supervisor   # process alive, supervisor running (DESIGN §10)
         readiness:
-          include: readinessState,pipelines   # up while at least one pipeline runs (DESIGN §4.6)
+          include: readinessState,pipelines,kafka # >= 1 pipeline runs, Kafka clients connected;
+                                                  # never Elasticsearch (DESIGN §4.6, §10)
       show-components: always
       show-details: when-authorized
   # OTLP export headers are not set here. Spring Boot maps OTEL_EXPORTER_OTLP_HEADERS onto
@@ -42,7 +45,8 @@ management:
         step: 15s
   tracing:
     sampling:
-      probability: 0.01
+      probability: 0.01             # 1% of pipeline.batch traces; failed batches are always kept
+                                    # (telemetry/BatchSampler, ADR-0029)
   opentelemetry:
     tracing:
       export:

@@ -95,7 +95,9 @@ For each `groups.<g>`:
 - **No checksum annotation** on the pod template for the ConfigMap: pipeline edits
   hot-reload. Image, env, resources or mount changes roll the pods.
 - Probes: startup `/actuator/health/liveness` (failureThreshold 30 × 2s), liveness
-  `/actuator/health/liveness`, readiness `/actuator/health/readiness`.
+  `/actuator/health/liveness` (`livenessState`, `supervisor`), readiness
+  `/actuator/health/readiness` (`readinessState`, `pipelines`, `kafka`; never
+  Elasticsearch, DESIGN §10).
 - Strategy `RollingUpdate{maxSurge: 1, maxUnavailable: 0}`; preferred pod
   anti-affinity on hostname; topology spread across zones when enabled.
 - `HorizontalPodAutoscaler` (autoscaling/v2, CPU) when `autoscaling.enabled`;

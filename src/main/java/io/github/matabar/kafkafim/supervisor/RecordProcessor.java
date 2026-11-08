@@ -11,7 +11,11 @@ import io.github.matabar.kafkafim.route.Route;
 import io.github.matabar.kafkafim.route.Router;
 import io.github.matabar.kafkafim.sink.es.ActionOutcome;
 import io.github.matabar.kafkafim.sink.es.BulkAction;
+import io.github.matabar.kafkafim.telemetry.DocOutcome;
+import io.github.matabar.kafkafim.telemetry.PipelineMeters;
+import io.github.matabar.kafkafim.telemetry.TelemetryNames;
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -54,6 +58,7 @@ final class RecordProcessor {
   private final Function<RouteTarget.StreamKey, ActionSink> sinks;
   private final DeadLetters deadLetters;
   private final Clock clock;
+  private final PipelineMeters meters;
 
   /**
    * Creates the processor.
@@ -68,10 +73,24 @@ final class RecordProcessor {
       Function<RouteTarget.StreamKey, ActionSink> sinks,
       DeadLetters deadLetters,
       Clock clock) {
+    this(pipeline, sinks, deadLetters, clock, PipelineMeters.NOOP);
+  }
+
+  /**
+   * Creates the processor with meters: {@code kafkafim_docs_total} per route and outcome, and
+   * {@code kafkafim_e2e_latency_seconds} per acknowledged document.
+   */
+  RecordProcessor(
+      CompiledPipeline pipeline,
+      Function<RouteTarget.StreamKey, ActionSink> sinks,
+      DeadLetters deadLetters,
+      Clock clock,
+      PipelineMeters meters) {
     this.pipeline = Objects.requireNonNull(pipeline, "pipeline");
     this.sinks = Objects.requireNonNull(sinks, "sinks");
     this.deadLetters = Objects.requireNonNull(deadLetters, "deadLetters");
     this.clock = Objects.requireNonNull(clock, "clock");
+    this.meters = Objects.requireNonNull(meters, "meters");
   }
 
   /** Where routed actions go: one bulk sink per {@code (cluster, identity)}. */
@@ -123,7 +142,7 @@ final class RecordProcessor {
       switch (part) {
         case IndexPart index ->
             sinks.apply(index.action().handle().target().stream()).submit(index.action());
-        case DlqPart dlq -> deadLetter(inbound, dlq.request());
+        case DlqPart dlq -> deadLetter(inbound, dlq.request(), dlq.route());
       }
     }
   }
@@ -216,7 +235,8 @@ final class RecordProcessor {
                           null,
                           1,
                           now(),
-                          docIndex));
+                          docIndex,
+                          target.label()));
             }
           }
         }
@@ -232,8 +252,14 @@ final class RecordProcessor {
   void onOutcome(BulkAction<DocumentRef> action, ActionOutcome outcome) {
     DocumentRef ref = action.handle();
     switch (outcome) {
-      case ActionOutcome.Indexed indexed -> ref.record().complete();
-      case ActionOutcome.Stale stale -> ref.record().complete();
+      case ActionOutcome.Indexed indexed -> {
+        acknowledged(ref, DocOutcome.INDEXED);
+        ref.record().complete();
+      }
+      case ActionOutcome.Stale stale -> {
+        acknowledged(ref, DocOutcome.STALE);
+        ref.record().complete();
+      }
       case ActionOutcome.Dlq dlq -> {
         if (ref.record().isAbandoned()) {
           return; // re-delivered to the partition's next owner, which dead-letters it again
@@ -248,12 +274,22 @@ final class RecordProcessor {
                 action.index(),
                 Math.max(1, dlq.attempts()),
                 dlq.firstFailure(),
-                ref.docIndex()));
+                ref.docIndex()),
+            ref.target().label());
       }
     }
   }
 
-  private void deadLetter(InboundRecord inbound, DlqRequest request) {
+  /** Counts an Elasticsearch acknowledgement and its end-to-end latency (DESIGN §10). */
+  private void acknowledged(DocumentRef ref, DocOutcome outcome) {
+    meters.document(ref.target().label(), outcome);
+    long timestamp = ref.record().record().timestamp();
+    if (timestamp >= 0) {
+      meters.endToEnd(Duration.ofMillis(clock.millis() - timestamp));
+    }
+  }
+
+  private void deadLetter(InboundRecord inbound, DlqRequest request, String route) {
     CompletableFuture<?> sent;
     try {
       sent = deadLetters.send(request);
@@ -267,6 +303,7 @@ final class RecordProcessor {
     }
     sent.whenComplete((ignored, error) -> {
       if (error == null) {
+        meters.document(route, DocOutcome.DLQ);
         inbound.complete();
         return;
       }
@@ -299,6 +336,28 @@ final class RecordProcessor {
       int attempts,
       Instant firstFailure,
       @Nullable Integer docIndex) {
+    return dlq(
+        inbound,
+        errorType,
+        reason,
+        targetCluster,
+        targetIndex,
+        attempts,
+        firstFailure,
+        docIndex,
+        TelemetryNames.NO_ROUTE);
+  }
+
+  private DlqPart dlq(
+      InboundRecord inbound,
+      String errorType,
+      @Nullable String reason,
+      @Nullable String targetCluster,
+      @Nullable String targetIndex,
+      int attempts,
+      Instant firstFailure,
+      @Nullable Integer docIndex,
+      String route) {
     return new DlqPart(
         request(
             inbound,
@@ -308,7 +367,8 @@ final class RecordProcessor {
             targetIndex,
             attempts,
             firstFailure,
-            docIndex));
+            docIndex),
+        route);
   }
 
   private static DlqRequest request(
@@ -350,5 +410,6 @@ final class RecordProcessor {
 
   private record IndexPart(BulkAction<DocumentRef> action) implements Part {}
 
-  private record DlqPart(DlqRequest request) implements Part {}
+  /** A failure to dead-letter; {@code route} is the route label, or none before routing. */
+  private record DlqPart(DlqRequest request, String route) implements Part {}
 }
