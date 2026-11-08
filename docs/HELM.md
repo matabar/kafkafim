@@ -282,3 +282,4 @@ against the real application.
   Restarts drain first (in-flight records complete and are committed), so a reload
   re-delivers nothing that finished; Kafka still rebalances the restarted
   pipelines' groups across replicas.
+
