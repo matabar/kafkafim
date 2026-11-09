@@ -852,6 +852,37 @@ class ConfigValidationTest {
           P + ".document.timestamp-format=pattern:" + pattern);
     }
 
+    @Test
+    void rejectsDayPeriodWithoutHour() {
+      assertInvalid(
+          MINIMAL,
+          "pattern 'yyyy-MM-dd B' has a day period 'B' but no hour",
+          P + ".document.timestamp-format=pattern:yyyy-MM-dd B");
+      assertValid(MINIMAL, P + ".document.timestamp-format=pattern:yyyy-MM-dd h:mm B");
+    }
+
+    @Test
+    void onlyWarnsWhenTheSampleDoesNotRoundTrip() {
+      // Narrow 'S' is ambiguous for the sample's Saturday (and Sunday) but other days decode, so
+      // a failed self-check must not reject the pattern.
+      ConfigValidator.Result result =
+          ConfigValidator.validate(
+              ConfigTestSupport.bind(
+                  MINIMAL, P + ".document.timestamp-format=pattern:yyyy-MM-dd EEEEE"));
+      assertThat(result.isValid()).isTrue();
+      assertThat(result.warnings()).anyMatch(w -> w.contains("cannot format and parse back"));
+    }
+
+    @Test
+    void doesNotWarnOnQuotedZuluLiteral() {
+      ConfigValidator.Result result =
+          ConfigValidator.validate(
+              ConfigTestSupport.bind(
+                  MINIMAL, P + ".document.timestamp-format=pattern:yyyy-MM-dd'T'HH:mm:ss.SSS'Z'"));
+      assertThat(result.isValid()).isTrue();
+      assertThat(result.warnings()).noneMatch(w -> w.contains("timestamp-format"));
+    }
+
     @ParameterizedTest
     @ValueSource(strings = {"yyyy-MM-dd hh:mm", "yyyy-MM-dd mm", "yyyy-MM-dd a"})
     void rejectsPatternsThatNeverYieldCompleteTimes(String pattern) {
