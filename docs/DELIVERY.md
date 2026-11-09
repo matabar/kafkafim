@@ -43,14 +43,15 @@ Helm distribution model and is what `helm pull`/`helm push` and `skopeo` underst
 | Job | What it proves |
 |---|---|
 | `changes` (check "Detect changes") | Nothing; it classifies the pull request's changed paths for the jobs below (see "Docs-only pull requests"). On pushes to `main` it selects every job. |
-| `build` | `./mvnw verify`: compile, unit tests (Surefire defaults minus `*IntegrationTest`), integration tests (Failsafe, `*IntegrationTest`, Testcontainers Kafka + Elasticsearch; the classes run in three parallel JVMs, `it.forkCount` in `pom.xml`), ArchUnit package-boundary tests. Uploads test reports and the jar. |
-| `image` | The Dockerfile builds from the tested jar (no push); `hadolint` on the Dockerfile; the container starts read-only and answers `/actuator/health/liveness` within 60 s. |
-| `helm` | `helm lint`, `helm template` with every `charts/kafkafim/ci/*-values.yaml`, `kubeconform -strict` (v0.8.0) against Kubernetes schemas, `helm unittest` (helm-unittest 1.2.1) for the group-rendering logic and every template-time `fail`. Helm is pinned (`azure/setup-helm` `version:`, currently v4.3.1, the same in `release.yml`); helm-unittest is installed from its signed release tarball: the tarball and its `.prov` are fetched through the GitHub API asset endpoint (not `releases/download/`), checked against pinned SHA-256s, and Helm verifies the provenance with the release key committed at `.github/keys/helm-unittest-public-key.asc` (fingerprint pinned in `ci.yml`). Both tools are kept in an `actions/cache` keyed on their pins, so once a passing run has warmed it (caches unused for 7 days are evicted) an outage of github.com release downloads or of the Go module proxy cannot fail the job. Checkout, the Actions cache service, `azure/setup-helm` (get.helm.sh) and kubeconform's schemas (raw.githubusercontent.com) are still needed on every run. Skipped until the chart exists, and on pull requests that change none of `charts/**`, `.github/workflows/ci.yml` or `.github/keys/**`. |
+| `build` (check "Build and test") | `./mvnw verify -DskipITs`: Spotless, Checkstyle, compile, unit tests (Surefire defaults minus `*IntegrationTest`), ArchUnit package-boundary tests. Uploads the unit test reports and the jar. |
+| `integration` (check "Integration tests") | Failsafe only (`*IntegrationTest`, Testcontainers Kafka + Elasticsearch + LGTM): `./mvnw verify -Dtest=NONE -Dsurefire.failIfNoSpecifiedTests=false -Dspotless.check.skip=true -Dcheckstyle.skip=true`; the classes run in three parallel JVMs (`it.forkCount` in `pom.xml`). Runs in parallel with `build`, needing only `changes`; one job, not a matrix of shards, to stay well inside the Free plan's 20 concurrent jobs. Its first step starts pulling, in the background, every image named by a `DockerImageName.parse("...")` in `src/test` (so the list cannot drift from the tests), overlapping the pulls with Java setup and compilation; a test that starts a container before its pull finishes joins the daemon's in-flight pull. Uploads the Failsafe reports. |
+| `image` (check "Container image") | Needs only `build`, so it runs while `integration` is still running. The Dockerfile builds from `build`'s jar (no push); `hadolint` on the Dockerfile; the container starts read-only and answers `/actuator/health/liveness` within 60 s. |
+| `helm` (check "Helm chart") | `helm lint`, `helm template` with every `charts/kafkafim/ci/*-values.yaml`, `kubeconform -strict` (v0.8.0) against Kubernetes schemas, `helm unittest` (helm-unittest 1.2.1) for the group-rendering logic and every template-time `fail`. Helm is pinned (`azure/setup-helm` `version:`, currently v4.3.1, the same in `release.yml`); helm-unittest is installed from its signed release tarball: the tarball and its `.prov` are fetched through the GitHub API asset endpoint (not `releases/download/`), checked against pinned SHA-256s, and Helm verifies the provenance with the release key committed at `.github/keys/helm-unittest-public-key.asc` (fingerprint pinned in `ci.yml`). Both tools are kept in an `actions/cache` keyed on their pins, so once a passing run has warmed it (caches unused for 7 days are evicted) an outage of github.com release downloads or of the Go module proxy cannot fail the job. Checkout, the Actions cache service, `azure/setup-helm` (get.helm.sh) and kubeconform's schemas (raw.githubusercontent.com) are still needed on every run. Skipped until the chart exists, and on pull requests that change none of `charts/**`, `.github/workflows/ci.yml` or `.github/keys/**`. |
 
 ### Docs-only pull requests
 
 A pull request whose every changed path (both sides of a rename) is `*.md` outside
-`src/` (Maven packages `src/main/resources`), under `docs/`, or `LICENSE` skips `build` and therefore `image`; `helm` runs only if the
+`src/` (Maven packages `src/main/resources`), under `docs/`, or `LICENSE` skips `build`, `integration` and therefore `image`; `helm` runs only if the
 chart, `ci.yml` or `.github/keys/` changed. The paths are what merging would change
 (`git diff` between the PR merge commit and the base tip). The skip is a job-level `if:`,
 not a workflow-level `paths-ignore`: GitHub reports a job skipped by `if:` as a passing
@@ -59,9 +60,12 @@ itself fails, its outputs are empty and every job runs. Pushes to `main` and
 `release.yml` always run everything. Locally, docs-only changes still run
 `./mvnw -DskipTests verify` (see CONTRIBUTING.md).
 
-Branch protection on `main` (intended): PR required, "Build and test", "Container image"
-and "Helm chart" required, squash merge. As of 2026-11-09 `main` has no branch protection
-rule or ruleset, so none of this is enforced yet.
+Branch protection on `main` (intended): PR required, squash merge, and the checks
+"Build and test", "Integration tests", "Container image" and "Helm chart" required.
+`image` no longer waits for the integration tests, so both "Integration tests" and
+"Container image" must be required, so both must pass before a pull request merges.
+As of 2026-11-09 `main` has no branch protection rule or ruleset, so none of this is
+enforced yet.
 Dependabot (weekly, grouped) for Maven, GitHub Actions and the Docker base image.
 
 ## CD (`.github/workflows/release.yml`) on tag `v*`
@@ -171,7 +175,7 @@ Where `cosign` is unavailable inside the air gap, `skopeo copy --all --preserve-
 ## Local developer loop
 
 ```bash
-./mvnw verify                                # same as CI build job
+./mvnw verify                                # CI build + integration jobs together
 ```
 
 ```bash
