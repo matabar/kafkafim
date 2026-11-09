@@ -64,7 +64,7 @@ public final class PipelineSupervisor implements SmartLifecycle {
   private final List<SupervisorListener> listeners;
   private final List<Runnable> topologyListeners = new CopyOnWriteArrayList<>();
 
-  /** Held by start, stop and apply: one of them at a time. */
+  /** Held by start, stop, apply and retryFailedPreflight: one of them at a time. */
   private final Object lifecycle = new Object();
 
   private final Function<String, PipelineMeters> meters;
@@ -215,7 +215,10 @@ public final class PipelineSupervisor implements SmartLifecycle {
     runtime(pipeline).start();
   }
 
-  /** Stops one pipeline gracefully and waits for it. */
+  /**
+   * Stops one pipeline gracefully and waits for it. A pipeline in {@code failed_preflight} keeps
+   * that state, so the next accepted reload retries it ({@link #retryFailedPreflight}).
+   */
   public void stopPipeline(String pipeline) {
     runtime(pipeline).stop();
   }
