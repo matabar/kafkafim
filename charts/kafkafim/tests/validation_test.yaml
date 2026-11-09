@@ -139,6 +139,25 @@ tests:
     asserts:
       - notFailedTemplate: {}
 
+  # The schema requires neither image.tag nor image.digest: appVersion is a third way
+  # to name the image, so "tag or digest" would reject a valid install.
+  - it: accepts image.tag and image.digest both absent when the chart has an appVersion
+    set:
+      image.tag: null
+      image.digest: null
+    asserts:
+      - notFailedTemplate: {}
+
+  - it: fails when image.tag and image.digest are absent and the chart has no appVersion
+    chart:
+      appVersion: " "
+    set:
+      image.tag: null
+      image.digest: null
+    asserts:
+      - failedTemplate:
+          errorMessage: 'image.tag and image.digest are empty and the chart has no appVersion; set image.tag or image.digest'
+
   - it: fails when image.tag carries a digest, pointing at image.digest
     set:
       image.tag: 1.2.3@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
