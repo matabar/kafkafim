@@ -1155,7 +1155,7 @@ src/main/java/io/github/matabar/kafkafim/
   dlq/            producer, record format
   telemetry/      meters, spans, health indicators
 src/main/resources/application.yaml   profile-independent defaults (default profile: local)
-src/main/resources/application-local.yaml   local-dev sample pipeline (demo)
+src/main/resources/application-local.yaml   local-dev sample config: clusters + demo pipeline
 src/test/java/...                     unit + Testcontainers integration tests
 charts/kafkafim/                      production Helm chart
 deploy/local/                         Kubernetes demo stack (Kafka + ES operators, local only)
