@@ -31,8 +31,8 @@ import org.slf4j.LoggerFactory;
  *
  * <p>A missing {@code Write} ACL is usually not such a case in kafka-clients 4.2: {@code
  * CLUSTER_AUTHORIZATION_FAILED} on {@code InitProducerId} is abortable there. The producer fails
- * its pending batches, returns to {@code UNINITIALIZED} and retries {@code InitProducerId} on the
- * next send, so it recovers on its own once the ACL is granted. It turns fatal only when the error
+ * its pending batches, returns to {@code UNINITIALIZED} and retries {@code InitProducerId} from its
+ * I/O thread on its own, so it recovers once the ACL is granted. It turns fatal only when the error
  * reaches {@code TransactionManager.maybeTransitionToErrorState} through a failed batch. The
  * aborted batches still fail with {@code ClusterAuthorizationException}, so the producer is
  * replaced on the abortable path too: a cheap safety net, not a requirement. kafka-clients logs
