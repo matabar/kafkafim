@@ -74,10 +74,14 @@ class ElasticsearchSinksTest {
                     OnVersionConflict.IGNORE,
                     new Backoff(Duration.ofMillis(50), Duration.ofMillis(100), 2.0, 0.0)),
                 new Outcomes());
+        long start = System.nanoTime();
         sink.submit(doc("i", "1", "{}"));
 
         // With the 60s default no retry would be reported within the wait.
         await().atMost(Duration.ofSeconds(10)).until(() -> events.requestRetries.get() >= 2);
+        // Each attempt waited for the timeout: not an immediate connection error.
+        assertThat(Duration.ofNanos(System.nanoTime() - start))
+            .isGreaterThanOrEqualTo(Duration.ofMillis(600));
         sink.close(Duration.ZERO);
       }
     }

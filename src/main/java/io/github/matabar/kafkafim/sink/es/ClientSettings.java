@@ -7,7 +7,8 @@ import java.util.Objects;
 /**
  * HTTP client settings of a {@code (cluster, identity)} client. The connect and response timeouts
  * come from the cluster's {@code client} block ({@link #forCluster}); the pool is a code default
- * (DESIGN §7, ADR-0031).
+ * (DESIGN §7, ADR-0031). {@link ElasticsearchSinks} always replaces the two timeouts here with the
+ * cluster's; only callers that build a client directly (the preflight check) use them.
  *
  * @param connectTimeout TCP and TLS connect timeout per node
  * @param responseTimeout socket inactivity timeout while waiting for a response; a bulk request of

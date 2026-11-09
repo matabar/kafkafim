@@ -215,6 +215,7 @@ class ElasticsearchSinkIntegrationTest {
     // The cluster's client block sets the timeouts (ADR-0031): a paused node times out in 2s.
     ElasticsearchCluster.Client shortTimeouts =
         new ElasticsearchCluster.Client(Duration.ofSeconds(1), Duration.ofSeconds(2));
+    // Only the pool and lease timeout count here; the sink takes the timeouts from the cluster.
     ClientSettings smallPool =
         new ClientSettings(
             Duration.ofSeconds(5), Duration.ofSeconds(60), Duration.ofSeconds(2), 8, 32);
