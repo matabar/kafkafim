@@ -113,14 +113,23 @@ tests:
 
   # helm-unittest treats an empty chart.appVersion override as "not set", so a blank
   # one stands in for it (the chart trims the tag).
-  - it: fails when image.tag and the chart appVersion are both empty
+  - it: fails when image.tag, image.digest and the chart appVersion are all empty
     chart:
       appVersion: " "
     set:
       image.tag: ""
     asserts:
       - failedTemplate:
-          errorMessage: 'image.tag is empty and the chart has no appVersion; set image.tag'
+          errorMessage: 'image.tag and image.digest are empty and the chart has no appVersion; set image.tag or image.digest'
+
+  - it: accepts an empty appVersion and no image.tag when image.digest is set
+    chart:
+      appVersion: " "
+    set:
+      image.tag: ""
+      image.digest: sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+    asserts:
+      - notFailedTemplate: {}
 
   - it: accepts an empty appVersion when image.tag is set
     chart:
@@ -129,6 +138,25 @@ tests:
       image.tag: 1.2.3
     asserts:
       - notFailedTemplate: {}
+
+  # The schema requires neither image.tag nor image.digest: appVersion is a third way
+  # to name the image, so "tag or digest" would reject a valid install.
+  - it: accepts image.tag and image.digest both absent when the chart has an appVersion
+    set:
+      image.tag: null
+      image.digest: null
+    asserts:
+      - notFailedTemplate: {}
+
+  - it: fails when image.tag and image.digest are absent and the chart has no appVersion
+    chart:
+      appVersion: " "
+    set:
+      image.tag: null
+      image.digest: null
+    asserts:
+      - failedTemplate:
+          errorMessage: 'image.tag and image.digest are empty and the chart has no appVersion; set image.tag or image.digest'
 
   - it: fails when image.tag carries a digest, pointing at image.digest
     set:
