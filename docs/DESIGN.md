@@ -606,12 +606,12 @@ conditions hold, in order; the default route only when none did. No match and no
 default (possible only in `all`) sends the document to the DLQ with
 `error.type=no_route`.
 
-A route's optional `name` is its `route` label in metrics (§10); an unnamed
-route is labelled by its zero-based position (`0`, `1`, …). So that no two labels of a
-pipeline collide, a name is not blank, is unique within the pipeline, and two values
-are reserved: `none` (documents that failed before a route was selected) and any
-digits-only name (the positions of unnamed routes, so `1` would merge with the
-unnamed second route).
+A route's optional `name` is its `route` label in metrics (§10) and names it in log
+and error messages; an unnamed route is labelled by its zero-based position (`0`, `1`,
+…). So that no two labels of a pipeline collide, a name is not blank, is unique within
+the pipeline, and is not reserved: `none` labels documents that failed before a route
+was selected, and digits-only names are the positions of unnamed routes (so `1` would
+merge with the unnamed second route; `01` is rejected too, for simplicity).
 
 Index patterns use the Logstash syntax the team already knows: `%{field}` (a JSON
 pointer or a top-level name, taken literally, so `%{a.b}` is the property `"a.b"`)
