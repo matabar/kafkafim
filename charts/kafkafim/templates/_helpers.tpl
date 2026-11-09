@@ -80,8 +80,8 @@ app.kubernetes.io/component: {{ .group }}
 app.kubernetes.io/version: the image tag (or appVersion), never the digest, made a
 valid label value: any character outside [A-Za-z0-9_.-] (such as semver's "+")
 becomes "_", at most 63 characters, starting and ending with an alphanumeric
-character. Empty (and the label left out) only for a digest-pinned image with no
-image.tag and no appVersion.
+character. Empty, and the label left out, when there is no image.tag and no
+appVersion (a digest-pinned image) or the tag has no alphanumeric character.
 */}}
 {{- define "kafkafim.versionLabel" -}}
 {{- $v := regexReplaceAll "[^A-Za-z0-9_.-]" (include "kafkafim.imageTag" .) "_" | trunc 63 -}}
