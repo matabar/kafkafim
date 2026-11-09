@@ -1,0 +1,240 @@
+# promtool test rules deploy/grafana/alerts/kafkafim-alerts.test.yaml
+# Series use the label sets of /actuator/prometheus (DESIGN §10) plus job and instance.
+rule_files:
+  - kafkafim-alerts.yaml
+evaluation_interval: 30s
+
+tests:
+  - name: pipeline state
+    interval: 30s
+    input_series:
+      - series: 'kafkafim_pipeline_state{job="kafkafim",instance="pod-a",pipeline="orders",state="failed_preflight"}'
+        values: '0 1x10'
+      - series: 'kafkafim_pipeline_state{job="kafkafim",instance="pod-a",pipeline="clicks",state="paused"}'
+        values: '1x6 0x10'   # 3m paused: below the 5m for
+      - series: 'kafkafim_pipeline_state{job="kafkafim",instance="pod-b",pipeline="logs",state="paused"}'
+        values: '1x20'
+      - series: 'kafkafim_pipeline_state{job="kafkafim",instance="pod-a",pipeline="slow",state="starting"}'
+        values: '1x30'
+      - series: 'kafkafim_pipeline_state{job="kafkafim",instance="pod-a",pipeline="quick",state="starting"}'
+        values: '1x4 0x26'   # 2m in starting: normal
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: KafkafimPipelineFailedPreflight
+        exp_alerts:
+          - exp_labels: { severity: critical, pipeline: orders }
+            exp_annotations:
+              summary: "Pipeline orders failed its preflight checks"
+              description: "A configuration problem (missing topic, DLQ topic, index access or credentials) keeps the pipeline stopped until a reload changes it or the pod restarts."
+              runbook_url: https://github.com/matabar/kafkafim/blob/main/docs/RUNBOOK.md#55-failed_preflight-pipelines
+      - eval_time: 12m
+        alertname: KafkafimPipelineStuckStarting
+        exp_alerts:
+          - exp_labels: { severity: warning, pipeline: slow }
+            exp_annotations:
+              summary: "Pipeline slow still starting after 10m"
+              description: "Preflight keeps retrying a transient failure: Kafka or Elasticsearch is unreachable. The pod logs name the failing check."
+              runbook_url: https://github.com/matabar/kafkafim/blob/main/docs/RUNBOOK.md#31-pipeline-state
+      - eval_time: 6m
+        alertname: KafkafimPipelinePaused
+        exp_alerts:
+          - exp_labels: { severity: warning, pipeline: logs }
+            exp_annotations:
+              summary: "Pipeline logs paused for 5m"
+              description: "Paused for a supervisor reason: breaker open, identity rejected or DLQ blocked. The reason is in the pod's WARN \"Pipeline '<name>': pausing (<reason>)\" line."
+              runbook_url: https://github.com/matabar/kafkafim/blob/main/docs/RUNBOOK.md#31-pipeline-state
+
+  - name: lag growing, summed over pods
+    interval: 30s
+    input_series:
+      # Two pods; the sum grows by 20 records per 30s for 15m.
+      - series: 'kafkafim_consumer_lag{instance="pod-a",pipeline="orders",kafka_cluster="main",topic="orders"}'
+        values: '1000+10x30'
+      - series: 'kafkafim_consumer_lag{instance="pod-b",pipeline="orders",kafka_cluster="main",topic="orders"}'
+        values: '500+10x30'
+      # Growing but below the 1000-record floor: commit jitter, never fires.
+      - series: 'kafkafim_consumer_lag{instance="pod-a",pipeline="small",kafka_cluster="main",topic="small"}'
+        values: '0+10x30'
+      # Flat lag never fires.
+      - series: 'kafkafim_consumer_lag{instance="pod-a",pipeline="clicks",kafka_cluster="main",topic="clicks"}'
+        values: '500x30'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: KafkafimConsumerLagGrowing
+        exp_alerts: []
+      - eval_time: 12m
+        alertname: KafkafimConsumerLagGrowing
+        exp_alerts:
+          - exp_labels: { severity: warning, pipeline: orders, kafka_cluster: main, topic: orders }
+            exp_annotations:
+              summary: "Consumer lag of orders on orders growing"
+              description: "Lag has been rising for 5m+ (now 666.7m records/s of growth)."
+              runbook_url: https://github.com/matabar/kafkafim/blob/main/docs/RUNBOOK.md#58-consumer-lag-growing
+
+  - name: end-to-end p99 above target
+    interval: 30s
+    input_series:
+      # Every document takes between 30s and 60s.
+      - series: 'kafkafim_e2e_latency_seconds_bucket{pipeline="orders",kafka_cluster="main",le="10.0"}'
+        values: '0x40'
+      - series: 'kafkafim_e2e_latency_seconds_bucket{pipeline="orders",kafka_cluster="main",le="30.0"}'
+        values: '0x40'
+      - series: 'kafkafim_e2e_latency_seconds_bucket{pipeline="orders",kafka_cluster="main",le="60.0"}'
+        values: '0+100x40'
+      - series: 'kafkafim_e2e_latency_seconds_bucket{pipeline="orders",kafka_cluster="main",le="+Inf"}'
+        values: '0+100x40'
+      # Fast pipeline: everything under 1s.
+      - series: 'kafkafim_e2e_latency_seconds_bucket{pipeline="fast",kafka_cluster="main",le="1.0"}'
+        values: '0+100x40'
+      - series: 'kafkafim_e2e_latency_seconds_bucket{pipeline="fast",kafka_cluster="main",le="+Inf"}'
+        values: '0+100x40'
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: KafkafimE2eLatencyHigh
+        exp_alerts:
+          - exp_labels: { severity: warning, pipeline: orders, kafka_cluster: main }
+            exp_annotations:
+              summary: "End-to-end p99 of orders is 59.7s"
+              description: "Elasticsearch ack time minus the Kafka record timestamp, p99 over 5m, above the target for 10m."
+              runbook_url: https://github.com/matabar/kafkafim/blob/main/docs/RUNBOOK.md#58-consumer-lag-growing
+
+  - name: DLQ records
+    interval: 1m
+    input_series:
+      # Appears with its first record and keeps growing.
+      - series: 'kafkafim_dlq_records_total{instance="pod-a",pipeline="orders",kafka_cluster="main",error_type="decode"}'
+        values: '_x2 1+6x30'
+      # One burst, then nothing: stops firing once the 10m window has passed.
+      - series: 'kafkafim_dlq_records_total{instance="pod-a",pipeline="clicks",kafka_cluster="main",error_type="no_route"}'
+        values: '0 5 5x30'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: KafkafimDlqRecords
+        exp_alerts:
+          - exp_labels: { severity: warning, pipeline: orders, kafka_cluster: main, error_type: decode }
+            exp_annotations:
+              summary: "Pipeline orders writes decode records to the DLQ"
+              description: "DLQ records acknowledged for 10m+ (100m/s). The WARN DLQ log lines name each record's source coordinates."
+              runbook_url: https://github.com/matabar/kafkafim/blob/main/docs/RUNBOOK.md#56-dlq-filling-or-dlq-blocked
+
+  - name: pods without partitions and Kafka disconnects
+    interval: 1m
+    input_series:
+      - series: 'kafkafim_assigned_partitions{job="kafkafim",instance="pod-a",pipeline="orders",kafka_cluster="main"}'
+        values: '0x20'
+      - series: 'kafkafim_assigned_partitions{job="kafkafim",instance="pod-b",pipeline="orders",kafka_cluster="main"}'
+        values: '3x20'
+      # Stopped pipelines own nothing and are not connected; neither alert fires for them.
+      - series: 'kafkafim_assigned_partitions{job="kafkafim",instance="pod-a",pipeline="old",kafka_cluster="main"}'
+        values: '0x20'
+      - series: 'kafkafim_kafka_connected{job="kafkafim",instance="pod-a",pipeline="old",kafka_cluster="main"}'
+        values: '0x20'
+      - series: 'kafkafim_kafka_connected{job="kafkafim",instance="pod-a",pipeline="orders",kafka_cluster="main"}'
+        values: '0x20'
+      - series: 'kafkafim_kafka_connected{job="kafkafim",instance="pod-b",pipeline="orders",kafka_cluster="main"}'
+        values: '1x20'
+      - series: 'kafkafim_pipeline_state{job="kafkafim",instance="pod-a",pipeline="orders",state="running"}'
+        values: '1x20'
+      - series: 'kafkafim_pipeline_state{job="kafkafim",instance="pod-b",pipeline="orders",state="running"}'
+        values: '1x20'
+      - series: 'kafkafim_pipeline_state{job="kafkafim",instance="pod-a",pipeline="old",state="running"}'
+        values: '0x20'
+      - series: 'kafkafim_pipeline_state{job="kafkafim",instance="pod-a",pipeline="old",state="stopped"}'
+        values: '1x20'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: KafkafimNoAssignedPartitions
+        exp_alerts:
+          - exp_labels: { severity: info, job: kafkafim, instance: pod-a, pipeline: orders }
+            exp_annotations:
+              summary: "pod-a owns no partitions of orders"
+              description: "The pipeline runs on this pod but its consumers hold no partitions. Normal only when the group has more pods than partitions."
+              runbook_url: https://github.com/matabar/kafkafim/blob/main/docs/RUNBOOK.md#57-pipeline-shows-running-but-consumes-nothing
+      - eval_time: 5m
+        alertname: KafkafimKafkaDisconnected
+        exp_alerts:
+          - exp_labels: { severity: critical, job: kafkafim, instance: pod-a, pipeline: orders, kafka_cluster: main }
+            exp_annotations:
+              summary: "pod-a lost Kafka main for orders"
+              description: "A consumer of the pipeline holds no broker connection; kafka-clients reconnects with backoff."
+              runbook_url: https://github.com/matabar/kafkafim/blob/main/docs/RUNBOOK.md#53-kafka-unreachable
+
+  - name: breaker and 429s
+    interval: 1m
+    input_series:
+      - series: 'kafkafim_breaker_state{instance="pod-a",es_cluster="logs"}'
+        values: '0 2x10'
+      - series: 'kafkafim_breaker_state{instance="pod-b",es_cluster="logs"}'
+        values: '0x10'
+      - series: 'kafkafim_breaker_state{instance="pod-a",es_cluster="metrics"}'
+        values: '1x10'   # half-open does not fire
+      # logs: 2 of 100 requests per minute answered 429; metrics: 1 in 1000.
+      - series: 'kafkafim_bulk_requests_total{instance="pod-a",pipeline="orders",kafka_cluster="main",es_cluster="logs",status="200"}'
+        values: '0+98x20'
+      - series: 'kafkafim_bulk_requests_total{instance="pod-a",pipeline="orders",kafka_cluster="main",es_cluster="logs",status="429"}'
+        values: '0+2x20'
+      - series: 'kafkafim_bulk_requests_total{instance="pod-a",pipeline="orders",kafka_cluster="main",es_cluster="metrics",status="200"}'
+        values: '0+999x20'
+      - series: 'kafkafim_bulk_requests_total{instance="pod-a",pipeline="orders",kafka_cluster="main",es_cluster="metrics",status="429"}'
+        values: '0+1x20'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: KafkafimBreakerOpen
+        exp_alerts:
+          - exp_labels: { severity: critical, es_cluster: logs }
+            exp_annotations:
+              summary: "Circuit breaker for Elasticsearch logs is open"
+              description: "Every pipeline sending to this cluster is paused until the breaker closes."
+              runbook_url: https://github.com/matabar/kafkafim/blob/main/docs/RUNBOOK.md#51-elasticsearch-outage-circuit-breaker-open
+      - eval_time: 15m
+        alertname: KafkafimBulkRejectRatioHigh
+        exp_alerts:
+          - exp_labels: { severity: warning, es_cluster: logs }
+            exp_annotations:
+              summary: "2% of bulk requests to logs rejected (429)"
+              description: "Elasticsearch pushes back; kafkafim retries with backoff and lag grows."
+              runbook_url: https://github.com/matabar/kafkafim/blob/main/docs/RUNBOOK.md#58-consumer-lag-growing
+
+  - name: auth failures, including the first one
+    interval: 1m
+    input_series:
+      # The first 401 creates the series at 1; increase() alone would miss it.
+      - series: 'kafkafim_auth_failures_total{instance="pod-a",pipeline="orders",kafka_cluster="main",es_cluster="logs",identity="writer"}'
+        values: '_x3 1x20'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: KafkafimEsAuthFailures
+        exp_alerts: []
+      - eval_time: 4m
+        alertname: KafkafimEsAuthFailures
+        exp_alerts:
+          - exp_labels: { severity: critical, pipeline: orders, es_cluster: logs, identity: writer }
+            exp_annotations:
+              summary: "Elasticsearch logs rejects identity writer"
+              description: "401/403 responses for pipeline orders; it pauses until the credentials or roles work again. Nothing goes to the DLQ."
+              runbook_url: https://github.com/matabar/kafkafim/blob/main/docs/RUNBOOK.md#52-elasticsearch-authentication-failure-pipeline-paused
+      # No new failure for 5m: resolved.
+      - eval_time: 12m
+        alertname: KafkafimEsAuthFailures
+        exp_alerts: []
+
+  - name: reload failure
+    interval: 1m
+    input_series:
+      # Registered at startup with 0 (ConfigReloader).
+      - series: 'kafkafim_config_reload_total{job="kafkafim",instance="pod-a",result="failure"}'
+        values: '0x3 1x20'
+      - series: 'kafkafim_config_reload_total{job="kafkafim",instance="pod-a",result="success"}'
+        values: '0+1x20'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: KafkafimConfigReloadFailed
+        exp_alerts:
+          - exp_labels: { severity: warning, job: kafkafim, instance: pod-a }
+            exp_annotations:
+              summary: "Configuration reload rejected on pod-a"
+              description: "The pod keeps running the previous generation, and new pods fail to start with this configuration. The ERROR \"Configuration reload (...) rejected\" line lists the violations."
+              runbook_url: https://github.com/matabar/kafkafim/blob/main/docs/RUNBOOK.md#511-reload-failure-alert
+      - eval_time: 18m
+        alertname: KafkafimConfigReloadFailed
+        exp_alerts: []

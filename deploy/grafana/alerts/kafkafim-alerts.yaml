@@ -1,0 +1,174 @@
+# Prometheus alerting rules for kafkafim (DESIGN §10 "Shipped with the repo").
+# Metric names are those of /actuator/prometheus (docs/RUNBOOK.md §3.3). Validate with
+#   promtool check rules deploy/grafana/alerts/kafkafim-alerts.yaml
+#   promtool test rules deploy/grafana/alerts/kafkafim-alerts.test.yaml
+# Thresholds marked "tune" are starting points; see deploy/grafana/README.md.
+groups:
+  - name: kafkafim-pipelines
+    rules:
+      - alert: KafkafimPipelineFailedPreflight
+        expr: max by (pipeline) (kafkafim_pipeline_state{state="failed_preflight"}) == 1
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Pipeline {{ $labels.pipeline }} failed its preflight checks"
+          description: >-
+            A configuration problem (missing topic, DLQ topic, index access or credentials)
+            keeps the pipeline stopped until a reload changes it or the pod restarts.
+          runbook_url: https://github.com/matabar/kafkafim/blob/main/docs/RUNBOOK.md#55-failed_preflight-pipelines
+
+      - alert: KafkafimPipelinePaused
+        expr: max by (pipeline) (kafkafim_pipeline_state{state="paused"}) == 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Pipeline {{ $labels.pipeline }} paused for 5m"
+          description: >-
+            Paused for a supervisor reason: breaker open, identity rejected or DLQ blocked.
+            The reason is in the pod's WARN "Pipeline '<name>': pausing (<reason>)" line.
+          runbook_url: https://github.com/matabar/kafkafim/blob/main/docs/RUNBOOK.md#31-pipeline-state
+
+      - alert: KafkafimPipelineStuckStarting
+        # starting retries transient failures (broker or Elasticsearch unreachable) forever.
+        expr: max by (pipeline) (kafkafim_pipeline_state{state="starting"}) == 1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Pipeline {{ $labels.pipeline }} still starting after 10m"
+          description: >-
+            Preflight keeps retrying a transient failure: Kafka or Elasticsearch is unreachable.
+            The pod logs name the failing check.
+          runbook_url: https://github.com/matabar/kafkafim/blob/main/docs/RUNBOOK.md#31-pipeline-state
+
+      - alert: KafkafimConsumerLagGrowing
+        # Lag is reported per pod for the partitions it owns; summed over pods.
+        # tune: the 1000-record floor keeps commit jitter on a small lag from firing.
+        expr: >-
+          deriv((sum by (pipeline, kafka_cluster, topic) (kafkafim_consumer_lag))[5m:30s]) > 0
+          and sum by (pipeline, kafka_cluster, topic) (kafkafim_consumer_lag) > 1000
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Consumer lag of {{ $labels.pipeline }} on {{ $labels.topic }} growing"
+          description: >-
+            Lag has been rising for 5m+ (now {{ $value | humanize }} records/s of growth).
+          runbook_url: https://github.com/matabar/kafkafim/blob/main/docs/RUNBOOK.md#58-consumer-lag-growing
+
+      - alert: KafkafimE2eLatencyHigh
+        # tune: the target is per pipeline; 10s is a default for sub-second pipelines with
+        # headroom for catch-up after short restarts.
+        expr: >-
+          histogram_quantile(0.99,
+            sum by (pipeline, kafka_cluster, le) (rate(kafkafim_e2e_latency_seconds_bucket[5m]))
+          ) > 10
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "End-to-end p99 of {{ $labels.pipeline }} is {{ $value | humanizeDuration }}"
+          description: >-
+            Elasticsearch ack time minus the Kafka record timestamp, p99 over 5m, above the
+            target for 10m.
+          runbook_url: https://github.com/matabar/kafkafim/blob/main/docs/RUNBOOK.md#58-consumer-lag-growing
+
+      - alert: KafkafimDlqRecords
+        expr: >-
+          sum by (pipeline, kafka_cluster, error_type) (rate(kafkafim_dlq_records_total[10m])) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Pipeline {{ $labels.pipeline }} writes {{ $labels.error_type }} records to the DLQ"
+          description: >-
+            DLQ records acknowledged for 10m+ ({{ $value | humanize }}/s). The WARN DLQ log lines
+            name each record's source coordinates.
+          runbook_url: https://github.com/matabar/kafkafim/blob/main/docs/RUNBOOK.md#56-dlq-filling-or-dlq-blocked
+
+      - alert: KafkafimNoAssignedPartitions
+        # Normal on pods beyond the partition count; silence it for such groups.
+        expr: >-
+          max by (job, instance, pipeline) (kafkafim_assigned_partitions) == 0
+          and on (job, instance, pipeline) kafkafim_pipeline_state{state="running"} == 1
+        for: 10m
+        labels:
+          severity: info
+        annotations:
+          summary: "{{ $labels.instance }} owns no partitions of {{ $labels.pipeline }}"
+          description: >-
+            The pipeline runs on this pod but its consumers hold no partitions. Normal only when
+            the group has more pods than partitions.
+          runbook_url: https://github.com/matabar/kafkafim/blob/main/docs/RUNBOOK.md#57-pipeline-shows-running-but-consumes-nothing
+
+      - alert: KafkafimKafkaDisconnected
+        expr: >-
+          max by (job, instance, pipeline, kafka_cluster) (kafkafim_kafka_connected) == 0
+          and on (job, instance, pipeline) kafkafim_pipeline_state{state=~"running|paused"} == 1
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.instance }} lost Kafka {{ $labels.kafka_cluster }} for {{ $labels.pipeline }}"
+          description: >-
+            A consumer of the pipeline holds no broker connection; kafka-clients reconnects with
+            backoff.
+          runbook_url: https://github.com/matabar/kafkafim/blob/main/docs/RUNBOOK.md#53-kafka-unreachable
+
+  - name: kafkafim-elasticsearch
+    rules:
+      - alert: KafkafimBreakerOpen
+        expr: max by (es_cluster) (kafkafim_breaker_state) == 2
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Circuit breaker for Elasticsearch {{ $labels.es_cluster }} is open"
+          description: >-
+            Every pipeline sending to this cluster is paused until the breaker closes.
+          runbook_url: https://github.com/matabar/kafkafim/blob/main/docs/RUNBOOK.md#51-elasticsearch-outage-circuit-breaker-open
+
+      - alert: KafkafimBulkRejectRatioHigh
+        # tune: 1% of bulk requests answered 429 (DESIGN §10).
+        expr: >-
+          sum by (es_cluster) (rate(kafkafim_bulk_requests_total{status="429"}[5m]))
+          / sum by (es_cluster) (rate(kafkafim_bulk_requests_total[5m])) > 0.01
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $value | humanizePercentage }} of bulk requests to {{ $labels.es_cluster }} rejected (429)"
+          description: >-
+            Elasticsearch pushes back; kafkafim retries with backoff and lag grows.
+          runbook_url: https://github.com/matabar/kafkafim/blob/main/docs/RUNBOOK.md#58-consumer-lag-growing
+
+      - alert: KafkafimEsAuthFailures
+        # The series appears with its first 401/403; the second clause catches that first one.
+        expr: >-
+          sum by (pipeline, es_cluster, identity) (increase(kafkafim_auth_failures_total[5m])) > 0
+          or sum by (pipeline, es_cluster, identity) (
+            kafkafim_auth_failures_total unless kafkafim_auth_failures_total offset 5m
+          ) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "Elasticsearch {{ $labels.es_cluster }} rejects identity {{ $labels.identity }}"
+          description: >-
+            401/403 responses for pipeline {{ $labels.pipeline }}; it pauses until the
+            credentials or roles work again. Nothing goes to the DLQ.
+          runbook_url: https://github.com/matabar/kafkafim/blob/main/docs/RUNBOOK.md#52-elasticsearch-authentication-failure-pipeline-paused
+
+  - name: kafkafim-config
+    rules:
+      - alert: KafkafimConfigReloadFailed
+        expr: sum by (job, instance) (increase(kafkafim_config_reload_total{result="failure"}[10m])) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "Configuration reload rejected on {{ $labels.instance }}"
+          description: >-
+            The pod keeps running the previous generation, and new pods fail to start with this
+            configuration. The ERROR "Configuration reload (...) rejected" line lists the violations.
+          runbook_url: https://github.com/matabar/kafkafim/blob/main/docs/RUNBOOK.md#511-reload-failure-alert

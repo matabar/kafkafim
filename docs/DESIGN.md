@@ -1125,11 +1125,22 @@ logged by default.
 
 ### Shipped with the repo
 
-`deploy/grafana/`: overview dashboard (lag, throughput, e2e latency, DLQ rate per
-pipeline), per-ES-cluster dashboard (bulk latency, 429s, breaker), alert rules: lag
-growing 5m, DLQ rate > 0 for 10m, bulk reject ratio > 1%, e2e p99 above target,
-breaker open, auth failures > 0, reload failed, pod with 0 assigned partitions for a
-pipeline it serves.
+[`deploy/grafana/`](../deploy/grafana/README.md), written against the
+`/actuator/prometheus` names above:
+
+- `dashboards/kafkafim-overview.json`: per pipeline: state, lag, throughput, e2e
+  latency, DLQ rate, in-flight bytes and heap, assigned partitions, Kafka
+  connectivity, config generation and reloads.
+- `dashboards/kafkafim-elasticsearch.json`: per ES cluster: breaker, bulk requests by
+  status and the 429 ratio, bulk latency, docs and bytes per request, flush reasons,
+  retries, item errors, auth failures.
+- `alerts/kafkafim-alerts.yaml` (Prometheus rules, with `promtool test rules` tests):
+  lag growing 5m, DLQ rate > 0 for 10m, bulk reject (429) ratio > 1%, e2e p99 above
+  target (10s by default), breaker open, auth failures > 0, reload failed, pod with 0
+  assigned partitions for a pipeline it runs; plus `failed_preflight`, `paused` for
+  5m, `starting` for 10m and Kafka disconnected for a running pipeline.
+
+The compose demo provisions both dashboards into its Grafana LGTM.
 
 ## 11. Security
 
@@ -1180,7 +1191,7 @@ src/main/resources/application-local.yaml   local-dev sample config: clusters + 
 src/test/java/...                     unit + Testcontainers integration tests
 charts/kafkafim/                      production Helm chart
 deploy/local/                         Kubernetes demo stack (Kafka + ES operators, local only)
-deploy/grafana/                       dashboards + alert rules
+deploy/grafana/                       Grafana dashboards, Prometheus alert rules + promtool tests, compose provisioning
 docs/                                 DESIGN.md, TECH_STACK.md, decisions/, runbook
 ```
 
