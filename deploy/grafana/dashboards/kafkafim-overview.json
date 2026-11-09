@@ -661,7 +661,7 @@
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "reqps",
+          "unit": "cps",
           "custom": {
             "drawStyle": "line",
             "lineWidth": 1,
@@ -783,7 +783,7 @@
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "reqps",
+          "unit": "cps",
           "custom": {
             "drawStyle": "line",
             "lineWidth": 1,
@@ -844,7 +844,7 @@
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "reqps",
+          "unit": "cps",
           "custom": {
             "drawStyle": "line",
             "lineWidth": 1,
@@ -918,7 +918,7 @@
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "reqps",
+          "unit": "cps",
           "custom": {
             "drawStyle": "line",
             "lineWidth": 1,
@@ -1101,7 +1101,7 @@
       "type": "timeseries",
       "id": 21,
       "title": "JVM heap",
-      "description": "Heap used against the max, per pod.",
+      "description": "Heap used against the max, per kafkafim pod (other JVMs in the same Prometheus are left out).",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -1151,7 +1151,7 @@
             "uid": "${datasource}"
           },
           "refId": "A",
-          "expr": "sum by (instance) (jvm_memory_used_bytes{area=\"heap\"})",
+          "expr": "sum by (instance) (jvm_memory_used_bytes{area=\"heap\"} and on (job, instance) kafkafim_config_generation)",
           "legendFormat": "used {{instance}}",
           "range": true,
           "instant": false
@@ -1162,7 +1162,7 @@
             "uid": "${datasource}"
           },
           "refId": "B",
-          "expr": "sum by (instance) (jvm_memory_max_bytes{area=\"heap\"})",
+          "expr": "sum by (instance) (jvm_memory_max_bytes{area=\"heap\"} and on (job, instance) kafkafim_config_generation)",
           "legendFormat": "max {{instance}}",
           "range": true,
           "instant": false

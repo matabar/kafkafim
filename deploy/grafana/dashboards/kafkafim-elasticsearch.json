@@ -101,11 +101,11 @@
           "uid": "${datasource}"
         },
         "query": {
-          "query": "label_values(kafkafim_bulk_latency_seconds_count, pipeline)",
+          "query": "label_values(kafkafim_bulk_docs_count, pipeline)",
           "refId": "PrometheusVariableQueryEditor-VariableQuery",
           "qryType": 1
         },
-        "definition": "label_values(kafkafim_bulk_latency_seconds_count, pipeline)",
+        "definition": "label_values(kafkafim_bulk_docs_count, pipeline)",
         "current": {},
         "hide": 0,
         "refresh": 2,
@@ -333,7 +333,7 @@
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "reqps",
+          "unit": "cps",
           "custom": {
             "drawStyle": "line",
             "lineWidth": 1,
@@ -665,7 +665,7 @@
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "reqps",
+          "unit": "cps",
           "custom": {
             "drawStyle": "line",
             "lineWidth": 1,
@@ -739,7 +739,7 @@
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "reqps",
+          "unit": "cps",
           "custom": {
             "drawStyle": "line",
             "lineWidth": 1,
@@ -800,7 +800,7 @@
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "reqps",
+          "unit": "cps",
           "custom": {
             "drawStyle": "line",
             "lineWidth": 1,
