@@ -188,7 +188,9 @@ public record Pipeline(
   /**
    * An ordered routing rule (DESIGN §5.3).
    *
-   * @param name label for metrics; optional, consumers fall back to the route's position
+   * @param name the route's {@code route} metric label; optional, the route's zero-based position
+   *     stands in for it. Not blank, not {@value #NO_ROUTE_LABEL}, not only digits, and unique
+   *     within the pipeline, so no two labels collide
    * @param when conditions that must all hold; empty only for the default route or in {@code all}
    *     mode
    * @param isDefault {@code default: true}: taken when no other route matched
@@ -205,6 +207,9 @@ public record Pipeline(
       String identity,
       @NotBlank String index,
       String pipeline) {
+
+    /** The {@code route} label of a document that failed before a route was selected. */
+    public static final String NO_ROUTE_LABEL = "none";
 
     /** Applies the documented defaults. */
     public Route {
