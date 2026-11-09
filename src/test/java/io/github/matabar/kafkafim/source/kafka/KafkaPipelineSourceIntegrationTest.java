@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.awaitility.Awaitility.await;
 
+import io.github.matabar.kafkafim.KafkaTestContainers;
 import io.github.matabar.kafkafim.config.KafkaCluster;
 import io.github.matabar.kafkafim.config.KafkafimProperties;
 import io.github.matabar.kafkafim.config.Pipeline;
@@ -33,7 +34,6 @@ import org.springframework.util.unit.DataSize;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.kafka.KafkaContainer;
-import org.testcontainers.utility.DockerImageName;
 
 /**
  * {@link KafkaPipelineSource} against a real broker: batching, out-of-order completion, the byte
@@ -43,9 +43,7 @@ import org.testcontainers.utility.DockerImageName;
 @Testcontainers
 class KafkaPipelineSourceIntegrationTest {
 
-  @Container
-  static final KafkaContainer KAFKA =
-      new KafkaContainer(DockerImageName.parse("apache/kafka-native:4.1.0"));
+  @Container static final KafkaContainer KAFKA = KafkaTestContainers.kafka();
 
   private static final Duration COMMIT_INTERVAL = Duration.ofMillis(200);
   private static final Duration TIMEOUT = Duration.ofSeconds(60);
