@@ -70,9 +70,18 @@ public record DlqFailure(Kind kind, Throwable cause, int attempt, Duration retry
   }
 
   /**
-   * Whether the failure leaves kafka-clients' idempotent producer unusable, so that it must be
-   * replaced: {@code TransactionManager} turns these into a fatal error state for idempotent
-   * producers too, after which every send fails with the original cause attached.
+   * Whether the failure may have left kafka-clients' idempotent producer unusable, so that it must
+   * be replaced. {@code TransactionManager} puts even an idempotent producer into a fatal error
+   * state when an authentication failure hits its pending {@code InitProducerId}, or when one of
+   * the others reaches {@code maybeTransitionToErrorState} through a failed batch; every later send
+   * then fails with the original cause attached.
+   *
+   * <p>Not every occurrence is fatal. In kafka-clients 4.2 a {@link ClusterAuthorizationException}
+   * on {@code InitProducerId} (an identity without a {@code Write} ACL) is abortable: the producer
+   * fails its pending batches with it, resets to {@code UNINITIALIZED} and recovers on its own once
+   * the ACL is granted. The batch callbacks cannot tell the two paths apart, so the exception stays
+   * here: replacing a producer that would have recovered costs a reconnect, while keeping a fatal
+   * one would block the DLQ until a restart.
    *
    * @param failure a send failure
    * @return whether the producer must be recreated

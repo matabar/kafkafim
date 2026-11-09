@@ -25,10 +25,19 @@ import org.slf4j.LoggerFactory;
  * same {@code (cluster, identity)}) and one {@link Admin} for the topic check, created lazily on
  * the first check.
  *
- * <p>An idempotent producer that hits a fatal error ({@link DlqFailure#isFatalForProducer}, e.g.
- * {@code CLUSTER_AUTHORIZATION_FAILED} on its first {@code InitProducerId} because the identity has
- * no {@code Write} ACL yet) fails every later send, even after the ACL is fixed. Such a producer is
- * closed and replaced, so the next attempt runs on a fresh one.
+ * <p>An idempotent producer in kafka-clients' fatal error state fails every later send, even after
+ * the cause is fixed. A send failure that can put it there ({@link DlqFailure#isFatalForProducer})
+ * therefore closes and replaces the producer, so the next attempt runs on a fresh one.
+ *
+ * <p>A missing {@code Write} ACL is usually not such a case in kafka-clients 4.2: {@code
+ * CLUSTER_AUTHORIZATION_FAILED} on {@code InitProducerId} is abortable there. The producer fails
+ * its pending batches, returns to {@code UNINITIALIZED} and retries {@code InitProducerId} on the
+ * next send, so it recovers on its own once the ACL is granted. It turns fatal only when the error
+ * reaches {@code TransactionManager.maybeTransitionToErrorState} through a failed batch. The
+ * aborted batches still fail with {@code ClusterAuthorizationException}, so the producer is
+ * replaced on the abortable path too: a cheap safety net, not a requirement. kafka-clients logs
+ * "Aborting producer batches due to fatal error" at {@code ERROR} on that path, and this class's
+ * WARN says the producer is in a fatal state; neither means data was lost (DESIGN §7).
  */
 final class KafkaDlqClient implements DlqClient {
 
