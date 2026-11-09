@@ -7,7 +7,6 @@ import io.github.matabar.kafkafim.config.Pipeline.Route;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.time.Duration;
-import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -367,15 +366,13 @@ public final class ConfigValidator {
     String format = document.timestampFormat();
     if (format.startsWith(Pipeline.Document.PATTERN_PREFIX)) {
       String pattern = format.substring(Pipeline.Document.PATTERN_PREFIX.length());
-      if (pattern.isBlank()) {
-        error(path + ".timestamp-format", "'pattern:' needs a DateTimeFormatter pattern");
-      } else {
-        try {
-          DateTimeFormatter.ofPattern(pattern);
-        } catch (IllegalArgumentException e) {
-          error(
-              path + ".timestamp-format",
-              "invalid DateTimeFormatter pattern '" + pattern + "': " + e.getMessage());
+      List<String> problems = TimestampPatternSyntax.errors(pattern);
+      for (String problem : problems) {
+        error(path + ".timestamp-format", problem);
+      }
+      if (problems.isEmpty()) {
+        for (String warning : TimestampPatternSyntax.warnings(pattern)) {
+          warnings.add(path + ".timestamp-format: " + warning);
         }
       }
     } else if (!TIMESTAMP_FORMATS.contains(format)) {
