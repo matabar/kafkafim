@@ -61,13 +61,14 @@ final class TimestampPatternSyntax {
               + pattern
               + "' never yields a complete time (e.g. 'hh' without 'a', or minutes without"
               + " hours), so every timestamp would fail");
-    } else if (dayPeriodWithoutHour(pattern)) {
+    } else if (parsed.query(TemporalQueries.localTime()) == null
+        && unquoted(pattern).indexOf('B') >= 0) {
       // 'B' is not a ChronoField, so decode does not see it as a time field: the parsed period is
       // dropped and every timestamp lands at midnight.
       errors.add(
           "pattern '"
               + pattern
-              + "' has a day period 'B' but no hour, so every timestamp would be read as midnight");
+              + "' has a day period 'B' but no time, so every timestamp would be read as midnight");
     }
     return errors;
   }
@@ -133,11 +134,6 @@ final class TimestampPatternSyntax {
       }
     }
     return false;
-  }
-
-  private static boolean dayPeriodWithoutHour(String pattern) {
-    String letters = unquoted(pattern);
-    return letters.indexOf('B') >= 0 && letters.chars().noneMatch(c -> "HhKk".indexOf(c) >= 0);
   }
 
   /** The pattern without quoted literals ({@code 'T'}, and {@code ''} for a quote). */

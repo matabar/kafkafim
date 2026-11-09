@@ -853,12 +853,14 @@ class ConfigValidationTest {
     }
 
     @Test
-    void rejectsDayPeriodWithoutHour() {
+    void rejectsDayPeriodWithoutTime() {
       assertInvalid(
           MINIMAL,
-          "pattern 'yyyy-MM-dd B' has a day period 'B' but no hour",
+          "pattern 'yyyy-MM-dd B' has a day period 'B' but no time",
           P + ".document.timestamp-format=pattern:yyyy-MM-dd B");
       assertValid(MINIMAL, P + ".document.timestamp-format=pattern:yyyy-MM-dd h:mm B");
+      // Milli-of-day carries the time without an hour letter.
+      assertValid(MINIMAL, P + ".document.timestamp-format=pattern:yyyy-MM-dd A B");
     }
 
     @Test

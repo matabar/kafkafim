@@ -854,14 +854,14 @@ are reported together:
   (`Locale.ROOT`, strict, era CE) by formatting a sample and parsing it back: one that
   never yields a date (`yyyy-MM`, `HH:mm`, `YYYY-MM-dd`) or a complete time (`hh`
   without `a`, minutes without hours) is an error, since every document would fail, as
-  is a day period `B` without an hour (it would read every value as midnight). A
+  is a day period `B` without a time (it would read every value as midnight). A
   pattern without an offset or zone (read as UTC; a quoted `'Z'` literal does not warn),
   one using `k`, or one that cannot format and parse back the sample is a warning.
 - **Document**: `op: create` takes no `version-field`; Elasticsearch accepts external
   versions only on `index` ("create operations only support internal versioning", §4.4).
 - **Warnings** (bind, log at `WARN`): no pipelines, `id-missing: auto`, an http route
-  without identity, week-based year, a timestamp `pattern:` without an offset or zone or
-  using `k`, `allow-inline-secrets=true`.
+  without identity, week-based year, a timestamp `pattern:` without an offset or zone,
+  using `k` or failing its self-check, `allow-inline-secrets=true`.
 
 ## 6. Scaling
 
