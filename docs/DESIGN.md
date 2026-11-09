@@ -1170,7 +1170,7 @@ src/main/resources/application-local.yaml   local-dev sample config: clusters + 
 src/test/java/...                     unit + Testcontainers integration tests
 charts/kafkafim/                      production Helm chart
 deploy/local/                         Kubernetes demo stack (Kafka + ES operators, local only)
-deploy/grafana/                       dashboards + alert rules
+deploy/grafana/                       Grafana dashboards, Prometheus alert rules + promtool tests, compose provisioning
 docs/                                 DESIGN.md, TECH_STACK.md, decisions/, runbook
 ```
 
