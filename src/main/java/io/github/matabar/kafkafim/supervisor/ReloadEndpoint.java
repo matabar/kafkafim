@@ -40,6 +40,7 @@ public class ReloadEndpoint {
               List.of(),
               List.of(),
               List.of(),
+              List.of(),
               List.of(e.getMessage())),
           WebEndpointResponse.STATUS_SERVICE_UNAVAILABLE);
     }

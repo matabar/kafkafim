@@ -265,6 +265,25 @@ final class PipelineRuntime {
     }
   }
 
+  /**
+   * Starts the pipeline again if its last start failed preflight and nothing is starting or
+   * stopping it: what an accepted reload does for a pipeline it leaves unchanged (DESIGN §5.6). One
+   * attempt per call; a pipeline that still fails goes back to {@link
+   * PipelineState#FAILED_PREFLIGHT} and waits for the next call, so nothing retries it on its own.
+   *
+   * @return whether a start was begun
+   */
+  boolean retryIfFailed() {
+    synchronized (lock) {
+      if (state != PipelineState.FAILED_PREFLIGHT || stops > 0 || starter != null) {
+        return false;
+      }
+      LOG.info("Pipeline '{}': retrying after failed preflight", name);
+      start();
+      return true;
+    }
+  }
+
   private void startLoop(CountDownLatch signal) {
     Duration delay = FIRST_RETRY;
     try {
@@ -285,11 +304,23 @@ final class PipelineRuntime {
       synchronized (lock) {
         failure = e.toString();
         setState(PipelineState.FAILED_PREFLIGHT);
+        finishStart();
       }
     } finally {
       synchronized (lock) {
-        starter = null;
+        finishStart();
       }
+    }
+  }
+
+  /**
+   * Forgets this thread as the starter, under the lock. Called in the same critical section that
+   * sets a final state, so a pipeline seen in {@code failed_preflight} can be retried at once
+   * ({@link #retryIfFailed}); never clears a newer starter.
+   */
+  private void finishStart() {
+    if (starter == Thread.currentThread()) {
+      starter = null;
     }
   }
 
@@ -411,6 +442,7 @@ final class PipelineRuntime {
         return Attempt.CANCELLED;
       }
       setState(PipelineState.RUNNING);
+      finishStart();
     }
     LOG.info(
         "Pipeline '{}': running ({} -> {} bulk stream(s), DLQ '{}')",
@@ -446,6 +478,7 @@ final class PipelineRuntime {
     synchronized (lock) {
       failure = message;
       setState(PipelineState.FAILED_PREFLIGHT);
+      finishStart();
     }
     return Attempt.FAILED;
   }

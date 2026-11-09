@@ -11,7 +11,9 @@ import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
+import java.util.stream.Stream;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.actuate.endpoint.web.WebEndpointResponse;
@@ -35,6 +37,19 @@ class ConfigReloaderTest {
         source: { cluster: k, topics: [b] }
         routes: [ { default: true, cluster: es2, index: b } ]
       """;
+
+  /** Starts of any pipeline: transitions into {@code starting}. */
+  private final AtomicInteger starts = new AtomicInteger();
+
+  private final SupervisorListener countStarts =
+      new SupervisorListener() {
+        @Override
+        public void onStateChange(String pipeline, PipelineState from, PipelineState to) {
+          if (to == PipelineState.STARTING) {
+            starts.incrementAndGet();
+          }
+        }
+      };
 
   private final ListenerRelay relay = new ListenerRelay(List.of(), List.of());
   private final PipelineResources resources =
@@ -74,7 +89,7 @@ class ConfigReloaderTest {
 
   private ConfigReloader start(String pipelines) {
     KafkafimProperties properties = TestConfigs.bind(yaml(pipelines));
-    supervisor = new PipelineSupervisor(properties, resources, List.of());
+    supervisor = new PipelineSupervisor(properties, resources, List.of(countStarts));
     relay.attach(supervisor);
     supervisor.start();
     onDisk(pipelines);
@@ -94,15 +109,74 @@ class ConfigReloaderTest {
     return registry.get(ConfigReloader.GENERATION).gauge().value();
   }
 
+  private void awaitSettled() {
+    await()
+        .atMost(Duration.ofSeconds(20))
+        .until(() -> !supervisor.states().containsValue(PipelineState.STARTING));
+  }
+
+  private static List<String> concat(List<String> first, List<String> second) {
+    return Stream.concat(first.stream(), second.stream()).toList();
+  }
+
   @Test
   void unchangedTreeSucceedsWithoutNewGeneration() {
     ConfigReloader reloader = start(A);
     ReloadResult result = reloader.reload("test");
     assertThat(result.result()).isEqualTo(ReloadResult.UNCHANGED);
     assertThat(result.generation()).isEqualTo(1);
-    assertThat(result.unchanged()).containsExactly("a");
+    // a is either still starting (unchanged) or failed preflight already (retried).
+    assertThat(concat(result.unchanged(), result.retried())).containsExactly("a");
     assertThat(reloads("success")).isEqualTo(1);
     assertThat(generationGauge()).isEqualTo(1);
+  }
+
+  @Test
+  void anUnchangedTreeRetriesFailedPreflightOncePerReload() {
+    final ConfigReloader reloader = start(A);
+    awaitSettled();
+    assertThat(supervisor.state("a")).isEqualTo(PipelineState.FAILED_PREFLIGHT);
+    assertThat(starts.get()).isEqualTo(1);
+
+    ReloadResult result = reloader.reload("test");
+    assertThat(result.result()).isEqualTo(ReloadResult.UNCHANGED);
+    assertThat(result.generation()).isEqualTo(1);
+    assertThat(result.retried()).containsExactly("a");
+    assertThat(result.unchanged()).isEmpty();
+    assertThat(reloads("success")).isEqualTo(1);
+    assertThat(generationGauge()).isEqualTo(1);
+    awaitSettled();
+    // Still failing: back in failed_preflight after exactly one more attempt, and no further one.
+    assertThat(supervisor.state("a")).isEqualTo(PipelineState.FAILED_PREFLIGHT);
+    assertThat(starts.get()).isEqualTo(2);
+    await().during(Duration.ofSeconds(2)).until(() -> starts.get() == 2);
+
+    assertThat(new ReloadEndpoint(reloader).reload().getBody().retried()).containsExactly("a");
+  }
+
+  @Test
+  void anAppliedTreeRetriesTheFailedPipelinesItLeavesUnchanged() {
+    ConfigReloader reloader = start(A + B);
+    awaitSettled();
+    onDisk(A + B.replace("index: b", "index: b2"));
+    ReloadResult result = reloader.reload("test");
+    assertThat(result.result()).isEqualTo(ReloadResult.APPLIED);
+    assertThat(result.restarted()).extracting(ReloadResult.Restart::pipeline).containsExactly("b");
+    assertThat(result.retried()).containsExactly("a");
+    assertThat(result.unchanged()).isEmpty();
+    awaitSettled();
+  }
+
+  @Test
+  void rejectedTreeRetriesNothing() {
+    ConfigReloader reloader = start(A);
+    awaitSettled();
+    onDisk(A.replace("cluster: es,", "cluster: nope,"));
+    ReloadResult result = reloader.reload("test");
+    assertThat(result.result()).isEqualTo(ReloadResult.REJECTED);
+    assertThat(result.retried()).isEmpty();
+    await().during(Duration.ofSeconds(1)).until(() -> starts.get() == 1);
+    assertThat(supervisor.state("a")).isEqualTo(PipelineState.FAILED_PREFLIGHT);
   }
 
   @Test
