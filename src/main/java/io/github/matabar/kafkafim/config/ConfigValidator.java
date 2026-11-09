@@ -30,6 +30,9 @@ public final class ConfigValidator {
   /** Cluster, identity and pipeline names: lower-case kebab-case (they appear in paths). */
   private static final Pattern NAME = Pattern.compile("[a-z0-9]([a-z0-9-]*[a-z0-9])?");
 
+  /** Only digits: reserved for the position label of unnamed routes. */
+  private static final Pattern POSITION_LABEL = Pattern.compile("[0-9]+");
+
   /** {@code host:port}, IPv6 in brackets, optional {@code PROTOCOL://} prefix. */
   private static final Pattern BOOTSTRAP_SERVER =
       Pattern.compile("(?:[A-Za-z_]+://)?(\\[[0-9A-Fa-f:.%]+]|[A-Za-z0-9._-]+):(\\d{1,5})");
@@ -397,6 +400,7 @@ public final class ConfigValidator {
     List<Route> routes = pipeline.routes();
     boolean firstMode = pipeline.routeMode() == Pipeline.RouteMode.FIRST;
     int defaults = 0;
+    Map<String, Integer> names = new HashMap<>();
     for (int i = 0; i < routes.size(); i++) {
       Route route = routes.get(i);
       String routePath = path + ".routes[" + i + "]";
@@ -404,6 +408,7 @@ public final class ConfigValidator {
         error(routePath, "must not be empty");
         continue;
       }
+      checkRouteName(routePath + ".name", route.name(), i, names);
       if (route.isDefault()) {
         defaults++;
         if (i != routes.size() - 1) {
@@ -443,6 +448,35 @@ public final class ConfigValidator {
           "route-mode first needs exactly one default: true route, found " + defaults);
     } else if (!firstMode && defaults > 1) {
       error(path + ".routes", "at most one default: true route is allowed, found " + defaults);
+    }
+  }
+
+  /**
+   * A route's name is its {@code route} label; an unnamed route is labelled by its position and a
+   * document that failed before routing by {@value Route#NO_ROUTE_LABEL}. Rejects every name that
+   * would make two of those labels collide.
+   */
+  private void checkRouteName(String path, String name, int position, Map<String, Integer> names) {
+    if (name == null) {
+      return;
+    }
+    if (name.isBlank()) {
+      error(path, "must not be blank; omit it to label the route by its position");
+    } else if (name.equals(Route.NO_ROUTE_LABEL)) {
+      error(
+          path,
+          "'"
+              + Route.NO_ROUTE_LABEL
+              + "' is reserved: it labels documents that failed before a route was selected");
+    } else if (POSITION_LABEL.matcher(name).matches()) {
+      error(
+          path,
+          "'" + name + "' is reserved: digits-only labels are the positions of unnamed routes");
+    } else {
+      Integer first = names.putIfAbsent(name, position);
+      if (first != null) {
+        error(path, "'" + name + "' is already the name of routes[" + first + "]");
+      }
     }
   }
 
