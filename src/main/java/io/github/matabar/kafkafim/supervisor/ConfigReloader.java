@@ -31,7 +31,9 @@ import org.springframework.core.env.Environment;
  * <p>An invalid or unreadable tree is rejected whole: the running configuration stays, {@code
  * kafkafim_config_reload_total{result="failure"}} increments and one {@code ERROR} record lists
  * every violation. A valid tree increments {@code result="success"}; if it changed anything, {@code
- * kafkafim_config_generation} (1 at startup) increments too.
+ * kafkafim_config_generation} (1 at startup) increments too. A valid tree, changed or not, also
+ * starts once more every pipeline it leaves unchanged that is in {@code failed_preflight} ({@link
+ * PipelineSupervisor#retryFailedPreflight}); a rejected tree retries nothing.
  *
  * <p>As a {@link SmartLifecycle} one phase above the supervisor ({@link #PHASE}), it starts the
  * {@link ConfigWatcher} after the pipelines started and stops it before they stop.
@@ -155,10 +157,15 @@ final class ConfigReloader implements SmartLifecycle {
       }
       KafkafimProperties next = loaded.properties();
       if (next.equals(running)) {
+        ConfigDiff diff = ConfigDiff.between(running, next);
+        List<String> retried = supervisor.retryFailedPreflight(diff.unchanged());
         successes.increment();
         LOG.info(
-            "Configuration reload ({}): no change, generation {} stays", trigger, generation());
-        return result(ReloadResult.UNCHANGED, ConfigDiff.between(running, next));
+            "Configuration reload ({}): no change, generation {} stays{}",
+            trigger,
+            generation(),
+            retriedSuffix(retried));
+        return result(ReloadResult.UNCHANGED, diff, retried);
       }
       if (!next.reload().equals(running.reload())) {
         LOG.warn("kafkafim.reload.* changed; the watcher settings apply after a restart");
@@ -173,8 +180,9 @@ final class ConfigReloader implements SmartLifecycle {
           diff.removed(),
           diff.restarted(),
           diff.unchanged());
+      List<String> retried;
       try {
-        supervisor.apply(next, diff);
+        retried = supervisor.apply(next, diff);
       } catch (RuntimeException e) {
         if (!supervisor.isRunning()) {
           throw e; // a shutdown began before apply took over: nothing was applied, no failure
@@ -190,9 +198,17 @@ final class ConfigReloader implements SmartLifecycle {
       }
       generation.incrementAndGet();
       successes.increment();
-      LOG.info("Configuration reload ({}): generation {} applied", trigger, generation());
-      return result(ReloadResult.APPLIED, diff);
+      LOG.info(
+          "Configuration reload ({}): generation {} applied{}",
+          trigger,
+          generation(),
+          retriedSuffix(retried));
+      return result(ReloadResult.APPLIED, diff, retried);
     }
+  }
+
+  private static String retriedSuffix(List<String> retried) {
+    return retried.isEmpty() ? "" : "; retrying failed_preflight pipeline(s) " + retried;
   }
 
   /**
@@ -219,15 +235,31 @@ final class ConfigReloader implements SmartLifecycle {
         problems.size(),
         String.join("\n  ", problems));
     return new ReloadResult(
-        ReloadResult.REJECTED, generation(), List.of(), List.of(), List.of(), List.of(), problems);
+        ReloadResult.REJECTED,
+        generation(),
+        List.of(),
+        List.of(),
+        List.of(),
+        List.of(),
+        List.of(),
+        problems);
   }
 
-  private ReloadResult result(String result, ConfigDiff diff) {
+  private ReloadResult result(String result, ConfigDiff diff, List<String> retried) {
     List<ReloadResult.Restart> restarted = new ArrayList<>();
     diff.restarted()
         .forEach((name, reasons) -> restarted.add(new ReloadResult.Restart(name, reasons)));
+    List<String> unchanged = new ArrayList<>(diff.unchanged());
+    unchanged.removeAll(retried);
     return new ReloadResult(
-        result, generation(), diff.added(), diff.removed(), restarted, diff.unchanged(), List.of());
+        result,
+        generation(),
+        diff.added(),
+        diff.removed(),
+        restarted,
+        retried,
+        List.copyOf(unchanged),
+        List.of());
   }
 
   // ---- watcher lifecycle ----

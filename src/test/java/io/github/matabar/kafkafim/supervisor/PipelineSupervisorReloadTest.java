@@ -191,6 +191,32 @@ class PipelineSupervisorReloadTest {
   }
 
   @Test
+  void retriesOnlyFailedPipelinesAndOnlyWhileRunning() {
+    start(TestConfigs.withPipelines(A + C));
+    // Only candidates are retried, in configuration order; unknown names are ignored.
+    assertThat(supervisor.retryFailedPreflight(List.of("c", "gone"))).containsExactly("c");
+    awaitSettled();
+    assertThat(supervisor.retryFailedPreflight(List.of("c", "a"))).containsExactly("a", "c");
+    awaitSettled();
+    assertThat(supervisor.states().values()).containsOnly(PipelineState.FAILED_PREFLIGHT);
+
+    supervisor.stop();
+    assertThat(supervisor.retryFailedPreflight(List.of("a"))).isEmpty();
+    assertThat(supervisor.state("a")).isEqualTo(PipelineState.FAILED_PREFLIGHT);
+  }
+
+  @Test
+  void applyRetriesUnchangedFailedPipelinesButNotRestartedOrAddedOnes() {
+    start(TestConfigs.withPipelines(A + C));
+    KafkafimProperties next = TestConfigs.withPipelines(A + C.replace("index: c", "index: c2") + D);
+    List<String> retried =
+        supervisor.apply(next, ConfigDiff.between(supervisor.properties(), next));
+    assertThat(retried).containsExactly("a");
+    awaitSettled();
+    assertThat(supervisor.states().values()).containsOnly(PipelineState.FAILED_PREFLIGHT);
+  }
+
+  @Test
   void applyNeedsRunningSupervisor() {
     KafkafimProperties properties = TestConfigs.withPipelines(A);
     supervisor = new PipelineSupervisor(properties, resources, List.of());
