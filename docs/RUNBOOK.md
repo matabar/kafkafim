@@ -498,7 +498,8 @@ id is `kafkafim.<pipeline>`).
   2. Group or topic `Read` authorization errors ([§5.4](#54-kafka-authentication-or-acl-missing)).
   3. `kafkafim_assigned_partitions`: 0 on this pod is normal only if the group has
      more pods than partitions (replicas above partitions are idle).
-  4. `kafkafim_in_flight_bytes` at or above `max-in-flight-bytes`: backpressure, see [§5.8](#58-consumer-lag-growing).
+  4. `kafkafim_in_flight_bytes` at or above `max-in-flight-bytes`:
+     backpressure, see [§5.8](#58-consumer-lag-growing).
 - **Action**: for 1, and for a listener container that stopped on its own (it is not
   restarted and the state still says `running`), restart the pods
   ([§2.4](#24-restart-pods)) and look for the first ERROR before it.
