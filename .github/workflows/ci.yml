@@ -65,16 +65,15 @@ jobs:
           distribution: temurin
           java-version: '27'
           cache: maven
-      - name: Unit, integration and architecture tests
-        run: ./mvnw -B -ntp verify
+      # Integration tests run in the parallel `integration` job, so `image` can start sooner.
+      - name: Style, unit and architecture tests
+        run: ./mvnw -B -ntp verify -DskipITs
       - name: Test reports
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: test-reports
-          path: |
-            target/surefire-reports/
-            target/failsafe-reports/
+          path: target/surefire-reports/
           if-no-files-found: ignore
       - name: Application jar
         uses: actions/upload-artifact@v7
@@ -83,6 +82,62 @@ jobs:
           path: target/*.jar
           if-no-files-found: error
 
+  # Failsafe only (*IntegrationTest, Testcontainers), in parallel with `build`. `build` already
+  # runs Spotless, Checkstyle and Surefire on the same commit, so they are skipped here.
+  integration:
+    name: Integration tests
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.docs_only != 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # Starts pulling every Testcontainers image named in src/test while Java is set up and
+      # Maven compiles. No wait: a container start that needs an image still being pulled joins
+      # the daemon's in-flight pull. A failed pull only warns; Testcontainers pulls again.
+      # Testcontainers' own ryuk image (2 MB) is not named in src/test and is left to it.
+      - name: Pre-pull Testcontainers images
+        shell: bash
+        run: |
+          images=$(grep -rhoE 'DockerImageName\.parse\("[^"]+"\)' src/test | sed -E 's/^.*\("([^"]+)"\)$/\1/' | sort -u) || true   # no match: warn below
+          if [ -z "$images" ]; then echo "::warning::no DockerImageName.parse(\"...\") found in src/test"; exit 0; fi
+          mkdir -p "$RUNNER_TEMP/pulls"
+          for i in $images; do
+            log="$RUNNER_TEMP/pulls/$(echo "$i" | tr '/:' '__').log"
+            echo "pulling $i"
+            # Detached from the step's output, so the step ends while the pulls go on.
+            ( start=$(date +%s)
+              if docker pull -q "$i"; then echo "ok $i $(( $(date +%s) - start ))s"; else echo "FAILED $i"; fi
+            ) > "$log" 2>&1 < /dev/null &
+          done
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '27'
+          cache: maven
+      - name: Integration tests
+        run: >-
+          ./mvnw -B -ntp verify
+          -Dtest=NONE -Dsurefire.failIfNoSpecifiedTests=false
+          -Dspotless.check.skip=true -Dcheckstyle.skip=true
+      - name: Image pre-pull results
+        if: always()
+        shell: bash
+        run: |
+          for f in "$RUNNER_TEMP"/pulls/*.log; do
+            [ -e "$f" ] || continue
+            tail -n 1 "$f"
+            if grep -q '^FAILED' "$f"; then echo "::warning::pre-pull failed: $(cat "$f")"; fi
+          done
+      - name: Integration test reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: integration-test-reports
+          path: target/failsafe-reports/
+          if-no-files-found: ignore
+
+  # Needs only `build` (the jar), so it runs while `integration` is still running. Both are
+  # required checks (docs/DELIVERY.md), so a pull request cannot merge with either failing.
   image:
     name: Container image
     needs: build
