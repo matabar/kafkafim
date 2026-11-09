@@ -324,6 +324,11 @@ missing resource and identity, and leaves the other pipelines in the pod running
 Readiness stays green for the pod if at least one pipeline runs; the alert fires on
 the metric.
 
+The local Compose stack follows the same rule: its broker has topic auto-creation
+disabled, and a one-shot `kafka-init` service in `compose.yaml` stands in for the
+provisioning systems by creating the `local` profile's `demo` topics
+([README, Develop](../README.md#develop)).
+
 How the supervisor runs it (`supervisor/Preflight`, `PipelineRuntime`): every pipeline
 starts on its own thread, so one slow check never delays another pipeline or the
 application context. The DLQ topic is described with the DLQ identity
@@ -1148,7 +1153,7 @@ Summary; see [TECH_STACK.md](TECH_STACK.md) and the ADRs.
 
 ```
 pom.xml, mvnw                    Maven build (Spring Boot parent)
-compose.yaml                     local Kafka + Elasticsearch + Grafana LGTM
+compose.yaml                     local Kafka + Elasticsearch + Grafana LGTM; one-shot kafka-init creates the demo topics
 src/main/java/io/github/matabar/kafkafim/
   config/         @ConfigurationProperties model, validators, watcher, Binder reload, diff
   supervisor/     pipeline lifecycle, hot reload orchestration, reload endpoint
@@ -1158,7 +1163,8 @@ src/main/java/io/github/matabar/kafkafim/
   sink/es/        Rest5Client per (cluster, identity), batcher, bulk sender, body builder, item parser, error table, breaker
   dlq/            producer, record format
   telemetry/      meters, spans, health indicators
-src/main/resources/application.yaml   defaults + local-dev sample pipeline
+src/main/resources/application.yaml   profile-independent defaults (default profile: local)
+src/main/resources/application-local.yaml   local-dev sample config: clusters + demo pipeline
 src/test/java/...                     unit + Testcontainers integration tests
 charts/kafkafim/                      production Helm chart
 deploy/local/                         Kubernetes demo stack (Kafka + ES operators, local only)
