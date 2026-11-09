@@ -196,8 +196,9 @@ annotated `kind: dev.cosignproject.cosign/...`) and no
 nothing; `:@0` selects the first entry of `index.json`, the image index. Check that
 `jq -r '.manifests[0].annotations.kind' kafkafim-1.2.3-image/index.json` prints
 `dev.cosignproject.cosign/imageIndex` (or read `index.json`), and run the digest
-check above afterwards. `--preserve-digests` makes skopeo fail rather than convert the manifests, which would
-change the digest. (Checked with cosign 3.1.3 and skopeo 1.24.1.)
+check above afterwards. `--preserve-digests` makes skopeo fail rather than convert
+the manifests, which would change the digest. (Checked with cosign 3.1.3 and
+skopeo 1.24.1.)
 
 ## Local developer loop
 
