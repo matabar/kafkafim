@@ -58,7 +58,8 @@ import org.testcontainers.kafka.KafkaContainer;
  * producer: the same producer would succeed after the grant. So the test asserts what the writer
  * guarantees (classification, blocking, completion after the grant), not that the producer was
  * replaced. kafka-clients still logs "Aborting producer batches due to fatal error" on this path;
- * the producer is not fatal.
+ * the producer is not fatal. A send that fails because of the replacement (its batch aborted by the
+ * close) still counts as {@code CONFIGURATION}, by the failure that triggered it.
  */
 @Testcontainers
 class DlqWriterAclIntegrationTest {
@@ -151,10 +152,13 @@ class DlqWriterAclIntegrationTest {
           assertThat(causes(failure.cause()))
               .hasAtLeastOneElementOfType(ClusterAuthorizationException.class);
         });
-    assertThat(events.failures.subList(0, 2))
+    // One report per attempt: kafka-clients both throws and later fails the appended batch of a
+    // send it rejects in its error state, and only one of the two may reach the writer.
+    assertThat(events.failures)
         .extracting(DlqFailure::attempt)
         .as("retries of the one send")
-        .containsExactly(1, 2);
+        .startsWith(1, 2)
+        .doesNotHaveDuplicates();
     assertThat(events.blocked).hasValue(1);
     assertThat(writer.isBlocked()).isTrue();
     assertThat(result).isNotDone();

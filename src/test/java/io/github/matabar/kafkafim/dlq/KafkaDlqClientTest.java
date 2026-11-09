@@ -7,10 +7,13 @@ import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import org.apache.kafka.clients.producer.Callback;
 import org.apache.kafka.clients.producer.MockProducer;
 import org.apache.kafka.clients.producer.ProducerRecord;
+import org.apache.kafka.clients.producer.RecordMetadata;
 import org.apache.kafka.common.KafkaException;
 import org.apache.kafka.common.config.ConfigException;
 import org.apache.kafka.common.errors.ClusterAuthorizationException;
@@ -91,6 +94,68 @@ class KafkaDlqClientTest {
   }
 
   @Test
+  void sendThatThrowsAfterAppendingIsReportedOnlyByTheThrow() {
+    // KafkaProducer.send appends the record, then throws when its transaction manager is in an
+    // error state; closing the producer for the replacement later aborts that appended batch.
+    MockProducer<byte[], byte[]>[] first = new MockProducer[1];
+    KafkaDlqClient client =
+        new KafkaDlqClient(
+            Map.of("client.id", "c"),
+            s -> {
+              MockProducer<byte[], byte[]> producer =
+                  new MockProducer<>(
+                      false, null, new ByteArraySerializer(), new ByteArraySerializer()) {
+                    @Override
+                    public synchronized Future<RecordMetadata> send(
+                        ProducerRecord<byte[], byte[]> record, Callback callback) {
+                      Future<RecordMetadata> appended = super.send(record, callback);
+                      if (first[0] == this) {
+                        throw fatalWrapper();
+                      }
+                      return appended;
+                    }
+                  };
+              if (first[0] == null) {
+                first[0] = producer;
+              }
+              created.add(producer);
+              return producer;
+            });
+    List<Exception> heard = new CopyOnWriteArrayList<>();
+
+    assertThatThrownBy(() -> client.send(record(), (m, e) -> heard.add(e)))
+        .hasCauseInstanceOf(ClusterAuthorizationException.class);
+    first[0].errorNext(new KafkaException("Producer is closed forcefully."));
+
+    assertThat(heard).as("the aborted batch is not a second report").isEmpty();
+    assertThat(first[0].closed()).isTrue();
+    assertThat(client.producer()).isSameAs(created.get(1));
+  }
+
+  @Test
+  void sendAbortedByTheReplacementIsReportedByTheFailureThatTriggeredIt() {
+    KafkaDlqClient client = client();
+    MockProducer<byte[], byte[]> first = created.get(0);
+    AtomicReference<Exception> trigger = new AtomicReference<>();
+    AtomicReference<Exception> bystander = new AtomicReference<>();
+    client.send(record(), (m, e) -> trigger.set(e));
+    client.send(record(), (m, e) -> bystander.set(e));
+    KafkaException closedForcefully = new KafkaException("Producer is closed forcefully.");
+
+    first.errorNext(fatalWrapper());
+    first.errorNext(closedForcefully);
+
+    assertThat(DlqFailure.classify(trigger.get())).isEqualTo(DlqFailure.Kind.CONFIGURATION);
+    assertThat(bystander.get())
+        .isInstanceOf(ProducerReplacedException.class)
+        .hasRootCauseInstanceOf(ClusterAuthorizationException.class)
+        .hasMessageContaining("Producer is closed forcefully.");
+    assertThat(bystander.get().getSuppressed()).containsExactly(closedForcefully);
+    assertThat(DlqFailure.classify(bystander.get())).isEqualTo(DlqFailure.Kind.CONFIGURATION);
+    assertThat(created).as("replaced once").hasSize(2);
+  }
+
+  @Test
   void failedReplacementIsRetriedOnTheNextSend() {
     KafkaDlqClient client = client();
     MockProducer<byte[], byte[]> first = created.get(0);
@@ -148,10 +213,13 @@ class KafkaDlqClientTest {
   @Test
   void transientFailureKeepsTheProducer() {
     KafkaDlqClient client = client();
-    client.send(record(), (m, e) -> {});
+    AtomicReference<Exception> heard = new AtomicReference<>();
+    client.send(record(), (m, e) -> heard.set(e));
+    NetworkException gone = new NetworkException("broker gone");
 
-    created.get(0).errorNext(new NetworkException("broker gone"));
+    created.get(0).errorNext(gone);
 
+    assertThat(heard.get()).as("reported as is").isSameAs(gone);
     assertThat(created).hasSize(1);
     assertThat(created.get(0).closed()).isFalse();
   }

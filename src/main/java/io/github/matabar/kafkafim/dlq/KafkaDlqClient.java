@@ -6,6 +6,7 @@ import java.util.Map;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Function;
 import org.apache.kafka.clients.admin.Admin;
 import org.apache.kafka.clients.admin.DescribeTopicsOptions;
@@ -38,6 +39,16 @@ import org.slf4j.LoggerFactory;
  * replaced on the abortable path too: a cheap safety net, not a requirement. kafka-clients logs
  * "Aborting producer batches due to fatal error" at {@code ERROR} on that path, and this class's
  * WARN says the producer is in a fatal state; neither means data was lost (DESIGN §7).
+ *
+ * <p>Each send completes exactly once, although kafka-clients may report one send twice: {@code
+ * KafkaProducer.send} appends the record and only then throws when its transaction manager is in an
+ * error state, so the appended batch still fails or succeeds later through the callback. The first
+ * report wins (a thrown exception is claimed before the replacement closes the producer) and later
+ * ones are dropped; a dropped success means the writer resends a record that was written, a
+ * duplicate the DLQ contract allows. A send that fails as a side effect of the replacement (the
+ * close aborts its batch, or it reached the producer after the close began) is reported as a {@link
+ * ProducerReplacedException} caused by the failure that triggered the replacement, so it is
+ * classified by that failure and not as a transient close.
  */
 final class KafkaDlqClient implements DlqClient {
 
@@ -46,7 +57,7 @@ final class KafkaDlqClient implements DlqClient {
   private final Map<String, Object> producerSettings;
   private final Function<Map<String, Object>, Producer<byte[], byte[]>> producers;
   private final Object producerLock = new Object();
-  private volatile Producer<byte[], byte[]> producer;
+  private volatile Generation generation;
   private final Map<String, Object> adminSettings;
   private final Object adminLock = new Object();
   private @Nullable Admin admin;
@@ -64,26 +75,63 @@ final class KafkaDlqClient implements DlqClient {
     log.info("Creating DLQ producer with settings {}", ProducerSettings.redacted(producerSettings));
     this.producerSettings = producerSettings;
     this.producers = producers;
-    this.producer = producers.apply(producerSettings);
+    this.generation = new Generation(producers.apply(producerSettings));
     this.adminSettings = ProducerSettings.adminSettings(producerSettings);
   }
 
   @Override
   public void send(ProducerRecord<byte[], byte[]> record, Callback callback) {
-    Producer<byte[], byte[]> current = currentProducer();
+    Generation current = currentGeneration();
+    AtomicBoolean reported = new AtomicBoolean();
     try {
-      current.send(
+      current.producer.send(
           record,
           (metadata, exception) -> {
-            if (exception != null) {
-              replaceIfFatal(current, exception);
+            boolean first = reported.compareAndSet(false, true);
+            Exception failure = exception == null ? null : attributed(current, exception);
+            if (failure != null) {
+              replaceIfFatal(current, failure);
             }
-            callback.onCompletion(metadata, exception);
+            if (first) {
+              callback.onCompletion(metadata, failure);
+            }
           });
     } catch (RuntimeException e) {
-      replaceIfFatal(current, e);
-      throw e;
+      // Claimed before the replacement: closing the producer aborts the batch kafka-clients may
+      // have appended before it threw, and that callback must not win.
+      boolean first = reported.compareAndSet(false, true);
+      RuntimeException failure = attributed(current, e);
+      replaceIfFatal(current, failure);
+      if (first) {
+        throw failure;
+      }
     }
+  }
+
+  /**
+   * The failure to report for a send on {@code generation}: wrapped in a {@link
+   * ProducerReplacedException} when that producer is being replaced and the failure would otherwise
+   * count as transient, which is then a side effect of the close.
+   */
+  private static Exception attributed(Generation generation, Exception failure) {
+    ProducerReplacedException replaced = replaced(generation, failure);
+    return replaced == null ? failure : replaced;
+  }
+
+  private static RuntimeException attributed(Generation generation, RuntimeException failure) {
+    ProducerReplacedException replaced = replaced(generation, failure);
+    return replaced == null ? failure : replaced;
+  }
+
+  private static @Nullable ProducerReplacedException replaced(
+      Generation generation, Exception failure) {
+    Throwable trigger = generation.replacedBecause;
+    if (trigger == null
+        || trigger == failure
+        || DlqFailure.classify(failure) != DlqFailure.Kind.TRANSIENT) {
+      return null;
+    }
+    return new ProducerReplacedException(trigger, failure);
   }
 
   /**
@@ -91,25 +139,25 @@ final class KafkaDlqClient implements DlqClient {
    * succeeded yet. A creation failure is thrown as is (a {@code ConfigException} or {@code
    * KafkaException}), so the writer classifies it by its cause and retries with backoff.
    */
-  private Producer<byte[], byte[]> currentProducer() {
+  private Generation currentGeneration() {
     if (!needsProducer) {
-      return producer;
+      return generation;
     }
     synchronized (producerLock) {
       if (closed) {
         throw new IllegalStateException("DLQ producer is closed");
       }
       if (needsProducer) {
-        producer = producers.apply(producerSettings);
+        generation = new Generation(producers.apply(producerSettings));
         needsProducer = false;
       }
-      return producer;
+      return generation;
     }
   }
 
   /** The producer in use; a new instance after a fatal error. */
   Producer<byte[], byte[]> producer() {
-    return producer;
+    return generation.producer;
   }
 
   /**
@@ -122,15 +170,17 @@ final class KafkaDlqClient implements DlqClient {
    * joins the old I/O thread, whose aborted-batch callbacks come back here and must not wait. If
    * creating the new one fails, every later send tries again until one succeeds.
    */
-  private void replaceIfFatal(Producer<byte[], byte[]> failed, Throwable failure) {
+  private void replaceIfFatal(Generation failed, Throwable failure) {
     if (!DlqFailure.isFatalForProducer(failure)) {
       return;
     }
     synchronized (producerLock) {
-      if (closed || replacing || needsProducer || producer != failed) {
+      if (closed || replacing || needsProducer || generation != failed) {
         return;
       }
       replacing = true;
+      // Before the close, so that the batches it aborts are reported by this failure.
+      failed.replacedBecause = failure;
     }
     log.warn(
         "DLQ producer {} is in a fatal state ({}); replacing it",
@@ -139,7 +189,7 @@ final class KafkaDlqClient implements DlqClient {
     try {
       // Possibly on the failed producer's own I/O thread, where kafka-clients forces a zero
       // timeout.
-      failed.close(Duration.ZERO);
+      failed.producer.close(Duration.ZERO);
     } catch (RuntimeException e) {
       log.warn("Closing the failed DLQ producer failed", e);
     } finally {
@@ -150,7 +200,7 @@ final class KafkaDlqClient implements DlqClient {
       }
     }
     try {
-      currentProducer();
+      currentGeneration();
     } catch (RuntimeException e) {
       log.warn("Recreating the DLQ producer failed; the next send tries again", e);
     }
@@ -208,11 +258,21 @@ final class KafkaDlqClient implements DlqClient {
       }
     }
     try {
-      producer.close(timeout);
+      generation.producer.close(timeout);
     } finally {
       if (toClose != null) {
         toClose.close(Duration.ZERO);
       }
+    }
+  }
+
+  /** One producer instance, and the failure that made this client replace it. */
+  private static final class Generation {
+    final Producer<byte[], byte[]> producer;
+    volatile @Nullable Throwable replacedBecause;
+
+    Generation(Producer<byte[], byte[]> producer) {
+      this.producer = producer;
     }
   }
 }
