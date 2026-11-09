@@ -63,8 +63,9 @@ itself fails, its outputs are empty and every job runs. Pushes to `main` and
 Branch protection on `main` (intended): PR required, squash merge, and the checks
 "Build and test", "Integration tests", "Container image" and "Helm chart" required.
 `image` no longer waits for the integration tests, so both "Integration tests" and
-"Container image" must be required: neither alone proves a pull request is mergeable. As of 2026-11-09 `main` has no branch protection
-rule or ruleset, so none of this is enforced yet.
+"Container image" must be required, so both must pass before a pull request merges.
+As of 2026-11-09 `main` has no branch protection rule or ruleset, so none of this is
+enforced yet.
 Dependabot (weekly, grouped) for Maven, GitHub Actions and the Docker base image.
 
 ## CD (`.github/workflows/release.yml`) on tag `v*`
