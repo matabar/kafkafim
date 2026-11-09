@@ -191,3 +191,5 @@ helm template charts/kafkafim -f charts/kafkafim/ci/two-groups-values.yaml
 revisit when it does. The image runs as UID 65532 with a read-only root filesystem
 and `JAVA_TOOL_OPTIONS=-XX:MaxRAMPercentage=75 -XX:+ExitOnOutOfMemoryError`.
 Class-data sharing (AppCDS) is a later startup optimisation, not needed for the MVP.
+
+<!-- docs-only CI probe; throwaway -->
