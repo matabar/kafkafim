@@ -82,11 +82,14 @@
     "image": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["registry", "repository", "tag", "pullPolicy"],
+      "required": ["registry", "repository", "pullPolicy"],
       "properties": {
         "registry": { "type": "string" },
         "repository": { "type": "string", "minLength": 1 },
-        "tag": { "type": "string" },
+        "tag": {
+          "description": "Image tag; empty or absent for the chart's appVersion. Neither tag nor digest is required: appVersion also names the image, which the schema cannot see, so the template checks that one of the three is set.",
+          "type": "string"
+        },
         "digest": {
           "description": "Image digest to pin, sha256:<64 lowercase hex>; empty for none. Not a full reference: the registry and repository come from image.registry and image.repository.",
           "type": "string",
