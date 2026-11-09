@@ -10,6 +10,8 @@ import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 /** One valid and one invalid case per validation rule, through the real binding path. */
 class ConfigValidationTest {
@@ -821,6 +823,87 @@ class ConfigValidationTest {
           MINIMAL,
           "'pattern:' needs a DateTimeFormatter pattern",
           P + ".document.timestamp-format=pattern:");
+    }
+
+    @ParameterizedTest
+    @ValueSource(
+        strings = {
+          "yyyy-MM-dd HH:mm:ss",
+          "yyyy-MM-dd HH:mm VV",
+          "yyyyMMdd",
+          "uuuu-MM-dd",
+          "dd/MMM/yyyy:HH:mm:ss Z",
+          "yyyy-MM-dd hh:mm a",
+          "G yyyy-MM-dd",
+          "yyyy-DDD",
+          "YYYY-ww-e",
+          "EEE, dd MMM yyyy HH:mm:ss z"
+        })
+    void acceptsPatternsDecodeCanParse(String pattern) {
+      assertValid(MINIMAL, P + ".document.timestamp-format=pattern:" + pattern);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"yyyy-MM", "HH:mm", "MM-dd", "yyyy", "YYYY-MM-dd", "yyyy-ww"})
+    void rejectsPatternsThatNeverYieldDates(String pattern) {
+      assertInvalid(
+          MINIMAL,
+          P + ".document.timestamp-format: pattern '" + pattern + "' never yields a date",
+          P + ".document.timestamp-format=pattern:" + pattern);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"yyyy-MM-dd hh:mm", "yyyy-MM-dd mm", "yyyy-MM-dd a"})
+    void rejectsPatternsThatNeverYieldCompleteTimes(String pattern) {
+      assertInvalid(
+          MINIMAL,
+          P + ".document.timestamp-format: pattern '" + pattern + "' never yields a complete time",
+          P + ".document.timestamp-format=pattern:" + pattern);
+    }
+
+    @Test
+    void warnsOnPatternsWithoutOffsetOrZone() {
+      ConfigValidator.Result result =
+          ConfigValidator.validate(
+              ConfigTestSupport.bind(
+                  MINIMAL, P + ".document.timestamp-format=pattern:yyyy-MM-dd HH:mm:ss"));
+      assertThat(result.isValid()).isTrue();
+      assertThat(result.warnings())
+          .anyMatch(w ->
+              w.startsWith(P + ".document.timestamp-format: pattern 'yyyy-MM-dd HH:mm:ss'")
+                  && w.contains("read as UTC"));
+    }
+
+    @ParameterizedTest
+    @ValueSource(
+        strings = {
+          "yyyy-MM-dd'T'HH:mm:ss.SSSXXX",
+          "yyyy-MM-dd HH:mm VV",
+          "yyyy-MM-dd HH:mm z",
+          "yyyy-MM-dd HH:mm O",
+          "yyyy-MM-dd HH:mm Z"
+        })
+    void doesNotWarnWhenThePatternHasAnOffsetOrZone(String pattern) {
+      ConfigValidator.Result result =
+          ConfigValidator.validate(
+              ConfigTestSupport.bind(MINIMAL, P + ".document.timestamp-format=pattern:" + pattern));
+      assertThat(result.isValid()).isTrue();
+      assertThat(result.warnings()).noneMatch(w -> w.contains("timestamp-format"));
+    }
+
+    @Test
+    void warnsOnTheClockHourOfDay() {
+      ConfigValidator.Result result =
+          ConfigValidator.validate(
+              ConfigTestSupport.bind(
+                  MINIMAL, P + ".document.timestamp-format=pattern:yyyy-MM-dd kk:mmXXX"));
+      assertThat(result.isValid()).isTrue();
+      assertThat(result.warnings()).anyMatch(w -> w.contains("uses 'k' (clock hour 1-24)"));
+      ConfigValidator.Result quoted =
+          ConfigValidator.validate(
+              ConfigTestSupport.bind(
+                  MINIMAL, P + ".document.timestamp-format=pattern:yyyy-MM-dd'k'HH:mmXXX"));
+      assertThat(quoted.warnings()).noneMatch(w -> w.contains("uses 'k'"));
     }
 
     @Test

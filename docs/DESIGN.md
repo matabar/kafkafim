@@ -297,7 +297,9 @@ string for more). `pattern:` parses with `Locale.ROOT` and strict resolution (th
 defaults to CE, so `yyyy` works and `02-30` fails). A pattern without an offset or
 zone is read as **UTC**, one without any time field as midnight; a time that cannot
 resolve (`hh` without `a`) or a pattern that yields no date fails. Era text is
-`CE`/`BCE` under `Locale.ROOT`. Every format rejects instants outside years 1 to 9999. "Ingest time" is the
+`CE`/`BCE` under `Locale.ROOT`. `k` is the clock hour 1 to 24, whose `24` is the first
+hour of the day (`24:30` is `00:30` of the same date), as java.time defines it; `HH` rejects
+ISO-8601's end-of-day `24:00`, so such a value is a bad timestamp rather than misdated. Every format rejects instants outside years 1 to 9999. "Ingest time" is the
 Kafka record timestamp (for a replayed DLQ record, its `kafkafim.source.timestamp`; §9,
 ADR-0027).
 
@@ -847,11 +849,17 @@ are reported together:
   `Locale.ROOT`. An unquoted `Y` (week-based year) in a
   date pattern is a warning.
 - **Timestamps**: `timestamp-format` is `iso-8601`, `epoch-millis`, `epoch-seconds` or
-  `pattern:<DateTimeFormatter>` that compiles.
+  `pattern:<DateTimeFormatter>`. A pattern is checked with the formatter decode uses
+  (`Locale.ROOT`, strict, era CE) by formatting a sample and parsing it back: one that
+  never yields a date (`yyyy-MM`, `HH:mm`, `YYYY-MM-dd`) or a complete time (`hh`
+  without `a`, minutes without hours) is an error, since every document would fail.
+  A pattern without an offset or zone (read as UTC), one using `k`, or one that cannot
+  parse its own output is a warning.
 - **Document**: `op: create` takes no `version-field`; Elasticsearch accepts external
   versions only on `index` ("create operations only support internal versioning", §4.4).
 - **Warnings** (bind, log at `WARN`): no pipelines, `id-missing: auto`, an http route
-  without identity, week-based year, `allow-inline-secrets=true`.
+  without identity, week-based year, a timestamp `pattern:` without an offset or zone or
+  using `k`, `allow-inline-secrets=true`.
 
 ## 6. Scaling
 
