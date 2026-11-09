@@ -23,10 +23,6 @@ Conventions used below:
   `deploy/kafkafim-<g>` picks the first matching pod, so prefer naming the pod.
 - Logs are ECS JSON on stdout. The log lines quoted below are the `message` field.
 - Metric names are the Prometheus names from [DESIGN §10](DESIGN.md#10-observability).
-  Metrics marked **(telemetry)** come with the telemetry change
-  ([matabar/kafkafim#24](https://github.com/matabar/kafkafim/pull/24)); until a release
-  contains it, only `kafkafim_pipeline_state`, `kafkafim_config_reload_total` and
-  `kafkafim_config_generation` exist, plus the standard JVM and Spring meters.
 
 ## 1. Mental model in one minute
 
@@ -90,9 +86,9 @@ A new pod becomes ready only when at least one of its pipelines is `running` or
 stops at the first new pod and the old pods keep working (unless the same upgrade
 also changed `config.kafkafim.*`: the old pods then hot-reload the new configuration
 too, and may reject it or end up with `failed_preflight` pipelines)
-([DESIGN §4.6](DESIGN.md#46-no-provisioning-fail-fast-verification)). With the
-telemetry change, readiness also requires that at least one started pipeline's
-Kafka consumers are connected. Elasticsearch health never affects readiness.
+([DESIGN §4.6](DESIGN.md#46-no-provisioning-fail-fast-verification)). Readiness
+also requires that at least one started pipeline's Kafka consumers are connected.
+Elasticsearch health never affects readiness.
 
 Before you call an upgrade done:
 
@@ -103,7 +99,7 @@ Before you call an upgrade done:
 3. For a config-only change: `kafkafim_config_generation` went up by one on every
    pod of the group and `kafkafim_config_reload_total{result="failure"}` did not
    move ([§4.2](#42-reading-the-result)).
-4. **(telemetry)** `kafkafim_consumer_lag` is flat or falling and
+4. `kafkafim_consumer_lag` is flat or falling and
    `rate(kafkafim_dlq_records_total[5m])` did not jump.
 
 ### 2.3 Roll back
@@ -184,8 +180,8 @@ Where to read it:
 
 | Endpoint | Up when | Used by |
 |---|---|---|
-| `/actuator/health/liveness` | The process is alive (`livenessState`). With the telemetry change also `supervisor`: the pipeline supervisor runs (or is draining for shutdown). Pipeline, Kafka and Elasticsearch problems never fail liveness: a restart would not fix them. | Startup probe (30 × 2s) and liveness probe. |
-| `/actuator/health/readiness` | `readinessState` and `pipelines`: at least one pipeline `running` or `paused`, or zero pipelines configured. With the telemetry change also `kafka`: at least one started pipeline's consumers hold broker connections (or none is started). Never gated on Elasticsearch. | Readiness probe; the `Service` (actuator only, no business traffic). |
+| `/actuator/health/liveness` | The process is alive (`livenessState`) and `supervisor`: the pipeline supervisor runs (or is draining for shutdown). Pipeline, Kafka and Elasticsearch problems never fail liveness: a restart would not fix them. | Startup probe (30 × 2s) and liveness probe. |
+| `/actuator/health/readiness` | `readinessState` and `pipelines`: at least one pipeline `running` or `paused`, or zero pipelines configured; and `kafka`: at least one started pipeline's consumers hold broker connections (or none is started). Never gated on Elasticsearch. | Readiness probe; the `Service` (actuator only, no business traffic). |
 
 An unready pod still consumes: readiness only gates the actuator `Service` and the
 rollout. A pod whose every pipeline is `failed_preflight` stays unready forever
@@ -200,13 +196,13 @@ neither (`kafkafim_config_reload_total` has `result`) ([DESIGN §10](DESIGN.md#1
 |---|---|
 | Is every pipeline running? | `kafkafim_pipeline_state{state=...}` |
 | Did the last config change apply? | `kafkafim_config_generation`, `kafkafim_config_reload_total{result="failure"}` (no `pipeline` label) |
-| Are we keeping up? **(telemetry)** | `kafkafim_consumer_lag{topic}` (owned partitions on this pod, polled every 10s; sum over pods), `kafkafim_e2e_latency_seconds` |
-| Is data flowing? **(telemetry)** | `rate(kafkafim_records_consumed_total[5m])`, `rate(kafkafim_docs_total{outcome="indexed"}[5m])` |
-| Is Elasticsearch healthy? **(telemetry)** | `kafkafim_breaker_state{es_cluster}` (0 closed, 1 half-open, 2 open), `kafkafim_bulk_requests_total{es_cluster,status}`, `kafkafim_bulk_latency_seconds`, `kafkafim_retries_total{scope}` |
-| Credentials rejected? **(telemetry)** | `kafkafim_auth_failures_total{es_cluster,identity}` |
-| What is going to the DLQ? **(telemetry)** | `kafkafim_dlq_records_total{error_type}`, `kafkafim_item_errors_total{es_cluster,error_type,retryable}` |
-| Backpressure / memory? **(telemetry)** | `kafkafim_in_flight_bytes` against the pipeline's `source.max-in-flight-bytes`; `jvm_memory_used_bytes{area="heap"}` |
-| Does this pod own partitions? Is Kafka connected? **(telemetry)** | `kafkafim_assigned_partitions`, `kafkafim_kafka_connected` (1/0) |
+| Are we keeping up? | `kafkafim_consumer_lag{topic}` (owned partitions on this pod, polled every 10s; sum over pods), `kafkafim_e2e_latency_seconds` |
+| Is data flowing? | `rate(kafkafim_records_consumed_total[5m])`, `rate(kafkafim_docs_total{outcome="indexed"}[5m])` |
+| Is Elasticsearch healthy? | `kafkafim_breaker_state{es_cluster}` (0 closed, 1 half-open, 2 open), `kafkafim_bulk_requests_total{es_cluster,status}`, `kafkafim_bulk_latency_seconds`, `kafkafim_retries_total{scope}` |
+| Credentials rejected? | `kafkafim_auth_failures_total{es_cluster,identity}` |
+| What is going to the DLQ? | `kafkafim_dlq_records_total{error_type}`, `kafkafim_item_errors_total{es_cluster,error_type,retryable}` |
+| Backpressure / memory? | `kafkafim_in_flight_bytes` against the pipeline's `source.max-in-flight-bytes`; `jvm_memory_used_bytes{area="heap"}` |
+| Does this pod own partitions? Is Kafka connected? | `kafkafim_assigned_partitions`, `kafkafim_kafka_connected` (1/0) |
 
 `deploy/grafana/` (dashboards and alert rules, [DESIGN §10](DESIGN.md#shipped-with-the-repo))
 does not exist yet; see [Known gaps](#known-gaps).
@@ -308,8 +304,8 @@ rotating it, restart the pods.
 
 ## 5. Incidents
 
-Each entry: **symptom → check → action.** "Lag grows" assumes the telemetry metrics;
-without them, use the consumer group's lag from Kafka tooling
+Each entry: **symptom → check → action.** "Lag grows" means `kafkafim_consumer_lag`;
+to cross-check it, use the consumer group's lag from Kafka tooling
 (`kafka-consumer-groups.sh --describe --group kafkafim.<pipeline>`; the default group
 id is `kafkafim.<pipeline>`).
 
@@ -334,7 +330,7 @@ id is `kafkafim.<pipeline>`).
   A `LOGGING_LEVEL_..._BULKSINK` variable does not work: Spring lowercases
   environment-variable keys, and logger names are case-sensitive. Remove the entry when
   done: the body can hold document field values.
-  **(telemetry)** `kafkafim_breaker_state{es_cluster="<es>"} == 2`,
+  `kafkafim_breaker_state{es_cluster="<es>"} == 2`,
   `kafkafim_bulk_requests_total{status=~"5..|429|io_error"}` rising.
 - **Check**: the ES cluster itself (its own monitoring; kafkafim never calls cluster
   health). Is it down, overloaded (429s, `es_rejected_execution_exception`), or is
@@ -361,7 +357,7 @@ id is `kafkafim.<pipeline>`).
   (es-auth:<es>/<identity>)` (`<none>` when the route has no identity); bulk sink
   WARNs with `status 401` or `403` and `authentication failure: type=security_exception,
   ..., reason=...`; the reason names the user, roles, action and index.
-  **(telemetry)** `kafkafim_auth_failures_total{es_cluster,identity}` increasing. Not a
+  `kafkafim_auth_failures_total{es_cluster,identity}` increasing. Not a
   breaker failure; nothing goes to the DLQ.
 - **Check**: is the credential in the mounted Secret current? Was it rotated in ES
   without the Secret, or the reverse? For 403: does the identity's role still have
@@ -382,7 +378,7 @@ id is `kafkafim.<pipeline>`).
   If every pipeline of a new pod is `starting`, the pod stays unready and a rollout
   waits (old pods keep running).
 - **After start**: kafka-clients reconnects with backoff on its own; state stays
-  `running`. **(telemetry)** `kafkafim_kafka_connected == 0` for the pipeline, and
+  `running`. `kafkafim_kafka_connected == 0` for the pipeline, and
   readiness goes out of service on a pod where every started pipeline lost its brokers.
   Lag cannot be read either (the lag poll keeps its previous values).
 - **Check**: broker health, DNS, network policy/firewall from the pod's namespace to
@@ -404,7 +400,7 @@ id is `kafkafim.<pipeline>`).
 - **Consumer group not permitted** (missing `Read` on the group): not checked before
   the first join. The pipeline shows **`running`**, but its consumers retry the join
   every 10s and log the group authorization error; it never gets partitions.
-  **(telemetry)** `kafkafim_assigned_partitions == 0` on every pod and lag grows.
+  `kafkafim_assigned_partitions == 0` on every pod and lag grows.
 - **Auth or ACL revoked after start**: consumers retry every 10s instead of stopping;
   state stays `running`, consumption stops.
 - **DLQ producer** (missing `Write` on the DLQ topic, which the idempotent producer
@@ -442,8 +438,8 @@ id is `kafkafim.<pipeline>`).
 
 **DLQ filling** (records are being dead-lettered):
 
-- **Symptom**: **(telemetry)** `rate(kafkafim_dlq_records_total[10m]) > 0`, by
-  `error_type`; WARN lines per DLQ record (with the telemetry change) naming the source
+- **Symptom**: `rate(kafkafim_dlq_records_total[10m]) > 0`, by
+  `error_type`; WARN lines per DLQ record naming the source
   coordinates, error type and target.
 - **Check**: what the records say. Read the DLQ topic with headers:
 
@@ -495,15 +491,15 @@ id is `kafkafim.<pipeline>`).
 
 ### 5.7 Pipeline shows `running` but consumes nothing
 
-- **Symptom**: state `running`, but lag grows and **(telemetry)**
+- **Symptom**: state `running`, but lag grows and
   `kafkafim_records_consumed_total` is flat for that pipeline on that pod.
 - **Check**, in order:
   1. Logs for `Pipeline '<p>': record handler failed; pausing until the pipeline is
      restarted`. That pause is not a supervisor reason, so the state stays `running`.
   2. Group or topic `Read` authorization errors ([§5.4](#54-kafka-authentication-or-acl-missing)).
-  3. **(telemetry)** `kafkafim_assigned_partitions`: 0 on this pod is normal only if the
+  3. `kafkafim_assigned_partitions`: 0 on this pod is normal only if the
      group has more pods than partitions (replicas above partitions are idle).
-  4. **(telemetry)** `kafkafim_in_flight_bytes` at or above `max-in-flight-bytes`:
+  4. `kafkafim_in_flight_bytes` at or above `max-in-flight-bytes`:
      backpressure, see [§5.8](#58-consumer-lag-growing).
 - **Action**: for 1, and for a listener container that stopped on its own (it is not
   restarted and the state still says `running`), restart the pods
@@ -511,7 +507,7 @@ id is `kafkafim.<pipeline>`).
 
 ### 5.8 Consumer lag growing
 
-- **Symptom**: **(telemetry)** `sum by (pipeline, topic) (kafkafim_consumer_lag)`
+- **Symptom**: `sum by (pipeline, topic) (kafkafim_consumer_lag)`
   rising for 5+ minutes; `kafkafim_e2e_latency_seconds` p99 above target.
 - **Check**, in order:
   1. Is the pipeline `paused` on any pod? Then it is [§5.1](#51-elasticsearch-outage-circuit-breaker-open),
@@ -574,7 +570,7 @@ id is `kafkafim.<pipeline>`).
     record may be up to `max-record-bytes` (default 8MB);
   - heap is `MaxRAMPercentage=75` of the container limit; the rest is metaspace,
     threads, direct buffers.
-  **(telemetry)** `kafkafim_in_flight_bytes` per pipeline against heap use.
+  `kafkafim_in_flight_bytes` per pipeline against heap use.
 - **Action**: lower `max-in-flight-bytes` or `max-poll-records` for the heavy
   pipeline (a config change, hot-reloaded), raise the group's memory limit (rolls the
   pods), or move the pipeline to its own group. A lower budget pauses fetching
@@ -623,6 +619,3 @@ Current behaviour that this runbook works around; each is a follow-up, not a fea
 - **No `validate` profile yet** ([DESIGN §5.6](DESIGN.md#56-validation-and-hot-reload),
   roadmap 0.2): an invalid configuration is found only by a running pod's reload or a
   new pod's startup.
-- Until the telemetry change ships, the only kafkafim meters are
-  `kafkafim_pipeline_state`, `kafkafim_config_reload_total` and
-  `kafkafim_config_generation`, and health has no `supervisor`/`kafka` components.
