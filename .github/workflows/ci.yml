@@ -9,8 +9,54 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 jobs:
+  # Decides which gate jobs a pull request needs (docs/DELIVERY.md, "Docs-only pull requests").
+  # Skipped jobs report success, so the check names stay usable as required checks; a
+  # workflow-level paths-ignore would leave them pending instead. Fails open: if this job
+  # fails, its outputs are empty and every job below runs.
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    outputs:
+      docs_only: ${{ steps.diff.outputs.docs_only }}
+      helm: ${{ steps.diff.outputs.helm }}
+    steps:
+      - if: github.event_name == 'pull_request'
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 2   # the PR merge commit and its first parent, the base branch tip
+      - id: diff
+        name: Classify changed paths
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT" != pull_request ]; then
+            # Pushes to main run everything.
+            printf 'docs_only=false\nhelm=true\n' >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          # What merging the PR would change. --no-renames lists both sides of a rename, so
+          # renaming code to *.md is not docs-only. quotePath=false keeps non-ASCII paths unquoted.
+          git -c core.quotePath=false diff --no-renames --name-only HEAD^1 HEAD > "$RUNNER_TEMP/changed"
+          sed 's/^/  /' "$RUNNER_TEMP/changed"
+          docs_only=false helm=false
+          [ -s "$RUNNER_TEMP/changed" ] && docs_only=true
+          while IFS= read -r f; do
+            case "$f" in
+              src/*) docs_only=false ;;   # Maven packages src/main/resources, *.md included
+              *.md | docs/* | LICENSE) ;;
+              *) docs_only=false ;;
+            esac
+            case "$f" in
+              charts/* | .github/workflows/ci.yml | .github/keys/*) helm=true ;;
+            esac
+          done < "$RUNNER_TEMP/changed"
+          echo "docs_only=$docs_only helm=$helm"
+          printf 'docs_only=%s\nhelm=%s\n' "$docs_only" "$helm" >> "$GITHUB_OUTPUT"
+
   build:
     name: Build and test
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.docs_only != 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -40,6 +86,7 @@ jobs:
   image:
     name: Container image
     needs: build
+    if: ${{ !cancelled() && needs.build.result == 'success' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -76,6 +123,8 @@ jobs:
 
   helm:
     name: Helm chart
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.helm != 'false' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
