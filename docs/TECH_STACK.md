@@ -27,7 +27,7 @@ Versions are the ones pinned at project creation (2026-11-07). Everything marked
 | Registries | GHCR: `ghcr.io/matabar/kafkafim` (image), `oci://ghcr.io/matabar/charts/kafkafim` (chart) | — | GitHub-native, free for public repos, OCI for both | [0022](decisions/0022-delivery-github-actions-ghcr-airgap.md) |
 | Supply chain | Cosign (keyless), Syft SBOM, BuildKit provenance, Dependabot | — | Verify on the internet side before carrying into the air gap | [0022](decisions/0022-delivery-github-actions-ghcr-airgap.md) |
 | Deploy | Helm chart, one release per Kubernetes cluster, plain `Deployment`/`ConfigMap`/`PDB`/`Service`/`HPA` | — | No CRDs or operators in production; no Secrets created | [0023](decisions/0023-helm-chart-one-release-per-cluster.md) |
-| CI | GitHub Actions: `./mvnw verify`, Dockerfile build + hadolint, `helm lint`/`template`/`kubeconform`/`unittest` | — | All required for merge to `main` | [0022](decisions/0022-delivery-github-actions-ghcr-airgap.md) |
+| CI | GitHub Actions: `./mvnw verify`, Dockerfile build + hadolint, `helm lint`/`template`/`kubeconform`/`unittest` | — | Intended as required checks for merge to `main` (not enforced yet); docs-only PRs skip the Java and image jobs, see [DELIVERY.md](DELIVERY.md) | [0022](decisions/0022-delivery-github-actions-ghcr-airgap.md) |
 | CD | GitHub Actions on `v*` tags: multi-arch image, chart, SBOM, signatures, air-gap bundle on the GitHub Release | — | Production is air-gapped; CD publishes, humans import | [0022](decisions/0022-delivery-github-actions-ghcr-airgap.md) |
 
 ## Explicitly not used
