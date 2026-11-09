@@ -112,7 +112,8 @@ For each `groups.<g>`:
   never the digest, made a valid label value: characters outside `[A-Za-z0-9_.-]`
   (such as `+`) become `_`, cut to 63 characters, leading and trailing
   non-alphanumerics dropped. It is on the resources, not on the
-  pod template, so a version change alone does not roll the pods.
+  pod template, so a version change alone does not roll the pods. With neither
+  `image.tag` nor `appVersion` (a digest-only install) the label is left out.
 - Names: a group's resources are `<fullname>-<group>`; with the conventional release
   name `kafkafim` that is `kafkafim-<group>`. The ServiceAccount (and the opt-in
   `NetworkPolicy` / `ServiceMonitor`) are named `<fullname>` and select every group.
@@ -157,7 +158,9 @@ For each `groups.<g>`:
   `autoscaling.maxReplicas` is then required, must be `>= minReplicas`, and the
   group must have a `resources.requests.cpu` (the CPU HPA has nothing to scale on
   otherwise).
-- `image.tag` or `.Chart.AppVersion` is non-empty.
+- `image.tag`, `image.digest` or `.Chart.AppVersion` is non-empty: something must
+  name the image. With only a digest (no tag, no appVersion) the image is pulled by
+  digest and the `app.kubernetes.io/version` label is left out.
 - `image.tag` contains no `@`: a `<tag>@sha256:...` there would make an invalid
   version label; the digest belongs in `image.digest`, which the schema requires to
   be `sha256:<64 lowercase hex>` (or empty), not a full image reference.
