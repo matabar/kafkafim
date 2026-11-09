@@ -188,14 +188,15 @@ Where `cosign` is unavailable inside the air gap, skopeo (1.18 or later, for the
 skopeo copy --all --preserve-digests oci:kafkafim-1.2.3-image:@0 docker://registry.internal/kafkafim/kafkafim:1.2.3
 ```
 
-The layout `cosign save` writes holds several manifests (the image index, then the
-signature and attestation manifests, annotated `kind: dev.cosignproject.cosign/...`)
-and no `org.opencontainers.image.ref.name`, so plain `oci:kafkafim-1.2.3-image` fails
-with "more than one image in oci, choose an image" and a `:<tag>` reference matches
+The layout `cosign save` writes holds more than one manifest (the image index, then
+the signature manifest, plus Cosign attestation manifests if any were attached; each
+annotated `kind: dev.cosignproject.cosign/...`) and no
+`org.opencontainers.image.ref.name`, so plain `oci:kafkafim-1.2.3-image` fails with
+"more than one image in oci, choose an image" and a `:<tag>` reference matches
 nothing; `:@0` selects the first entry of `index.json`, the image index. Check that
 `jq -r '.manifests[0].annotations.kind' kafkafim-1.2.3-image/index.json` prints
-`dev.cosignproject.cosign/imageIndex` (or read `index.json`) and run the digest check above afterwards.
-`--preserve-digests` makes skopeo fail rather than convert the manifests, which would
+`dev.cosignproject.cosign/imageIndex` (or read `index.json`), and run the digest
+check above afterwards. `--preserve-digests` makes skopeo fail rather than convert the manifests, which would
 change the digest. (Checked with cosign 3.1.3 and skopeo 1.24.1.)
 
 ## Local developer loop
