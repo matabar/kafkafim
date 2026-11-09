@@ -67,8 +67,8 @@ Branch protection on `main` (a classic branch protection rule, in force since
   image" and "Helm chart". "Detect changes" is not required. `image` does not wait
   for the integration tests, so "Integration tests" and "Container image" are both
   required: both must pass before a pull request merges. A job skipped by its `if:`
-  (docs-only pull requests, or `helm` when the chart is untouched) reports as
-  passing, so it does not block the merge.
+  (docs-only pull requests, or `helm` when none of `charts/**`, `ci.yml` and
+  `.github/keys/**` changed) reports as passing, so it does not block the merge.
 - Branches must be up to date with `main` before merging (strict status checks).
 - Administrators are included: the rule applies to them too.
 - Force-pushes to `main` and deleting `main` are blocked.
