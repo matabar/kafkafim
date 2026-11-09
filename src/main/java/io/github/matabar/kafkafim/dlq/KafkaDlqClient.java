@@ -38,7 +38,7 @@ import org.slf4j.LoggerFactory;
  * aborted batches still fail with {@code ClusterAuthorizationException}, so the producer is
  * replaced on the abortable path too: a cheap safety net, not a requirement. kafka-clients logs
  * "Aborting producer batches due to fatal error" at {@code ERROR} on that path, and this class's
- * WARN says the producer is in a fatal state; neither means data was lost (DESIGN §7).
+ * WARN says the producer may be in a fatal state; neither means data was lost (DESIGN §7).
  *
  * <p>Each send completes exactly once, although kafka-clients may report one send twice: {@code
  * KafkaProducer.send} appends the record and only then throws when its transaction manager is in an
@@ -169,6 +169,9 @@ final class KafkaDlqClient implements DlqClient {
    * client.id}'s app-info MBean. The close happens outside the lock: on the synchronous path it
    * joins the old I/O thread, whose aborted-batch callbacks come back here and must not wait. If
    * creating the new one fails, every later send tries again until one succeeds.
+   *
+   * <p>kafka-clients cannot say whether the producer really is fatal ({@link
+   * DlqFailure#isFatalForProducer}), hence "may be" in the log line.
    */
   private void replaceIfFatal(Generation failed, Throwable failure) {
     if (!DlqFailure.isFatalForProducer(failure)) {
@@ -183,7 +186,7 @@ final class KafkaDlqClient implements DlqClient {
       failed.replacedBecause = failure;
     }
     log.warn(
-        "DLQ producer {} is in a fatal state ({}); replacing it",
+        "DLQ producer {} may be in a fatal state ({}); replacing it",
         producerSettings.get("client.id"),
         DlqFailure.unwrap(failure).getClass().getSimpleName());
     try {

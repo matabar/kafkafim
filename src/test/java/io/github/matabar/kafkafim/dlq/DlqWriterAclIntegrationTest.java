@@ -57,9 +57,10 @@ import org.testcontainers.kafka.KafkaContainer;
  * <p>kafka-clients 4.2 itself treats this error as abortable, not fatal, for an idempotent
  * producer: the same producer would succeed after the grant. So the test asserts what the writer
  * guarantees (classification, blocking, completion after the grant), not that the producer was
- * replaced. kafka-clients still logs "Aborting producer batches due to fatal error" on this path;
- * the producer is not fatal. A send that fails because of the replacement (its batch aborted by the
- * close) still counts as {@code CONFIGURATION}, by the failure that triggered it.
+ * replaced. kafka-clients still logs "Aborting producer batches due to fatal error" on this path,
+ * and {@code KafkaDlqClient} that the producer may be in a fatal state; the producer is not fatal.
+ * A send that fails because of the replacement (its batch aborted by the close) still counts as
+ * {@code CONFIGURATION}, by the failure that triggered it.
  */
 @Testcontainers
 class DlqWriterAclIntegrationTest {
