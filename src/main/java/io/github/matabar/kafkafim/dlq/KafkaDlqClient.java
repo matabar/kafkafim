@@ -42,9 +42,11 @@ import org.slf4j.LoggerFactory;
  *
  * <p>Each send completes exactly once, although kafka-clients may report one send twice: {@code
  * KafkaProducer.send} appends the record and only then throws when its transaction manager is in an
- * error state, so the appended batch still fails or succeeds later through the callback. The first
- * report wins (a thrown exception is claimed before the replacement closes the producer) and later
- * ones are dropped; a dropped success means the writer resends a record that was written, a
+ * error state, so the appended batch still fails or succeeds later through the callback; for a
+ * {@code ProducerFencedException} or {@code InvalidProducerEpochException} at the same point it
+ * calls the callback on the calling thread instead, and the appended batch can report again. The
+ * first report wins (a thrown exception is claimed before the replacement closes the producer) and
+ * later ones are dropped; a dropped success means the writer resends a record that was written, a
  * duplicate the DLQ contract allows. A send that fails as a side effect of the replacement (the
  * close aborts its batch, or it reached the producer after the close began) is reported as a {@link
  * ProducerReplacedException} caused by the failure that triggered the replacement, so it is
@@ -269,7 +271,11 @@ final class KafkaDlqClient implements DlqClient {
     }
   }
 
-  /** One producer instance, and the failure that made this client replace it. */
+  /**
+   * One producer instance, and the failure that made this client replace it. Once that is set, any
+   * transient failure on this instance counts as the trigger's kind, even a genuine timeout that
+   * raced the close: the instance is being closed anyway and the trigger already blocks the writer.
+   */
   private static final class Generation {
     final Producer<byte[], byte[]> producer;
     volatile @Nullable Throwable replacedBecause;

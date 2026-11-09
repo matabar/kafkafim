@@ -96,8 +96,10 @@ class KafkaDlqClientTest {
   @Test
   void sendThatThrowsAfterAppendingIsReportedOnlyByTheThrow() {
     // KafkaProducer.send appends the record, then throws when its transaction manager is in an
-    // error state; closing the producer for the replacement later aborts that appended batch.
-    MockProducer<byte[], byte[]>[] first = new MockProducer[1];
+    // error state; closing the producer for the replacement aborts that appended batch inside the
+    // close (close(ZERO) off the I/O thread joins it), before the throw reaches the caller.
+    AtomicReference<MockProducer<byte[], byte[]>> first = new AtomicReference<>();
+    AtomicReference<Boolean> abortedInClose = new AtomicReference<>();
     KafkaDlqClient client =
         new KafkaDlqClient(
             Map.of("client.id", "c"),
@@ -109,15 +111,22 @@ class KafkaDlqClientTest {
                     public synchronized Future<RecordMetadata> send(
                         ProducerRecord<byte[], byte[]> record, Callback callback) {
                       Future<RecordMetadata> appended = super.send(record, callback);
-                      if (first[0] == this) {
+                      if (first.get() == this) {
                         throw fatalWrapper();
                       }
                       return appended;
                     }
+
+                    @Override
+                    public void close(Duration timeout) {
+                      if (first.get() == this) {
+                        abortedInClose.set(
+                            errorNext(new KafkaException("Producer is closed forcefully.")));
+                      }
+                      super.close(timeout);
+                    }
                   };
-              if (first[0] == null) {
-                first[0] = producer;
-              }
+              first.compareAndSet(null, producer);
               created.add(producer);
               return producer;
             });
@@ -125,10 +134,10 @@ class KafkaDlqClientTest {
 
     assertThatThrownBy(() -> client.send(record(), (m, e) -> heard.add(e)))
         .hasCauseInstanceOf(ClusterAuthorizationException.class);
-    first[0].errorNext(new KafkaException("Producer is closed forcefully."));
 
+    assertThat(abortedInClose.get()).as("the close aborted the appended batch").isTrue();
     assertThat(heard).as("the aborted batch is not a second report").isEmpty();
-    assertThat(first[0].closed()).isTrue();
+    assertThat(first.get().closed()).isTrue();
     assertThat(client.producer()).isSameAs(created.get(1));
   }
 

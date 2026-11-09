@@ -482,7 +482,8 @@ id is `kafkafim.<pipeline>`).
 - **Action**: fix the cause; the send is retried forever (100ms doubling to 30s) and
   the writer logs INFO `DLQ produce for pipeline '<p>' to topic '<t>' recovered`, then
   the pause clears. After an error that kafka-clients *can* make **fatal** (cluster
-  authorization, authentication, unsupported version, a fenced producer), the shared
+  authorization, authentication, unsupported version, a fenced producer, an invalid
+  producer ID mapping), the shared
   producer is replaced automatically: WARN `DLQ producer <client.id> may be in a fatal
   state (<Exception>); replacing it`. A missing `Write` ACL failing `InitProducerId` is
   usually *not* fatal in kafka-clients 4.2 (it is abortable, and the producer would
@@ -491,9 +492,8 @@ id is `kafkafim.<pipeline>`).
   path too. Neither means data was lost; see [DESIGN §7](DESIGN.md#7-backpressure-and-failure-handling).
   Sends that fail because of the replacement are reported with the failure that
   triggered it (`ProducerReplacedException: DLQ producer was being replaced after
-  ...`), so their kind stays configuration. Fixing the ACL unblocks the next attempt
-  without a restart. For an oversize DLQ
-  record, raise `max.request.size` through the Kafka cluster's `properties` together
+  ...`), so they get the trigger's kind (configuration for a missing ACL). Fixing the
+  ACL unblocks the next attempt without a restart. For an oversize DLQ record, raise `max.request.size` through the Kafka cluster's `properties` together
   with the DLQ topic's `max.message.bytes`.
 
 ### 5.7 Pipeline shows `running` but consumes nothing
