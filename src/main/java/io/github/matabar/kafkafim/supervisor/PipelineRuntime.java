@@ -265,6 +265,25 @@ final class PipelineRuntime {
     }
   }
 
+  /**
+   * Starts the pipeline again if its last start failed preflight and nothing is starting or
+   * stopping it: what an accepted reload does for a pipeline it leaves unchanged (DESIGN §5.6). One
+   * attempt per call; a pipeline that still fails goes back to {@link
+   * PipelineState#FAILED_PREFLIGHT} and waits for the next call, so nothing retries it on its own.
+   *
+   * @return whether a start was begun
+   */
+  boolean retryIfFailed() {
+    synchronized (lock) {
+      if (state != PipelineState.FAILED_PREFLIGHT || stops > 0 || starter != null) {
+        return false;
+      }
+      LOG.info("Pipeline '{}': retrying after failed preflight", name);
+      start();
+      return true;
+    }
+  }
+
   private void startLoop(CountDownLatch signal) {
     Duration delay = FIRST_RETRY;
     try {

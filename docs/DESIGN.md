@@ -333,7 +333,7 @@ then the source starts, which fails for a missing source topic. All DLQ and
 Elasticsearch checks run before a verdict, so one ERROR line names every problem.
 Missing or undescribable topics, a 401/403, an unknown identity or unreadable trust
 material, and a Kafka authentication or authorization error are **configuration**
-failures (`failed_preflight` until a reload changes the pipeline, or a restart). An unreachable broker or cluster
+failures (`failed_preflight` until the next accepted reload or a restart, §5.6). An unreachable broker or cluster
 (timeout, connection error, 5xx) is **transient**: the pipeline stays `starting` and
 retries (1s doubling to 30s), so a pod that starts during a short outage needs no
 restart. Elasticsearch answers 405 on that path when security is disabled; any status
@@ -777,7 +777,7 @@ agent all work. A changed secret file is picked up by the same reload path.
     phase, after which Spring moves on: records not yet committed are re-delivered
     after the restart, nothing is lost.
   - **`POST /actuator/reload`** returns `{result, generation, added, removed,
-    restarted: [{pipeline, reasons}], unchanged, errors}`: 200 for `applied` or
+    restarted: [{pipeline, reasons}], retried, unchanged, errors}`: 200 for `applied` or
     `unchanged`, 400 with every violation for `rejected`, 503 while the supervisor is
     not running. Names and violations only, never configuration values. It is
     defined in `supervisor` (nothing depends on `supervisor`, so it cannot create a
@@ -793,8 +793,17 @@ agent all work. A changed secret file is picked up by the same reload path.
     not watched. `POST /actuator/reload` works with the watcher disabled.
   - Not reloaded: the `KafkafimProperties` bean stays the startup tree (the supervisor
     holds the one in effect); OTLP export headers (§10) and everything outside
-    `kafkafim.*` need a restart. A pipeline in `failed_preflight` restarts only when a
-    reload changes it (or the pod restarts).
+    `kafkafim.*` need a restart.
+  - **Retry of `failed_preflight`** (ADR-0032): every accepted reload (`applied` or
+    `unchanged`, watcher or endpoint) starts once more each pipeline it leaves unchanged
+    that is in `failed_preflight`, so after fixing a missing topic, ACL or credential a
+    no-op `POST /actuator/reload` recovers it without a restart. They are listed under
+    `retried` (not `unchanged`); `result`, `generation` and
+    `kafkafim_config_reload_total` are unaffected, and the reload's INFO line names
+    them. One ordinary start per reload, in the background: a pipeline that still fails
+    goes back to `failed_preflight` and waits for the next reload (no automatic retry,
+    no attempt while one is starting or stopping); the outcome shows in
+    `kafkafim_pipeline_state`. A rejected reload retries nothing.
 
 ### 5.7 Defaults and validation rules
 

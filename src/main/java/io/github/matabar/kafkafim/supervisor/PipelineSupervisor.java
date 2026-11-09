@@ -47,7 +47,8 @@ import org.springframework.context.SmartLifecycle;
  *
  * <p><b>Reload</b> ({@link #apply}, DESIGN §5.6): removed and changed pipelines drain and stop in
  * parallel; changed ones get a new context and start again, added ones start, unchanged ones are
- * not touched.
+ * not touched, except that an unchanged one in {@code failed_preflight} is started once more
+ * ({@link #retryFailedPreflight}).
  */
 public final class PipelineSupervisor implements SmartLifecycle {
 
@@ -268,9 +269,10 @@ public final class PipelineSupervisor implements SmartLifecycle {
    *
    * @param next the new configuration, valid as a whole
    * @param diff {@code ConfigDiff.between(properties(), next)}
+   * @return the unchanged pipelines in {@code failed_preflight} that were started once more
    * @throws IllegalStateException if the supervisor is not running
    */
-  void apply(KafkafimProperties next, ConfigDiff diff) {
+  List<String> apply(KafkafimProperties next, ConfigDiff diff) {
     synchronized (lifecycle) {
       if (!running) {
         throw new IllegalStateException("The pipeline supervisor is not running");
@@ -317,11 +319,38 @@ public final class PipelineSupervisor implements SmartLifecycle {
       topologyListeners.forEach(PipelineSupervisor::runQuietly);
       if (running) {
         toStart.forEach(PipelineRuntime::start);
-      } else {
-        // A shutdown began during the drains: stop() runs next and would stop them again.
-        LOG.info("Shutdown in progress; {} pipeline(s) of the reload not started", toStart.size());
+        return retryFailed(diff.unchanged());
       }
+      // A shutdown began during the drains: stop() runs next and would stop them again.
+      LOG.info("Shutdown in progress; {} pipeline(s) of the reload not started", toStart.size());
+      return List.of();
     }
+  }
+
+  /**
+   * Starts once more those of {@code candidates} whose last start failed preflight (DESIGN §5.6):
+   * an accepted reload that leaves a pipeline unchanged retries it, since its cause (a missing
+   * topic, an ACL, a credential) is usually fixed outside kafkafim. One attempt per call, none
+   * while the pipeline is starting or stopping; nothing while the supervisor is not running.
+   *
+   * @param candidates pipeline names, typically {@code ConfigDiff.unchanged()}
+   * @return the pipelines started, in configuration order
+   */
+  List<String> retryFailedPreflight(Collection<String> candidates) {
+    synchronized (lifecycle) {
+      return running ? retryFailed(candidates) : List.of();
+    }
+  }
+
+  private List<String> retryFailed(Collection<String> candidates) {
+    Set<String> wanted = Set.copyOf(candidates);
+    List<String> retried = new ArrayList<>();
+    pipelines.forEach((name, runtime) -> {
+      if (wanted.contains(name) && runtime.retryIfFailed()) {
+        retried.add(name);
+      }
+    });
+    return List.copyOf(retried);
   }
 
   private static void runQuietly(Runnable listener) {
