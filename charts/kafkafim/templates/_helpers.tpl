@@ -47,7 +47,9 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- define "kafkafim.labels" -}}
 helm.sh/chart: {{ include "kafkafim.chart" . }}
 {{ include "kafkafim.selectorLabels" . }}
-app.kubernetes.io/version: {{ include "kafkafim.versionLabel" . | quote }}
+{{- with include "kafkafim.versionLabel" . }}
+app.kubernetes.io/version: {{ . | quote }}
+{{- end }}
 app.kubernetes.io/managed-by: {{ .Release.Service }}
 app.kubernetes.io/part-of: kafkafim
 {{- end -}}
@@ -78,7 +80,8 @@ app.kubernetes.io/component: {{ .group }}
 app.kubernetes.io/version: the image tag (or appVersion), never the digest, made a
 valid label value: any character outside [A-Za-z0-9_.-] (such as semver's "+")
 becomes "_", at most 63 characters, starting and ending with an alphanumeric
-character.
+character. Empty, and the label left out, when there is no image.tag and no
+appVersion (a digest-pinned image) or the tag has no alphanumeric character.
 */}}
 {{- define "kafkafim.versionLabel" -}}
 {{- $v := regexReplaceAll "[^A-Za-z0-9_.-]" (include "kafkafim.imageTag" .) "_" | trunc 63 -}}
@@ -152,8 +155,8 @@ values.schema.json covers the shape; these are the cross-field rules a schema
 cannot express.
 */}}
 {{- define "kafkafim.validate" -}}
-{{- if not (include "kafkafim.imageTag" .) -}}
-{{- fail "image.tag is empty and the chart has no appVersion; set image.tag" -}}
+{{- if not (or (include "kafkafim.imageTag" .) (.Values.image.digest | default "" | toString | trim)) -}}
+{{- fail "image.tag and image.digest are empty and the chart has no appVersion; set image.tag or image.digest" -}}
 {{- end -}}
 {{- if contains "@" (.Values.image.tag | default "" | toString) -}}
 {{- fail (printf "image.tag %q contains \"@\"; put the tag in image.tag and the digest (sha256:<64 hex>) in image.digest" (.Values.image.tag | toString)) -}}

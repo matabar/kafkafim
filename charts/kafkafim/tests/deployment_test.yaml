@@ -183,6 +183,21 @@ tests:
           path: metadata.labels["app.kubernetes.io/version"]
           value: 4.5.6
 
+  - it: image.digest with no image.tag and no appVersion pins by digest and omits the version label
+    values:
+      - ../ci/digest-values.yaml
+    chart:
+      appVersion: " "
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: registry.internal/kafkafim/kafkafim@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+      - notExists:
+          path: metadata.labels["app.kubernetes.io/version"]
+      - equal:
+          path: metadata.labels["app.kubernetes.io/managed-by"]
+          value: Helm
+
   - it: image.digest with image.tag pins <registry>/<repository>:<tag>@<digest>
     values:
       - ../ci/two-groups-values.yaml
