@@ -65,6 +65,9 @@ class KafkafimPropertiesBindingTest {
                 max-age: 200ms
                 in-flight: 4
               compression: true
+              client:
+                connect-timeout: 3s
+                response-timeout: 2m
             search-us:
               uris: [https://es-us-1:9200]
               identities:
@@ -159,6 +162,8 @@ class KafkafimPropertiesBindingTest {
             new ElasticsearchCluster.Bulk(
                 5000, DataSize.ofMegabytes(5), Duration.ofMillis(200), 4));
     assertThat(searchEu.compression()).isTrue();
+    assertThat(searchEu.client())
+        .isEqualTo(new ElasticsearchCluster.Client(Duration.ofSeconds(3), Duration.ofMinutes(2)));
 
     Pipeline orders = properties.pipelines().get("orders");
     assertThat(orders.source().topics()).containsExactly("orders.v2", "orders.backfill");
@@ -235,6 +240,8 @@ class KafkafimPropertiesBindingTest {
             new ElasticsearchCluster.Bulk(
                 5000, DataSize.ofMegabytes(5), Duration.ofMillis(200), 4));
     assertThat(es.compression()).isTrue();
+    assertThat(es.client())
+        .isEqualTo(new ElasticsearchCluster.Client(Duration.ofSeconds(5), Duration.ofSeconds(60)));
   }
 
   @Test

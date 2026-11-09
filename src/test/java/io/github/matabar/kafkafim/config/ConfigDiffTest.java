@@ -130,6 +130,26 @@ class ConfigDiffTest {
   }
 
   @Test
+  void anElasticsearchClientTimeoutChangeRestartsEveryPipelineRoutingToIt() {
+    ConfigDiff diff =
+        ConfigDiff.between(
+            base(), bind(tree("", "  client: { response-timeout: 90s }\n", PIPELINES), SECRETS));
+    assertThat(diff.restarted()).containsOnlyKeys("a", "b", "c");
+    assertThat(diff.restarted().get("a")).containsExactly("Elasticsearch cluster 'es' changed");
+  }
+
+  @Test
+  void anExplicitDefaultClientTimeoutIsNoChange() {
+    ConfigDiff diff =
+        ConfigDiff.between(
+            base(),
+            bind(
+                tree("", "  client: { connect-timeout: 5s, response-timeout: 60s }\n", PIPELINES),
+                SECRETS));
+    assertThat(diff.isEmpty()).isTrue();
+  }
+
+  @Test
   void anElasticsearchIdentityChangeRestartsOnlyThePipelinesRoutingWithIt() {
     String changed =
         tree("", "", PIPELINES)
