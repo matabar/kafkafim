@@ -73,7 +73,7 @@ class ElasticsearchClientsTest {
 
   static ElasticsearchCluster cluster(
       String uri, Trust trust, Map<String, ElasticsearchIdentity> identities) {
-    return new ElasticsearchCluster(List.of(uri), trust, identities, null, null, null);
+    return new ElasticsearchCluster(List.of(uri), trust, identities, null, null, null, null);
   }
 
   @Test
@@ -175,7 +175,8 @@ class ElasticsearchClientsTest {
             Map.of("writer", new ElasticsearchIdentity("u", "p", null, null)),
             "writer",
             null,
-            false);
+            false,
+            null);
     try (Rest5Client client =
         ElasticsearchClients.create("search-eu", secure, "writer", ClientSettings.DEFAULT)) {
       assertThat(client.getNodes()).hasSize(2);

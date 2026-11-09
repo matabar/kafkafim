@@ -282,6 +282,7 @@ class ConfigValidationTest {
               Map.of("w", new ElasticsearchCluster.ElasticsearchIdentity(null, null, null, null)),
               null,
               null,
+              null,
               null);
       KafkafimProperties properties =
           new KafkafimProperties(
@@ -318,6 +319,18 @@ class ConfigValidationTest {
           .contains(
               ES + ".bulk.max-bytes: must be positive", ES + ".bulk.max-age: must be positive")
           .anyMatch(e -> e.startsWith("elasticsearch.clusters[es].bulk.maxDocs: "));
+    }
+
+    @Test
+    void rejectsNonPositiveClientTimeouts() {
+      List<String> errors =
+          ConfigTestSupport.errors(
+              MINIMAL, ES + ".client.connect-timeout=0s", ES + ".client.response-timeout=-1s");
+
+      assertThat(errors)
+          .contains(
+              ES + ".client.connect-timeout: must be positive",
+              ES + ".client.response-timeout: must be positive");
     }
   }
 

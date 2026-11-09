@@ -201,6 +201,9 @@ public final class ConfigValidator {
     ElasticsearchCluster.Bulk bulk = cluster.bulk();
     checkPositive(path + ".bulk.max-bytes", bulk.maxBytes());
     checkPositive(path + ".bulk.max-age", bulk.maxAge());
+    ElasticsearchCluster.Client client = cluster.client();
+    checkPositive(path + ".client.connect-timeout", client.connectTimeout());
+    checkPositive(path + ".client.response-timeout", client.responseTimeout());
   }
 
   private void checkElasticsearchIdentity(

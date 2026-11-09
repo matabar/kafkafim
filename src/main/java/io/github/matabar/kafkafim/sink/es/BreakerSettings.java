@@ -29,9 +29,6 @@ public record BreakerSettings(
   public static final BreakerSettings DEFAULT =
       new BreakerSettings(20, 10, 50f, Duration.ofSeconds(10), 2, Duration.ofMillis(200));
 
-  /** Added to {@code waitInOpen} to bound how long the breaker may stay half-open. */
-  static final Duration HALF_OPEN_PROBE_GRACE = Duration.ofMinutes(2);
-
   /** Validates the settings. */
   public BreakerSettings {
     Objects.requireNonNull(waitInOpen, "waitInOpen");
@@ -41,8 +38,13 @@ public record BreakerSettings(
     }
   }
 
-  /** The Resilience4j configuration. */
-  CircuitBreakerConfig toConfig() {
+  /**
+   * The Resilience4j configuration for a cluster.
+   *
+   * @param responseTimeout the cluster's client response timeout; the half-open safety net is
+   *     {@code waitInOpen} plus twice this
+   */
+  CircuitBreakerConfig toConfig(Duration responseTimeout) {
     return CircuitBreakerConfig.custom()
         .slidingWindowType(CircuitBreakerConfig.SlidingWindowType.COUNT_BASED)
         .slidingWindowSize(slidingWindowSize)
@@ -51,12 +53,19 @@ public record BreakerSettings(
         .waitDurationInOpenState(waitInOpen)
         .permittedNumberOfCallsInHalfOpenState(probesInHalfOpen)
         // Safety net: a half-open breaker whose probes never report back reopens instead of
-        // holding every sender of the cluster forever. Longer than the default 60s response
-        // timeout, so a slow but legitimate probe is not cut short.
-        .maxWaitDurationInHalfOpenState(waitInOpen.plus(HALF_OPEN_PROBE_GRACE))
+        // holding every sender of the cluster forever. Twice the response timeout, so a slow
+        // but legitimate probe is not cut short (ADR-0031).
+        .maxWaitDurationInHalfOpenState(halfOpenLimit(responseTimeout))
         .automaticTransitionFromOpenToHalfOpenEnabled(false)
         .slowCallRateThreshold(100f)
         .slowCallDurationThreshold(Duration.ofDays(1))
         .build();
+  }
+
+  /**
+   * How long the breaker may stay half-open: {@code waitInOpen} plus twice the response timeout.
+   */
+  Duration halfOpenLimit(Duration responseTimeout) {
+    return waitInOpen.plus(responseTimeout.multipliedBy(2));
   }
 }

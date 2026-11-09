@@ -23,7 +23,8 @@ import org.slf4j.LoggerFactory;
  * first use and shared by every pipeline that writes with it; one circuit breaker per cluster,
  * shared across identities (DESIGN §5.2.1); one timer thread for batch ages and retry delays; and
  * the open {@link BulkSink}s. The supervisor opens one sink per {@code (pipeline, cluster,
- * identity)}.
+ * identity)}. Each cluster's {@code client} block sets its clients' connect and response timeouts
+ * and, through the response timeout, its breaker's half-open limit (ADR-0031).
  */
 public final class ElasticsearchSinks implements AutoCloseable {
 
@@ -43,7 +44,7 @@ public final class ElasticsearchSinks implements AutoCloseable {
    * Creates the registry; no connection is opened until a sink needs it.
    *
    * @param clusters {@code kafkafim.elasticsearch.clusters}, validated
-   * @param clientSettings HTTP client settings
+   * @param clientSettings HTTP client pool settings; the timeouts come from each cluster
    * @param breakerSettings per-cluster breaker settings
    * @param listener metrics and auth hook
    */
@@ -66,7 +67,7 @@ public final class ElasticsearchSinks implements AutoCloseable {
     this.breakerSettings = Objects.requireNonNull(breakerSettings, "breakerSettings");
     this.listener = Objects.requireNonNull(listener, "listener");
     this.clock = Objects.requireNonNull(clock, "clock");
-    this.breakers = CircuitBreakerRegistry.of(breakerSettings.toConfig());
+    this.breakers = CircuitBreakerRegistry.ofDefaults();
     this.breakers.getEventPublisher().onEntryAdded(added -> watch(added.getAddedEntry()));
     this.timer =
         new ScheduledThreadPoolExecutor(
@@ -105,8 +106,9 @@ public final class ElasticsearchSinks implements AutoCloseable {
 
   /** The circuit breaker of a cluster, created on first use. */
   public CircuitBreaker breaker(String cluster) {
-    requireCluster(cluster);
-    return breakers.circuitBreaker(cluster);
+    ElasticsearchCluster config = requireCluster(cluster);
+    return breakers.circuitBreaker(
+        cluster, () -> breakerSettings.toConfig(config.client().responseTimeout()));
   }
 
   /**
@@ -146,7 +148,9 @@ public final class ElasticsearchSinks implements AutoCloseable {
     ElasticsearchCluster config = requireCluster(cluster);
     return clients.computeIfAbsent(
         new ClientKey(cluster, identity),
-        k -> ElasticsearchClients.create(cluster, config, identity, clientSettings));
+        k ->
+            ElasticsearchClients.create(
+                cluster, config, identity, clientSettings.forCluster(config.client())));
   }
 
   private ElasticsearchCluster requireCluster(String cluster) {
