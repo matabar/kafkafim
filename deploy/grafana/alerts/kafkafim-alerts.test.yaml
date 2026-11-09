@@ -14,6 +14,10 @@ tests:
         values: '1x6 0x10'   # 3m paused: below the 5m for
       - series: 'kafkafim_pipeline_state{job="kafkafim",instance="pod-b",pipeline="logs",state="paused"}'
         values: '1x20'
+      - series: 'kafkafim_pipeline_state{job="kafkafim",instance="pod-a",pipeline="slow",state="starting"}'
+        values: '1x30'
+      - series: 'kafkafim_pipeline_state{job="kafkafim",instance="pod-a",pipeline="quick",state="starting"}'
+        values: '1x4 0x26'   # 2m in starting: normal
     alert_rule_test:
       - eval_time: 3m
         alertname: KafkafimPipelineFailedPreflight
@@ -23,6 +27,14 @@ tests:
               summary: "Pipeline orders failed its preflight checks"
               description: "A configuration problem (missing topic, DLQ topic, index access or credentials) keeps the pipeline stopped until a reload changes it or the pod restarts."
               runbook_url: https://github.com/matabar/kafkafim/blob/main/docs/RUNBOOK.md#55-failed_preflight-pipelines
+      - eval_time: 12m
+        alertname: KafkafimPipelineStuckStarting
+        exp_alerts:
+          - exp_labels: { severity: warning, pipeline: slow }
+            exp_annotations:
+              summary: "Pipeline slow still starting after 10m"
+              description: "Preflight keeps retrying a transient failure: Kafka or Elasticsearch is unreachable. The pod logs name the failing check."
+              runbook_url: https://github.com/matabar/kafkafim/blob/main/docs/RUNBOOK.md#53-kafka-unreachable
       - eval_time: 6m
         alertname: KafkafimPipelinePaused
         exp_alerts:
@@ -37,9 +49,12 @@ tests:
     input_series:
       # Two pods; the sum grows by 20 records per 30s for 15m.
       - series: 'kafkafim_consumer_lag{instance="pod-a",pipeline="orders",kafka_cluster="main",topic="orders"}'
-        values: '100+10x30'
+        values: '1000+10x30'
       - series: 'kafkafim_consumer_lag{instance="pod-b",pipeline="orders",kafka_cluster="main",topic="orders"}'
-        values: '50+10x30'
+        values: '500+10x30'
+      # Growing but below the 1000-record floor: commit jitter, never fires.
+      - series: 'kafkafim_consumer_lag{instance="pod-a",pipeline="small",kafka_cluster="main",topic="small"}'
+        values: '0+10x30'
       # Flat lag never fires.
       - series: 'kafkafim_consumer_lag{instance="pod-a",pipeline="clicks",kafka_cluster="main",topic="clicks"}'
         values: '500x30'

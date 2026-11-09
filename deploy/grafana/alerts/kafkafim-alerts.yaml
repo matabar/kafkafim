@@ -30,11 +30,25 @@ groups:
             The reason is in the pod's WARN "Pipeline '<name>': pausing (<reason>)" line.
           runbook_url: https://github.com/matabar/kafkafim/blob/main/docs/RUNBOOK.md#31-pipeline-state
 
+      - alert: KafkafimPipelineStuckStarting
+        # starting retries transient failures (broker or Elasticsearch unreachable) forever.
+        expr: max by (pipeline) (kafkafim_pipeline_state{state="starting"}) == 1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Pipeline {{ $labels.pipeline }} still starting after 10m"
+          description: >-
+            Preflight keeps retrying a transient failure: Kafka or Elasticsearch is unreachable.
+            The pod logs name the failing check.
+          runbook_url: https://github.com/matabar/kafkafim/blob/main/docs/RUNBOOK.md#53-kafka-unreachable
+
       - alert: KafkafimConsumerLagGrowing
         # Lag is reported per pod for the partitions it owns; summed over pods.
+        # tune: the 1000-record floor keeps commit jitter on a small lag from firing.
         expr: >-
           deriv((sum by (pipeline, kafka_cluster, topic) (kafkafim_consumer_lag))[5m:30s]) > 0
-          and sum by (pipeline, kafka_cluster, topic) (kafkafim_consumer_lag) > 0
+          and sum by (pipeline, kafka_cluster, topic) (kafkafim_consumer_lag) > 1000
         for: 5m
         labels:
           severity: warning

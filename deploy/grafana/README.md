@@ -31,7 +31,8 @@ to the real one (Prometheus default 1m, the OTLP export step is 15s).
 |---|---|---|---|
 | `KafkafimPipelineFailedPreflight` | a pipeline is `failed_preflight` on any pod for 1m | critical | [§5.5](../../docs/RUNBOOK.md#55-failed_preflight-pipelines) |
 | `KafkafimPipelinePaused` | a pipeline is `paused` (breaker, identity, DLQ blocked) for 5m | warning | [§3.1](../../docs/RUNBOOK.md#31-pipeline-state) |
-| `KafkafimConsumerLagGrowing` | lag summed over pods rises (`deriv` over 5m) for 5m | warning | [§5.8](../../docs/RUNBOOK.md#58-consumer-lag-growing) |
+| `KafkafimPipelineStuckStarting` | a pipeline is still `starting` (preflight retrying a transient failure) after 10m | warning | [§5.3](../../docs/RUNBOOK.md#53-kafka-unreachable) |
+| `KafkafimConsumerLagGrowing` | lag summed over pods is above **1000** (tune) and rises (`deriv` over 5m) for 5m | warning | [§5.8](../../docs/RUNBOOK.md#58-consumer-lag-growing) |
 | `KafkafimE2eLatencyHigh` | end-to-end p99 over 5m above **10s** for 10m (tune) | warning | [§5.8](../../docs/RUNBOOK.md#58-consumer-lag-growing) |
 | `KafkafimDlqRecords` | DLQ rate > 0 for 10m, per `error_type` | warning | [§5.6](../../docs/RUNBOOK.md#56-dlq-filling-or-dlq-blocked) |
 | `KafkafimNoAssignedPartitions` | a pod runs a pipeline but owns none of its partitions for 10m | info | [§5.7](../../docs/RUNBOOK.md#57-pipeline-shows-running-but-consumes-nothing) |
