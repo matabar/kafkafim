@@ -113,7 +113,8 @@ For each `groups.<g>`:
   (such as `+`) become `_`, cut to 63 characters, leading and trailing
   non-alphanumerics dropped. It is on the resources, not on the
   pod template, so a version change alone does not roll the pods. With neither
-  `image.tag` nor `appVersion` (a digest-only install) the label is left out.
+  `image.tag` nor `appVersion` (a digest-only install), or a tag with no
+  alphanumeric character, the label is left out.
 - Names: a group's resources are `<fullname>-<group>`; with the conventional release
   name `kafkafim` that is `kafkafim-<group>`. The ServiceAccount (and the opt-in
   `NetworkPolicy` / `ServiceMonitor`) are named `<fullname>` and select every group.
