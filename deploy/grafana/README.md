@@ -10,13 +10,14 @@ with the repo". Every query uses the metric names and labels of `/actuator/prome
 | [`dashboards/kafkafim-elasticsearch.json`](dashboards/kafkafim-elasticsearch.json) | Per Elasticsearch cluster: breaker state, bulk requests by status, 429 ratio, bulk latency, docs and bytes per request, flush reasons, retries, item errors, auth failures |
 | [`alerts/kafkafim-alerts.yaml`](alerts/kafkafim-alerts.yaml) | Prometheus alerting rules (below) |
 | [`alerts/kafkafim-alerts.test.yaml`](alerts/kafkafim-alerts.test.yaml) | `promtool test rules` unit tests for every alert |
+| [`provisioning/kafkafim-dashboards.yaml`](provisioning/kafkafim-dashboards.yaml) | Grafana dashboard provider used by the compose demo |
 
 ## Dashboards
 
 Both dashboards have a `datasource` variable (any Prometheus-compatible data source)
 and multi-value `pipeline` / `es_cluster` variables. Import them through
-*Dashboards → New → Import*, or provision them with a Grafana file provider pointed at a copy of
-`dashboards/`. The
+*Dashboards → New → Import*, or provision them with a file provider like
+`provisioning/kafkafim-dashboards.yaml` pointed at a copy of `dashboards/`. The
 UIDs are fixed (`kafkafim-overview`, `kafkafim-elasticsearch`), so links survive a
 re-import. To change a panel, edit it in Grafana, export the JSON (*Share → Export*,
 without "export for sharing externally") and commit it here.
@@ -72,3 +73,24 @@ promtool check rules deploy/grafana/alerts/kafkafim-alerts.yaml
 ```bash
 (cd deploy/grafana/alerts && promtool test rules kafkafim-alerts.test.yaml)
 ```
+
+## Compose demo
+
+`compose.yaml` mounts `dashboards/` and the provider into `grafana/otel-lgtm`, so
+`./mvnw spring-boot:run` shows both dashboards at <http://localhost:3000> in the
+*kafkafim* folder. The app pushes metrics over OTLP there, and otel-lgtm's
+Prometheus stores them under the names below. The alert rules are not loaded in the
+demo (otel-lgtm's Prometheus has no `rule_files`).
+
+Through OTLP, every name matches `/actuator/prometheus` except the two timers:
+Micrometer's OTLP registry exports times in milliseconds by default, so otel-lgtm
+stores `kafkafim_bulk_latency_milliseconds_*` and `kafkafim_e2e_latency_milliseconds_*`
+and the latency panels stay empty. Export seconds to fill them:
+
+```bash
+./mvnw spring-boot:run -Dspring-boot.run.arguments=--management.otlp.metrics.export.base-time-unit=seconds
+```
+
+The OTLP series also carry no `instance` label (otel-lgtm's Prometheus derives it from
+`service.instance.id`, which kafkafim does not set), so per-pod legends are blank with
+a single local app; `job` is `kafkafim/kafkafim`.

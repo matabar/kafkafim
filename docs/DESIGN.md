@@ -1114,6 +1114,8 @@ logged by default.
   assigned partitions for a pipeline it runs; plus `failed_preflight`, `paused` for
   5m and Kafka disconnected for a running pipeline.
 
+The compose demo provisions both dashboards into its Grafana LGTM.
+
 ## 11. Security
 
 - Secrets only via mounted `Secret`s imported as `configtree`; inline secret values
