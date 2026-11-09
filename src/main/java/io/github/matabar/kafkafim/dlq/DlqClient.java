@@ -14,7 +14,8 @@ interface DlqClient {
    * Sends one record; may block up to {@code max.block.ms} for metadata or buffer space.
    *
    * @param record the record
-   * @param callback called once with the metadata or the failure, on the producer's I/O thread
+   * @param callback called at most once with the metadata or the failure, usually on the producer's
+   *     I/O thread; never called when this method throws
    * @throws RuntimeException if the send fails before it was handed to the producer
    */
   void send(ProducerRecord<byte[], byte[]> record, Callback callback);
