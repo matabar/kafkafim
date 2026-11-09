@@ -31,6 +31,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 import java.util.stream.IntStream;
+import java.util.stream.Stream;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -291,12 +292,16 @@ class BulkSinkTest {
     }
   }
 
-  private static java.util.stream.Stream<String> failureLines(
-      ListAppender<ILoggingEvent> appender) {
+  private static Stream<String> failureLines(ListAppender<ILoggingEvent> appender) {
+    return logged(appender).stream()
+        .map(ILoggingEvent::getFormattedMessage)
+        .filter(m -> m.contains("items failed"));
+  }
+
+  /** A copy of the captured events, safe while sender threads still log. */
+  static List<ILoggingEvent> logged(ListAppender<ILoggingEvent> appender) {
     synchronized (appender) { // AppenderBase.doAppend holds this lock while it adds
-      return List.copyOf(appender.list).stream()
-          .map(ILoggingEvent::getFormattedMessage)
-          .filter(m -> m.contains("items failed"));
+      return List.copyOf(appender.list);
     }
   }
 
@@ -714,7 +719,7 @@ class BulkSinkTest {
       submitAll(sink, "a");
 
       assertThat(sink.awaitIdle(WAIT)).isTrue();
-      assertThat(appender.list)
+      assertThat(logged(appender))
           .isNotEmpty()
           .noneMatch(e -> e.getFormattedMessage().contains("SECRET"));
     } finally {
@@ -724,7 +729,7 @@ class BulkSinkTest {
   }
 
   static List<String> messages(ListAppender<ILoggingEvent> appender, Level level) {
-    return appender.list.stream()
+    return logged(appender).stream()
         .filter(e -> e.getLevel() == level)
         .map(ILoggingEvent::getFormattedMessage)
         .toList();
