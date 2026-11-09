@@ -744,9 +744,9 @@ agent all work. A changed secret file is picked up by the same reload path.
     uses changed in anything but its identities and `default-identity` (its source
     Kafka cluster serves both the consumer and the DLQ producer; every route's
     Elasticsearch cluster, including its `client` timeouts), or when an identity it
-    references changed (source identity, DLQ identity, every route's identity). Secret values are part of the
-    bound identities, so a rotated secret file is an identity change. A change to a
-    cluster no pipeline uses restarts nothing.
+    references changed (source identity, DLQ identity, every route's identity).
+    Secret values are part of the bound identities, so a rotated secret file is an
+    identity change. A change to a cluster no pipeline uses restarts nothing.
   - **Building blocks** (`supervisor/PipelineResources`): one Elasticsearch registry
     (clients per `(cluster, identity)`, one breaker) and one set of DLQ producers and
     consumer factories per *cluster definition*. A restarted pipeline gets the current
