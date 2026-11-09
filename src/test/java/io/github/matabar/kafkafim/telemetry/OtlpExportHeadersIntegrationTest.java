@@ -10,7 +10,6 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
-import java.net.ServerSocket;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -21,9 +20,12 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
+import java.util.OptionalInt;
 import java.util.Queue;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.TimeUnit;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import org.awaitility.core.ConditionTimeoutException;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -55,6 +57,9 @@ class OtlpExportHeadersIntegrationTest {
           "management/opentelemetry/tracing/export/otlp/headers");
 
   private static final String SECRET_VALUE = "Bearer s3cr3t-apm-token";
+
+  /** Tomcat's startup line, which names the port the child bound for {@code SERVER_PORT=0}. */
+  private static final Pattern SERVER_STARTED = Pattern.compile("Tomcat started on port (\\d+)");
 
   private record Captured(String path, Headers headers) {}
 
@@ -104,7 +109,6 @@ class OtlpExportHeadersIntegrationTest {
       // A dashed header name, as an API-key style header would be.
       Files.writeString(headerDir.resolve("X-Api-Key"), "k1\n");
     }
-    final int serverPort = freePort();
     appLog = temp.resolve("app.log");
 
     ProcessBuilder builder =
@@ -130,29 +134,33 @@ class OtlpExportHeadersIntegrationTest {
     // The chart percent-encodes "%" and "," in otel.headers values: "a,b%c" -> "a%2Cb%25c".
     env.put("OTEL_EXPORTER_OTLP_HEADERS", "x-kafkafim-tenant=ingest,x-kafkafim-list=a%2Cb%25c");
     env.put("SPRING_CONFIG_IMPORT", "configtree:" + secrets.toAbsolutePath() + "/");
-    // Test-only: no compose stack, a free port, every request sampled, fast export.
+    // Test-only: no compose stack, every request sampled, fast export. The child binds an
+    // ephemeral port itself and logs it, so no other process can take it between check and use.
     env.put("SPRING_DOCKER_COMPOSE_ENABLED", "false");
-    env.put("SERVER_PORT", Integer.toString(serverPort));
+    env.put("SERVER_PORT", "0");
     env.put("MANAGEMENT_OTLP_METRICS_EXPORT_STEP", "1s");
     env.put("MANAGEMENT_TRACING_SAMPLING_PROBABILITY", "1.0");
     env.put("OTEL_BSP_SCHEDULE_DELAY", "100");
     app = builder.start();
 
     try (HttpClient http = HttpClient.newHttpClient()) {
-      HttpRequest probe =
-          HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + serverPort + "/otlp-probe"))
-              .timeout(Duration.ofSeconds(2))
-              .build();
       await()
           .atMost(Duration.ofSeconds(90))
           .pollInterval(Duration.ofMillis(500))
           .untilAsserted(() -> {
             assertThat(app.isAlive()).as("application process is running").isTrue();
+            OptionalInt serverPort = serverPort();
+            assertThat(serverPort).as("server port in the application output").isPresent();
+            HttpRequest probe =
+                HttpRequest.newBuilder(
+                        URI.create("http://127.0.0.1:" + serverPort.getAsInt() + "/otlp-probe"))
+                    .timeout(Duration.ofSeconds(2))
+                    .build();
             try {
               // A non-actuator request is observed and produces a server span.
               http.send(probe, HttpResponse.BodyHandlers.discarding());
             } catch (IOException e) {
-              // Not listening yet.
+              // Not answering yet.
             }
             assertThat(paths()).contains("/v1/metrics", "/v1/traces");
           });
@@ -184,9 +192,10 @@ class OtlpExportHeadersIntegrationTest {
     return captured.stream().map(Captured::path).distinct().toList();
   }
 
-  private static int freePort() throws IOException {
-    try (ServerSocket socket = new ServerSocket(0, 0, InetAddress.getLoopbackAddress())) {
-      return socket.getLocalPort();
-    }
+  private OptionalInt serverPort() throws IOException {
+    Matcher started = SERVER_STARTED.matcher(Files.readString(appLog, StandardCharsets.UTF_8));
+    return started.find()
+        ? OptionalInt.of(Integer.parseInt(started.group(1)))
+        : OptionalInt.empty();
   }
 }
