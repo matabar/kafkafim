@@ -35,7 +35,9 @@ jobs:
             printf 'docs_only=false\nhelm=true\n' >> "$GITHUB_OUTPUT"; exit 0
           fi
           # What merging the PR would change. --no-renames lists both sides of a rename, so
-          # renaming code to *.md is not docs-only. quotePath=false keeps non-ASCII paths unquoted.
+          # renaming code to *.md is not docs-only. quotePath=false keeps non-ASCII paths unquoted;
+          # git still quotes a path containing a tab, newline, " or \ ("docs/a\tb.md"), which then
+          # matches no docs pattern and counts as non-docs: the safe side, the full CI runs.
           git -c core.quotePath=false diff --no-renames --name-only HEAD^1 HEAD > "$RUNNER_TEMP/changed"
           sed 's/^/  /' "$RUNNER_TEMP/changed"
           docs_only=false helm=false
