@@ -60,12 +60,23 @@ itself fails, its outputs are empty and every job runs. Pushes to `main` and
 `release.yml` always run everything. Locally, docs-only changes still run
 `./mvnw -DskipTests verify` (see CONTRIBUTING.md).
 
-Branch protection on `main` (intended): PR required, squash merge, and the checks
-"Build and test", "Integration tests", "Container image" and "Helm chart" required.
-`image` no longer waits for the integration tests, so both "Integration tests" and
-"Container image" must be required, so both must pass before a pull request merges.
-As of 2026-11-09 `main` has no branch protection rule or ruleset, so none of this is
-enforced yet.
+Branch protection on `main` (a classic branch protection rule, in force since
+2026-11-09):
+
+- Four required status checks: "Build and test", "Integration tests", "Container
+  image" and "Helm chart". "Detect changes" is not required. `image` does not wait
+  for the integration tests, so "Integration tests" and "Container image" are both
+  required: both must pass before a pull request merges. A job skipped by its `if:`
+  (docs-only pull requests, or `helm` when none of `charts/**`, `ci.yml` and
+  `.github/keys/**` changed) reports as passing, so it does not block the merge.
+- Branches must be up to date with `main` before merging (strict status checks).
+- Administrators are included: the rule applies to them too.
+- Force-pushes to `main` and deleting `main` are blocked.
+- The repository allows squash merges only (merge commits and rebase merges are
+  off), so every pull request lands as one commit.
+
+The rule requires no approving review; reviews are a process rule (CONTRIBUTING.md).
+
 Dependabot (weekly, grouped) for Maven, GitHub Actions and the Docker base image.
 
 ## CD (`.github/workflows/release.yml`) on tag `v*`
