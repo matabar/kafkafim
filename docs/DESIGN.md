@@ -338,7 +338,7 @@ then the source starts, which fails for a missing source topic. All DLQ and
 Elasticsearch checks run before a verdict, so one ERROR line names every problem.
 Missing or undescribable topics, a 401/403, an unknown identity or unreadable trust
 material, and a Kafka authentication or authorization error are **configuration**
-failures (`failed_preflight` until a reload changes the pipeline, or a restart). An unreachable broker or cluster
+failures (`failed_preflight` until the next accepted reload or a restart, §5.6). An unreachable broker or cluster
 (timeout, connection error, 5xx) is **transient**: the pipeline stays `starting` and
 retries (1s doubling to 30s), so a pod that starts during a short outage needs no
 restart. Elasticsearch answers 405 on that path when security is disabled; any status
@@ -790,7 +790,7 @@ agent all work. A changed secret file is picked up by the same reload path.
     phase, after which Spring moves on: records not yet committed are re-delivered
     after the restart, nothing is lost.
   - **`POST /actuator/reload`** returns `{result, generation, added, removed,
-    restarted: [{pipeline, reasons}], unchanged, errors}`: 200 for `applied` or
+    restarted: [{pipeline, reasons}], retried, unchanged, errors}`: 200 for `applied` or
     `unchanged`, 400 with every violation for `rejected`, 503 while the supervisor is
     not running. Names and violations only, never configuration values. It is
     defined in `supervisor` (nothing depends on `supervisor`, so it cannot create a
@@ -806,8 +806,17 @@ agent all work. A changed secret file is picked up by the same reload path.
     not watched. `POST /actuator/reload` works with the watcher disabled.
   - Not reloaded: the `KafkafimProperties` bean stays the startup tree (the supervisor
     holds the one in effect); OTLP export headers (§10) and everything outside
-    `kafkafim.*` need a restart. A pipeline in `failed_preflight` restarts only when a
-    reload changes it (or the pod restarts).
+    `kafkafim.*` need a restart.
+  - **Retry of `failed_preflight`** (ADR-0032): every accepted reload (`applied` or
+    `unchanged`, watcher or endpoint) starts once more each pipeline it leaves unchanged
+    that is in `failed_preflight`, so after fixing a missing topic, ACL or credential a
+    no-op `POST /actuator/reload` recovers it without a restart. They are listed under
+    `retried` (not `unchanged`); `result`, `generation` and
+    `kafkafim_config_reload_total` are unaffected, and the reload's INFO line names
+    them. One ordinary start per reload, in the background: a pipeline that still fails
+    goes back to `failed_preflight` and waits for the next reload (no automatic retry,
+    no attempt while one is starting or stopping); the outcome shows in
+    `kafkafim_pipeline_state`. A rejected reload retries nothing.
 
 ### 5.7 Defaults and validation rules
 
@@ -908,7 +917,7 @@ are reported together:
 | Retryable **item** error (item 429 `es_rejected_execution_exception`, item 5xx, item 404 `index_not_found_exception`, any other unexpected item status) exceeding `max-attempts`/`max-elapsed` | The item goes back into the batcher after a backoff and travels in a later bulk; once it has failed `max-attempts` times, or `max-elapsed` after its first retryable failure, DLQ with `error.type=es_retries_exhausted`, partition continues. This is the poison-message bound. A missing index is a provisioning gap (ADR-0021) or a race with whoever creates the index, so it gets the bounded retry rather than an immediate DLQ or an unbounded stall. Request-level failures (connection errors, 5xx, request-level 429, breaker open, 401/403, unexpected statuses) are retried indefinitely and never count toward the bound; an ES outage produces lag, never DLQ records. |
 | Bulk request rejected with 413 | The request is split in halves and each half retried (recursively); a single-document bulk that still gets 413 sends that document to the DLQ with `error.type=too_large`. |
 | Undecodable record, non-object element, unusable version, missing `_id`, bad timestamp, no matching route, unresolved index pattern | DLQ with the matching `error.type` (`decode`, `missing_id`, `bad_timestamp`, `no_route`, `unresolved_index`). |
-| Missing topic, DLQ topic, or failed authentication at pipeline start | Pipeline stays stopped (`failed_preflight`), clear log naming resource and identity, alert. Other pipelines unaffected. kafkafim never creates the resource. |
+| Missing topic, DLQ topic, or failed authentication at pipeline start | Pipeline stays stopped (`failed_preflight`) until the next accepted reload or a restart (§5.6), clear log naming resource and identity, alert. Other pipelines unaffected. kafkafim never creates the resource. |
 | DLQ produce fails | Block the partition and alert. Losing data is worse than lag. The send is retried forever (100ms doubling to 30s, ±25% jitter) and never completes the source offset until the broker acknowledged it (`acks=all`), so the committed offset stays put. The writer is *blocked* from its first failure until every failed send was acknowledged; the supervisor pauses the pipeline on `onBlocked` and resumes on `onUnblocked`. A missing DLQ topic, failed authentication or authorization, an invalid topic or a record larger than the producer or topic allows is a **configuration** failure (logged at `ERROR`, alert); anything else is **transient**. Both kinds are retried; neither drops the record. A producer error that kafka-clients can make fatal even for an idempotent producer (cluster authorization, authentication, unsupported version, a fenced producer or an invalid producer ID mapping) replaces the shared producer, so fixing the cause unblocks the next attempt without a restart. A missing `Write` ACL is usually not fatal, though: in kafka-clients 4.2 a `CLUSTER_AUTHORIZATION_FAILED` answer to `InitProducerId` is *abortable*: the producer fails the pending batches, goes back to uninitialized and retries `InitProducerId` on its own. The producer becomes fatal only when the error reaches its error state through a failed batch (a produce response carrying it). kafkafim replaces the producer on `ClusterAuthorizationException` either way: replacing it is cheap and covers the fatal path. On the abortable path kafka-clients still logs `Aborting producer batches due to fatal error` at `ERROR`, and kafkafim logs that the producer *may be* in a fatal state and replaces it; both mean only that the pending sends failed and will be retried. A send that fails only because of the replacement (closing the producer aborts its batch, or it reached the producer after the close began) is reported by the failure that triggered the replacement, so a missing ACL never shows up as a transient `Producer is closed forcefully`. Each send attempt is reported once, although kafka-clients can both throw from `send` and later fail the batch it had already appended. |
 | Kafka unavailable | Reconnect with backoff (kafka-clients); `kafkafim_kafka_connected` gauge drops, alert. A Kafka authentication or authorization failure after start is retried every 10s instead of stopping the consumer. |
 | Pod SIGTERM | Spring graceful shutdown, higher phases first: the pipeline supervisor (phase MAX-100) stops all pipelines in parallel; each pipeline's Kafka source pauses fetching, gives in-flight records up to 30s to complete (its bulk sinks and the DLQ writer are still open, so outcomes keep arriving), then stops its container (10s), which commits what completed on revoke and leaves the group; records still incomplete are re-delivered to the next owner; then the pipeline's bulk sinks close (up to 10s; outcomes after the revoke are ignored); then the DLQ producers (phase MAX-1000, so they outlive the source drain; closed by `supervisor/PipelineResources`, which owns every configuration generation's producers) flush for up to 10s and close, failing any send still unacknowledged so that its record is not committed; then the web server drains (phase MAX-1024, instant for actuator-only traffic). `spring.lifecycle.timeout-per-shutdown-phase` (60s, `application.yaml`) bounds each phase; the consumer phase must fit the pod's `terminationGracePeriodSeconds` (90s, chart default). |

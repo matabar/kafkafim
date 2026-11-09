@@ -13,7 +13,9 @@ import java.util.List;
  * @param added pipelines started
  * @param removed pipelines drained and stopped
  * @param restarted pipelines drained and started again, each with why
- * @param unchanged pipelines left running untouched
+ * @param retried unchanged pipelines that were in {@code failed_preflight} and were started once
+ *     more; their outcome shows in {@code kafkafim_pipeline_state}, not here
+ * @param unchanged pipelines left untouched
  * @param errors every violation of a rejected tree, as {@code <property path>: <problem>}
  */
 public record ReloadResult(
@@ -22,6 +24,7 @@ public record ReloadResult(
     List<String> added,
     List<String> removed,
     List<Restart> restarted,
+    List<String> retried,
     List<String> unchanged,
     List<String> errors) {
 
