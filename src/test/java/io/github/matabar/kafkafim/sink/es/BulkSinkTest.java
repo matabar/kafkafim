@@ -29,7 +29,9 @@ import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Consumer;
 import java.util.stream.IntStream;
+import java.util.stream.Stream;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -254,10 +256,8 @@ class BulkSinkTest {
 
   @Test
   void failedItemsAreLoggedOnceWithoutTheirReason() throws Exception {
-    ch.qos.logback.classic.Logger logger =
-        (ch.qos.logback.classic.Logger) org.slf4j.LoggerFactory.getLogger(BulkSink.class);
-    ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent> appender =
-        new ch.qos.logback.core.read.ListAppender<>();
+    Logger logger = (Logger) LoggerFactory.getLogger(BulkSink.class);
+    ListAppender<ILoggingEvent> appender = new ListAppender<>();
     appender.start();
     logger.addAppender(appender);
     try {
@@ -270,15 +270,16 @@ class BulkSinkTest {
                           ? new String[] {"201"}
                           : new String[] {"400", "document_parsing_exception"}));
       BulkSink<String> sink = sink(settings(3, 1 << 20, HOUR, 1), transport);
+      // The line is written before the response's outcomes, so a caller that sees them done
+      // (here: awaitIdle) finds it in the log.
+      List<Long> linesAtOutcome = new CopyOnWriteArrayList<>();
+      outcomes.beforeEach = handle -> linesAtOutcome.add(failureLines(appender).count());
 
       submitAll(sink, "ok", "bad1", "bad2");
 
       assertThat(sink.awaitIdle(WAIT)).isTrue();
-      List<String> lines =
-          appender.list.stream()
-              .map(ch.qos.logback.classic.spi.ILoggingEvent::getFormattedMessage)
-              .filter(m -> m.contains("items failed"))
-              .toList();
+      assertThat(linesAtOutcome).containsExactly(1L, 1L, 1L);
+      List<String> lines = failureLines(appender).toList();
       // Elasticsearch's reason quotes field values of the document: never logged (DESIGN §10).
       assertThat(lines)
           .singleElement()
@@ -288,6 +289,19 @@ class BulkSinkTest {
           .doesNotContain("scripted");
     } finally {
       logger.detachAppender(appender);
+    }
+  }
+
+  private static Stream<String> failureLines(ListAppender<ILoggingEvent> appender) {
+    return logged(appender).stream()
+        .map(ILoggingEvent::getFormattedMessage)
+        .filter(m -> m.contains("items failed"));
+  }
+
+  /** A copy of the captured events, safe while sender threads still log. */
+  static List<ILoggingEvent> logged(ListAppender<ILoggingEvent> appender) {
+    synchronized (appender) { // AppenderBase.doAppend holds this lock while it adds
+      return List.copyOf(appender.list);
     }
   }
 
@@ -406,6 +420,27 @@ class BulkSinkTest {
     assertThat(outcomes.get("a")).isEqualTo(ActionOutcome.INDEXED);
     assertThat(events.authFailures).hasValue(4);
     assertThat(events.lastAuthReason).startsWith("type=security_exception");
+  }
+
+  @Test
+  void itemAuthFailureIsReportedBeforeTheResponsesOutcomes() throws Exception {
+    FakeTransport transport =
+        new FakeTransport((request, call) ->
+            FakeTransport.items(
+                request,
+                sent ->
+                    sent.id().equals("denied") && call == 1
+                        ? new String[] {"403", "security_exception"}
+                        : new String[] {"201"}));
+    BulkSink<String> sink = sink(retrying(2, Duration.ofMillis(5), 10, HOUR), transport);
+    Map<String, Integer> authFailuresAtOutcome = new ConcurrentHashMap<>();
+    outcomes.beforeEach = handle -> authFailuresAtOutcome.put(handle, events.authFailures.get());
+
+    submitAll(sink, "ok", "denied");
+
+    assertThat(sink.awaitIdle(WAIT)).isTrue();
+    assertThat(authFailuresAtOutcome).containsOnly(Map.entry("ok", 1), Map.entry("denied", 1));
+    assertThat(outcomes.get("denied")).isEqualTo(ActionOutcome.INDEXED);
   }
 
   @Test
@@ -684,7 +719,7 @@ class BulkSinkTest {
       submitAll(sink, "a");
 
       assertThat(sink.awaitIdle(WAIT)).isTrue();
-      assertThat(appender.list)
+      assertThat(logged(appender))
           .isNotEmpty()
           .noneMatch(e -> e.getFormattedMessage().contains("SECRET"));
     } finally {
@@ -694,7 +729,7 @@ class BulkSinkTest {
   }
 
   static List<String> messages(ListAppender<ILoggingEvent> appender, Level level) {
-    return appender.list.stream()
+    return logged(appender).stream()
         .filter(e -> e.getLevel() == level)
         .map(ILoggingEvent::getFormattedMessage)
         .toList();
@@ -949,8 +984,12 @@ class BulkSinkTest {
   static final class Outcomes implements OutcomeCallback<String> {
     private final Map<String, List<ActionOutcome>> byHandle = new ConcurrentHashMap<>();
 
+    /** Runs on the sink's thread before each outcome is recorded, to observe what came first. */
+    volatile Consumer<String> beforeEach = handle -> {};
+
     @Override
     public void onOutcome(BulkAction<String> action, ActionOutcome outcome) {
+      beforeEach.accept(action.handle());
       byHandle.computeIfAbsent(action.handle(), h -> new CopyOnWriteArrayList<>()).add(outcome);
     }
 

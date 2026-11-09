@@ -202,7 +202,8 @@ then the only ones that count. A pipeline that is stopping cannot be started unt
 - **Auth state**: the stream is failing while the last request got 401/403 or any
   action waits to retry after an item-level 401/403. The listener hears one
   `onAuthFailure` per response and one `onAuthRecovered` when the stream leaves that
-  state, so the supervisor can pause and resume without flapping.
+  state, so the supervisor can pause and resume without flapping. Both come before the
+  outcomes of the response that caused them.
 
 ### 4.3 Offsets and delivery guarantee
 
@@ -1064,11 +1065,11 @@ to Elasticsearch.
 ECS-structured JSON on stdout (Spring Boot structured logging); OTLP log export
 optional. One WARN line per bulk response with failed items, naming the first 5 by
 position, status and error type (not Elasticsearch's reason, which quotes field values
-of the document; it travels in the DLQ record); one WARN line per request-level retry
-(429, 5xx, 401/403, unexpected status) with the status and Elasticsearch's error types,
-plus the security `reason` for 401/403, or, for an unparsable 2xx body, what was wrong
-with it; never other response text, which can quote field values (the response body,
-cut to 1024 characters, only at DEBUG on the
+of the document; it travels in the DLQ record), written before that response's outcomes;
+one WARN line per request-level retry (429, 5xx, 401/403, unexpected status) with the
+status and Elasticsearch's error types, plus the security `reason` for 401/403, or, for
+an unparsable 2xx body, what was wrong with it; never other response text, which can
+quote field values (the response body, cut to 1024 characters, only at DEBUG on the
 `io.github.matabar.kafkafim.sink.es.BulkSink` logger, ADR-0030); one WARN line per DLQ
 record (pipeline, source coordinates, error type, attempts, target, where the DLQ
 record landed; never the reason or the record);
