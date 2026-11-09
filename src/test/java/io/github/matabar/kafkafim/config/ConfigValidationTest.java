@@ -638,6 +638,98 @@ class ConfigValidationTest {
     }
 
     @Test
+    void acceptsDistinctRouteNamesNextToUnnamedRoutes() {
+      assertValid(
+          pipeline(
+              """
+              route-mode: all
+              routes:
+                - { name: eu, cluster: es, index: a }
+                - { cluster: es, index: b }
+                - { name: route-2, cluster: es, index: c }
+                - { name: v1, default: true, cluster: es, index: d }
+              """));
+    }
+
+    @Test
+    void rejectsNoneAsRouteName() {
+      assertInvalid(
+          pipeline(
+              """
+              routes:
+                - { name: none, default: true, cluster: es, index: a }
+              """),
+          P
+              + ".routes[0].name: 'none' is reserved: it labels documents that failed before a"
+              + " route was selected");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"0", "1", "01", "42"})
+    void rejectsDigitsOnlyRouteNames(String name) {
+      assertInvalid(
+          pipeline(
+              """
+              route-mode: all
+              routes:
+                - { cluster: es, index: a }
+                - { name: "%s", cluster: es, index: b }
+              """
+                  .formatted(name)),
+          P
+              + ".routes[1].name: '"
+              + name
+              + "' is reserved: digits-only labels are the positions of unnamed routes");
+    }
+
+    @Test
+    void rejectsDuplicateRouteNames() {
+      assertInvalid(
+          pipeline(
+              """
+              route-mode: all
+              routes:
+                - { name: eu, cluster: es, index: a }
+                - { name: us, cluster: es, index: b }
+                - { name: eu, cluster: es, index: c }
+              """),
+          P + ".routes[2].name: 'eu' is already the name of routes[0]");
+    }
+
+    @Test
+    void acceptsTheSameRouteNameInTwoPipelines() {
+      assertValid(
+          ConfigTestSupport.tree(
+              KAFKA_CLUSTERS,
+              ES_CLUSTERS,
+              """
+              p:
+                source: { cluster: k, topics: [t] }
+                routes:
+                  - { name: main, default: true, cluster: es, index: a }
+              q:
+                source: { cluster: k, topics: [u] }
+                routes:
+                  - { name: main, default: true, cluster: es, index: b }
+              """));
+    }
+
+    @Test
+    void rejectsBlankRouteName() {
+      // Boot flattens a YAML null to "", so a bare `name:` binds as blank, not as absent.
+      assertInvalid(
+          pipeline(
+              """
+              routes:
+                - default: true
+                  name:
+                  cluster: es
+                  index: a
+              """),
+          P + ".routes[0].name: must not be blank; omit it to label the route by its position");
+    }
+
+    @Test
     void rejectsAnEmptyRouteList() {
       assertInvalid(pipeline("route-mode: first\n"), "pipelines[p].routes: must not be empty");
     }
