@@ -18,11 +18,11 @@ import org.jspecify.annotations.Nullable;
  *       resolved group id and identities, so a changed {@code default-identity} counts for the
  *       pipelines that inherit it); a Kafka or Elasticsearch <em>cluster</em> it uses differs in
  *       anything but its identities and {@code default-identity} (connection, trust, protocol,
- *       passthrough properties, bulk settings, compression); an <em>identity</em> it references
- *       differs. A pipeline uses its source cluster (consumer and DLQ producer) and the cluster of
- *       every route; it references its source identity, its DLQ identity and every route's
- *       identity. Secret values are part of the bound identities, so a rotated secret file is an
- *       identity change.
+ *       passthrough properties, bulk settings, compression, client timeouts); an <em>identity</em>
+ *       it references differs. A pipeline uses its source cluster (consumer and DLQ producer) and
+ *       the cluster of every route; it references its source identity, its DLQ identity and every
+ *       route's identity. Secret values are part of the bound identities, so a rotated secret file
+ *       is an identity change.
  *   <li><b>unchanged</b>: everything else; such pipelines are not touched.
  * </ul>
  *
@@ -167,6 +167,12 @@ public record ConfigDiff(
     return cluster == null
         ? null
         : new ElasticsearchCluster(
-            cluster.uris(), cluster.ssl(), null, null, cluster.bulk(), cluster.compression());
+            cluster.uris(),
+            cluster.ssl(),
+            null,
+            null,
+            cluster.bulk(),
+            cluster.compression(),
+            cluster.client());
   }
 }

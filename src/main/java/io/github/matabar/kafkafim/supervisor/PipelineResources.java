@@ -67,7 +67,7 @@ final class PipelineResources implements SmartLifecycle, AutoCloseable {
    * @param sourceOptions Kafka source timings
    * @param sinkCloseTimeout how long a stopping pipeline waits for its sinks
    * @param dlqOptions DLQ producer timings
-   * @param clientSettings Elasticsearch HTTP client settings
+   * @param clientSettings Elasticsearch HTTP client pool settings; timeouts come from each cluster
    * @param breakerSettings per-cluster breaker settings
    * @param clock clock of the record processor
    */

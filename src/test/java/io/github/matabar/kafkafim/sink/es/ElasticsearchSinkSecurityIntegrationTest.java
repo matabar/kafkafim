@@ -118,7 +118,8 @@ class ElasticsearchSinkSecurityIntegrationTest {
         identities,
         null,
         null,
-        true);
+        true,
+        null);
   }
 
   BulkSink<String> open(String identity) {

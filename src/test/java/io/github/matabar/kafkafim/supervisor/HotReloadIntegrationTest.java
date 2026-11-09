@@ -140,7 +140,8 @@ class HotReloadIntegrationTest {
         identities,
         null,
         null,
-        true);
+        true,
+        null);
   }
 
   // ---- the watcher path ----

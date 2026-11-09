@@ -1,11 +1,14 @@
 package io.github.matabar.kafkafim.sink.es;
 
+import io.github.matabar.kafkafim.config.ElasticsearchCluster;
 import java.time.Duration;
 import java.util.Objects;
 
 /**
- * HTTP client settings shared by every {@code (cluster, identity)} client. Not configurable per
- * cluster in the MVP; the defaults are documented in DESIGN §7.
+ * HTTP client settings of a {@code (cluster, identity)} client. The connect and response timeouts
+ * come from the cluster's {@code client} block ({@link #forCluster}); the pool is a code default
+ * (DESIGN §7, ADR-0031). {@link ElasticsearchSinks} always replaces the two timeouts here with the
+ * cluster's; only callers that build a client directly (the preflight check) use them.
  *
  * @param connectTimeout TCP and TLS connect timeout per node
  * @param responseTimeout socket inactivity timeout while waiting for a response; a bulk request of
@@ -34,5 +37,20 @@ public record ClientSettings(
     if (maxConnectionsPerNode < 1 || maxConnectionsTotal < maxConnectionsPerNode) {
       throw new IllegalArgumentException("need 1 <= maxConnectionsPerNode <= maxConnectionsTotal");
     }
+  }
+
+  /**
+   * These settings with a cluster's connect and response timeouts.
+   *
+   * @param client the cluster's validated {@code client} block
+   * @return the settings for that cluster's clients
+   */
+  public ClientSettings forCluster(ElasticsearchCluster.Client client) {
+    return new ClientSettings(
+        client.connectTimeout(),
+        client.responseTimeout(),
+        connectionRequestTimeout,
+        maxConnectionsPerNode,
+        maxConnectionsTotal);
   }
 }

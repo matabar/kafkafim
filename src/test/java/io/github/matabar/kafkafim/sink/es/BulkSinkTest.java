@@ -45,7 +45,9 @@ class BulkSinkTest {
   final Outcomes outcomes = new Outcomes();
   final Events events = new Events();
   final List<BulkSink<String>> sinks = new ArrayList<>();
-  CircuitBreaker breaker = CircuitBreaker.of("c", BreakerSettings.DEFAULT.toConfig());
+  CircuitBreaker breaker =
+      CircuitBreaker.of(
+          "c", BreakerSettings.DEFAULT.toConfig(ClientSettings.DEFAULT.responseTimeout()));
 
   @AfterEach
   void tearDown() {
@@ -786,7 +788,7 @@ class BulkSinkTest {
         CircuitBreaker.of(
             "c",
             new BreakerSettings(4, 4, 50f, Duration.ofMillis(200), 1, Duration.ofMillis(5))
-                .toConfig());
+                .toConfig(ClientSettings.DEFAULT.responseTimeout()));
     AtomicInteger failures = new AtomicInteger(6);
     List<CircuitBreaker.State> seen = new CopyOnWriteArrayList<>();
     breaker
@@ -809,7 +811,9 @@ class BulkSinkTest {
   void exceptionDuringHalfOpenProbesDoesNotLeakBreakerPermits() throws Exception {
     // Default breaker: the half-open safety net is minutes away, so only settled permits let
     // the probes through within the wait below.
-    breaker = CircuitBreaker.of("c", BreakerSettings.DEFAULT.toConfig());
+    breaker =
+        CircuitBreaker.of(
+            "c", BreakerSettings.DEFAULT.toConfig(ClientSettings.DEFAULT.responseTimeout()));
     breaker.transitionToOpenState();
     breaker.transitionToHalfOpenState();
     FakeTransport transport =

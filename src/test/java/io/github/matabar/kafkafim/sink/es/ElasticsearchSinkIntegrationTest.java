@@ -16,6 +16,7 @@ import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
@@ -83,9 +84,16 @@ class ElasticsearchSinkIntegrationTest {
   }
 
   ElasticsearchSinks sinks(ClientSettings clientSettings, BreakerSettings breakerSettings) {
+    return sinks(null, clientSettings, breakerSettings);
+  }
+
+  ElasticsearchSinks sinks(
+      ElasticsearchCluster.@Nullable Client client,
+      ClientSettings clientSettings,
+      BreakerSettings breakerSettings) {
     ElasticsearchCluster cluster =
         new ElasticsearchCluster(
-            List.of("http://" + ES.getHttpHostAddress()), null, Map.of(), null, null, true);
+            List.of("http://" + ES.getHttpHostAddress()), null, Map.of(), null, null, true, client);
     sinks =
         new ElasticsearchSinks(Map.of("local", cluster), clientSettings, breakerSettings, events);
     return sinks;
@@ -204,9 +212,13 @@ class ElasticsearchSinkIntegrationTest {
   @Test
   void elasticsearchPausedMidStreamProducesNoDlqAndEveryActionAcksAfterItReturns()
       throws Exception {
-    ClientSettings shortTimeouts =
+    // The cluster's client block sets the timeouts (ADR-0031): a paused node times out in 2s.
+    ElasticsearchCluster.Client shortTimeouts =
+        new ElasticsearchCluster.Client(Duration.ofSeconds(1), Duration.ofSeconds(2));
+    // Only the pool and lease timeout count here; the sink takes the timeouts from the cluster.
+    ClientSettings smallPool =
         new ClientSettings(
-            Duration.ofSeconds(1), Duration.ofSeconds(2), Duration.ofSeconds(2), 8, 32);
+            Duration.ofSeconds(5), Duration.ofSeconds(60), Duration.ofSeconds(2), 8, 32);
     BreakerSettings quickBreaker =
         new BreakerSettings(4, 2, 50f, Duration.ofSeconds(1), 1, Duration.ofMillis(50));
     SinkSettings settings =
@@ -219,7 +231,7 @@ class ElasticsearchSinkIntegrationTest {
             Duration.ZERO,
             OnVersionConflict.IGNORE,
             new Backoff(Duration.ofMillis(100), Duration.ofSeconds(1), 2.0, 0.5));
-    BulkSink<String> sink = open(sinks(shortTimeouts, quickBreaker), settings);
+    BulkSink<String> sink = open(sinks(shortTimeouts, smallPool, quickBreaker), settings);
 
     for (int i = 0; i < 100; i++) {
       sink.submit(doc(index, "before-" + i, "{\"n\":" + i + "}"));

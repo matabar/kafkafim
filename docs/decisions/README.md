@@ -34,3 +34,4 @@ One file per decision, MADR-style. Supersede with a new ADR rather than editing 
 | [0028](0028-hot-reload-rereads-config-data-and-shares-building-blocks-per-cluster.md) | Hot reload re-runs Spring Boot's config data loading and shares building blocks per cluster definition (refines 0012) |
 | [0029](0029-batch-spans-recorded-at-batch-end-failed-batches-always-sampled.md) | Batch spans are recorded when the batch ends, failed batches are always sampled, and the supervisor feeds telemetry (refines 0013) |
 | [0030](0030-request-level-retry-logs-error-types-not-response-bodies.md) | Request-level retry logs name Elasticsearch's error types, not the response body; the body only at DEBUG (refines 0026) |
+| [0031](0031-elasticsearch-client-timeouts-per-cluster.md) | Elasticsearch client timeouts are set per cluster; the breaker's half-open limit follows the response timeout (refines 0026) |

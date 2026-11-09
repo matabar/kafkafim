@@ -20,6 +20,7 @@ import org.springframework.util.unit.DataSize;
  * @param defaultIdentity identity used when a route names none; optional
  * @param bulk bulk batching limits per {@code (cluster, identity)}
  * @param compression gzip request bodies; default {@code true}
+ * @param client HTTP client timeouts of every client of this cluster
  */
 public record ElasticsearchCluster(
     @NotEmpty List<String> uris,
@@ -27,7 +28,8 @@ public record ElasticsearchCluster(
     Map<String, @Valid ElasticsearchIdentity> identities,
     String defaultIdentity,
     @Valid Bulk bulk,
-    Boolean compression) {
+    Boolean compression,
+    @Valid Client client) {
 
   /** Applies the documented defaults. */
   public ElasticsearchCluster {
@@ -35,6 +37,7 @@ public record ElasticsearchCluster(
     identities = Defaults.map(identities);
     bulk = Defaults.orDefault(bulk, new Bulk(null, null, null, null));
     compression = Defaults.orDefault(compression, Boolean.TRUE);
+    client = Defaults.orDefault(client, new Client(null, null));
   }
 
   /**
@@ -131,6 +134,24 @@ public record ElasticsearchCluster(
       maxBytes = Defaults.orDefault(maxBytes, DataSize.ofMegabytes(5));
       maxAge = Defaults.orDefault(maxAge, Duration.ofMillis(200));
       inFlight = Defaults.orDefault(inFlight, 4);
+    }
+  }
+
+  /**
+   * HTTP client timeouts, shared by every identity's client of the cluster (DESIGN §7, ADR-0031).
+   * The connection pool stays a code default.
+   *
+   * @param connectTimeout TCP and TLS connect timeout per node; default 5s
+   * @param responseTimeout socket inactivity timeout while waiting for a response; a bulk request
+   *     of {@code bulk.max-bytes} must be answered within it, and a timeout is a request-level
+   *     retry; default 60s
+   */
+  public record Client(Duration connectTimeout, Duration responseTimeout) {
+
+    /** Applies the documented defaults. */
+    public Client {
+      connectTimeout = Defaults.orDefault(connectTimeout, Duration.ofSeconds(5));
+      responseTimeout = Defaults.orDefault(responseTimeout, Duration.ofSeconds(60));
     }
   }
 }
