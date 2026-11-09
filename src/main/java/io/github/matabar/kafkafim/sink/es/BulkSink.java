@@ -672,6 +672,10 @@ public final class BulkSink<H> implements AutoCloseable {
       }
       return 0;
     }
+    // Classify every item first, then log and report, then apply the outcomes: a caller that sees
+    // the actions done has already heard this response's failure line and auth event, as on the
+    // success path above. Auth retrying is settled here too, so updateAuth sees the final state.
+    ItemVerdict[] verdicts = new ItemVerdict[entries.size()];
     BulkResponse.Item firstAuthFailure = null;
     int failed = 0;
     List<String> logged = new ArrayList<>(LOGGED_ITEM_ERRORS);
@@ -680,38 +684,20 @@ public final class BulkSink<H> implements AutoCloseable {
       BulkResponse.Item item = response.items().get(i);
       entry.answered++;
       ItemVerdict verdict = ErrorClassifier.item(item, entry.action, settings.onVersionConflict());
-      String reason = item.errorJson() != null ? item.errorJson() : "status " + item.status();
+      verdicts[i] = verdict;
       if (verdict != ItemVerdict.INDEXED && verdict != ItemVerdict.STALE) {
         failed++;
         if (logged.size() < LOGGED_ITEM_ERRORS) {
           logged.add("#" + i + " " + item.status() + " " + errorType(item));
         }
       }
-      switch (verdict) {
-        case INDEXED -> complete(entry, ActionOutcome.INDEXED);
-        case STALE -> complete(entry, new ActionOutcome.Stale(reason));
-        case DLQ_ES_ERROR -> {
-          listener.onItemError(key, item.status(), errorType(item));
-          complete(entry, dlq(entry, SinkErrorType.ES_ERROR, reason, item.status()));
+      if (verdict == ItemVerdict.AUTH_FAILURE) {
+        if (firstAuthFailure == null) {
+          firstAuthFailure = item;
         }
-        case DLQ_VERSION_CONFLICT -> {
-          listener.onItemError(key, item.status(), errorType(item));
-          complete(entry, dlq(entry, SinkErrorType.VERSION_CONFLICT, reason, item.status()));
-        }
-        case RETRY -> {
-          setAuthRetrying(entry, false);
-          retryItem(entry, item, reason);
-        }
-        case AUTH_FAILURE -> {
-          if (firstAuthFailure == null) {
-            firstAuthFailure = item;
-          }
-          setAuthRetrying(entry, true);
-          entry.markFailure(clock);
-          entry.authRetries++;
-          scheduleRetry(entry, settings.backoff().delay(entry.authRetries));
-        }
-        default -> throw new IllegalStateException("unhandled item verdict " + verdict);
+        setAuthRetrying(entry, true);
+      } else {
+        setAuthRetrying(entry, false);
       }
     }
     if (failed > 0) {
@@ -726,18 +712,39 @@ public final class BulkSink<H> implements AutoCloseable {
           logged.size(),
           String.join("; ", logged));
     }
+    updateAuth(() -> requestAuthFailing = false);
     if (firstAuthFailure != null) {
       // One event per response, not per item.
-      BulkResponse.Item failure = firstAuthFailure;
-      updateAuth(() -> requestAuthFailing = false);
       listener.onAuthFailure(
           key,
-          failure.status(),
-          failure.errorJson() != null
-              ? ErrorSummary.ofError(failure.errorJson(), true)
-              : "status " + failure.status());
-    } else {
-      updateAuth(() -> requestAuthFailing = false);
+          firstAuthFailure.status(),
+          firstAuthFailure.errorJson() != null
+              ? ErrorSummary.ofError(firstAuthFailure.errorJson(), true)
+              : "status " + firstAuthFailure.status());
+    }
+    for (int i = 0; i < entries.size(); i++) {
+      Entry entry = entries.get(i);
+      BulkResponse.Item item = response.items().get(i);
+      String reason = item.errorJson() != null ? item.errorJson() : "status " + item.status();
+      switch (verdicts[i]) {
+        case INDEXED -> complete(entry, ActionOutcome.INDEXED);
+        case STALE -> complete(entry, new ActionOutcome.Stale(reason));
+        case DLQ_ES_ERROR -> {
+          listener.onItemError(key, item.status(), errorType(item));
+          complete(entry, dlq(entry, SinkErrorType.ES_ERROR, reason, item.status()));
+        }
+        case DLQ_VERSION_CONFLICT -> {
+          listener.onItemError(key, item.status(), errorType(item));
+          complete(entry, dlq(entry, SinkErrorType.VERSION_CONFLICT, reason, item.status()));
+        }
+        case RETRY -> retryItem(entry, item, reason);
+        case AUTH_FAILURE -> {
+          entry.markFailure(clock);
+          entry.authRetries++;
+          scheduleRetry(entry, settings.backoff().delay(entry.authRetries));
+        }
+        default -> throw new IllegalStateException("unhandled item verdict " + verdicts[i]);
+      }
     }
     return failed;
   }
