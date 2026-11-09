@@ -11,6 +11,7 @@ import io.github.matabar.kafkafim.config.Pipeline;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -19,11 +20,14 @@ import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.Consumer;
 import org.apache.kafka.clients.admin.Admin;
+import org.apache.kafka.clients.admin.ConsumerGroupDescription;
+import org.apache.kafka.clients.admin.MemberDescription;
 import org.apache.kafka.clients.admin.NewTopic;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
+import org.apache.kafka.common.GroupState;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.serialization.ByteArraySerializer;
 import org.junit.jupiter.api.AfterAll;
@@ -254,13 +258,25 @@ class KafkaPipelineSourceIntegrationTest {
   @Test
   void twoSourcesInOneGroupSplitPartitionsAndRevokeSafely() throws Exception {
     String topic = createTopic(4);
-    for (int p = 0; p < 4; p++) {
-      produce(topic, p, 10, 10);
-    }
     Pipeline.Source config = source(topic, 500, DataSize.ofMegabytes(1));
     Recorder first = new Recorder(record -> {});
     KafkaPipelineSource a = start(config, first, 2);
     assertThat(a.concurrency()).isEqualTo(2);
+    // a's consumers can form the group one at a time: the first may take all four partitions and
+    // hand two to its sibling in a later rebalance. Wait for that split before producing, and
+    // forget its revocations, so that b's arrival is the only rebalance asserted on below. If b
+    // joined first, a's late consumer would take a partition from its sibling in b's rebalance,
+    // and a would revoke a partition that b never receives.
+    await()
+        .atMost(TIMEOUT)
+        .until(() -> {
+          Map<String, Set<TopicPartition>> owners = stableAssignment(groupOf(topic));
+          return owners.size() == 2 && owners.values().stream().allMatch(tps -> tps.size() == 2);
+        });
+    first.revoked.clear();
+    for (int p = 0; p < 4; p++) {
+      produce(topic, p, 10, 10);
+    }
     await().atMost(TIMEOUT).until(() -> first.records.size() == 40);
     first.records.stream().filter(r -> r.offset() < 5).forEach(SourceRecord::complete);
 
@@ -272,7 +288,8 @@ class KafkaPipelineSourceIntegrationTest {
     await()
         .atMost(TIMEOUT)
         .until(() ->
-            !a.assignedPartitions().isEmpty()
+            stableAssignment(groupOf(topic)).size() == 6
+                && !a.assignedPartitions().isEmpty()
                 && !b.assignedPartitions().isEmpty()
                 && a.assignedPartitions().size() + b.assignedPartitions().size() == 4);
     Set<TopicPartition> union = new HashSet<>(a.assignedPartitions());
@@ -357,6 +374,20 @@ class KafkaPipelineSourceIntegrationTest {
         admin.listConsumerGroupOffsets(group).partitionsToOffsetAndMetadata().get();
     OffsetAndMetadata offset = offsets.get(new TopicPartition(topic, partition));
     return offset == null ? -1 : offset.offset();
+  }
+
+  /** The group's assignment by member id while it is stable, or empty while it is rebalancing. */
+  private static Map<String, Set<TopicPartition>> stableAssignment(String group) throws Exception {
+    ConsumerGroupDescription description =
+        admin.describeConsumerGroups(List.of(group)).all().get().get(group);
+    if (description.groupState() != GroupState.STABLE) {
+      return Map.of();
+    }
+    Map<String, Set<TopicPartition>> owners = new HashMap<>();
+    for (MemberDescription member : description.members()) {
+      owners.put(member.consumerId(), member.assignment().topicPartitions());
+    }
+    return owners;
   }
 
   /** Records what the source delivers; {@code onRecord} runs for each record on arrival. */
