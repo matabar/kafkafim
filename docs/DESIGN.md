@@ -413,6 +413,9 @@ kafkafim:
           max-age: 200ms
           in-flight: 4
         compression: true
+        client:                              # HTTP client timeouts (§7, ADR-0031)
+          connect-timeout: 5s
+          response-timeout: 60s              # a max-bytes bulk must be answered within it
 ```
 
 A Kafka cluster's `properties` are passed to kafka-clients under kafkafim's own
@@ -740,7 +743,7 @@ agent all work. A changed secret file is picked up by the same reload path.
     `default-identity` restarts the pipelines that inherit it), when a cluster it
     uses changed in anything but its identities and `default-identity` (its source
     Kafka cluster serves both the consumer and the DLQ producer; every route's
-    Elasticsearch cluster), or when an identity it references changed (source
+    Elasticsearch cluster, including its `client` timeouts), or when an identity it references changed (source
     identity, DLQ identity, every route's identity). Secret values are part of the
     bound identities, so a rotated secret file is an identity change. A change to a
     cluster no pipeline uses restarts nothing.
@@ -792,7 +795,8 @@ agent all work. A changed secret file is picked up by the same reload path.
 ### 5.7 Defaults and validation rules
 
 Defaults not shown inline in 5.1/5.2: Kafka `security-protocol: PLAINTEXT`; ES
-`bulk` 5000 docs / 5MB / 200ms / 4 in flight, `compression: true`; `source`
+`bulk` 5000 docs / 5MB / 200ms / 4 in flight, `compression: true`, `client`
+`connect-timeout: 5s` / `response-timeout: 60s` (both must be positive); `source`
 `offset-reset: latest`, `max-poll-records: 500`, `max-in-flight-bytes: 64MB`,
 `commit-interval: 1s`, `max-record-bytes: 8MB`; `dlq` `max-attempts: 10`,
 `max-elapsed: 10m`; `route-mode: first`; `latency.max-age` unset (the cluster's
@@ -858,7 +862,8 @@ are reported together:
 - **Lag-based**: needs KEDA (a CRD) or a custom-metrics adapter, not available in
   production. `kafkafim_consumer_lag` is exported so this is a chart toggle later.
 - Scaling beyond partitions is wasted; repartitioning is a Kafka-side action.
-- Per-cluster knobs: `bulk.max-docs/max-bytes/max-age/in-flight`; per pipeline
+- Per-cluster knobs: `bulk.max-docs/max-bytes/max-age/in-flight`,
+  `client.connect-timeout/response-timeout`; per pipeline
   `source.max-poll-records`, `source.max-in-flight-bytes` (memory bound), both shown
   in section 5.2.
 
@@ -887,10 +892,13 @@ unit-tested against captured ES 8.19 responses (`src/test/resources/sink/es/`), 
 it decides data loss versus stall. The retry loop around it is the sink's own
 (ADR-0026); Resilience4j provides the breaker and the backoff intervals.
 
-**HTTP client defaults** (per `(cluster, identity)` client, not configurable in the MVP):
-connect timeout 5s; response (socket inactivity) timeout 60s, so a `max-bytes` bulk must
-be answered within it, and a timeout is a request-level retry; 30s to lease a pooled
-connection; 32 connections per node, 128 per client. Bulk requests carry
+**HTTP client settings** (per `(cluster, identity)` client; ADR-0031): the cluster's
+`client.connect-timeout` (default 5s) and `client.response-timeout` (socket inactivity,
+default 60s), so a `max-bytes` bulk must be answered within it, and a timeout is a
+request-level retry. The pool is a code default: 30s to lease a pooled connection; 32
+connections per node, 128 per client. The breaker's half-open safety net (a half-open
+breaker whose probes never report back reopens) is its open time plus twice the
+response timeout. Bulk requests carry
 `filter_path=errors,items.*.status,items.*.error`, so a successful response is a few
 bytes per item and parsing stops at `"errors": false`.
 
