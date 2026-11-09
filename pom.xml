@@ -225,6 +225,7 @@
 						<exclude>**/*$*</exclude>
 						<exclude>**/*IntegrationTest.java</exclude>
 					</excludes>
+					<argLine>-XX:TieredStopAtLevel=1 -XX:+UseSerialGC</argLine>
 				</configuration>
 			</plugin>
 			<plugin>
@@ -237,6 +238,7 @@
 					     so forks share nothing but the Docker daemon. -->
 					<forkCount>${it.forkCount}</forkCount>
 					<reuseForks>true</reuseForks>
+					<argLine>-XX:TieredStopAtLevel=1 -XX:+UseSerialGC</argLine>
 					<includes>
 						<include>**/*IntegrationTest.java</include>
 					</includes>
