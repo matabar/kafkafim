@@ -36,6 +36,8 @@ class TestcontainersConfiguration {
     return new ElasticsearchContainer(
             DockerImageName.parse("docker.elastic.co/elasticsearch/elasticsearch:8.19.0"))
         .withEnv("xpack.security.enabled", "false")
+        // C1 JIT only, as in every test Elasticsearch: a test node never lives long enough for C2
+        // to pay off, and C2 compiles burn CPU that the parallel Failsafe forks share.
         .withEnv("ES_JAVA_OPTS", "-Xms512m -Xmx512m -XX:TieredStopAtLevel=1")
         // Parallel Failsafe forks can boot several nodes at once; the 60 s default is tight.
         .withStartupTimeout(Duration.ofMinutes(3));
