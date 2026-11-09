@@ -56,3 +56,6 @@ services:
       - '3000:3000'
       - '4317:4317'
       - '4318:4318'
+    volumes:   # loads deploy/grafana/dashboards into the kafkafim folder (deploy/grafana/README.md)
+      - './deploy/grafana/dashboards:/otel-lgtm/kafkafim-dashboards:ro'
+      - './deploy/grafana/provisioning/kafkafim-dashboards.yaml:/otel-lgtm/grafana/conf/provisioning/dashboards/kafkafim.yaml:ro'

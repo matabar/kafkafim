@@ -64,7 +64,8 @@ Code follows the [Google Java Style Guide](https://google.github.io/styleguide/j
 `./mvnw verify` fails on unformatted code or Checkstyle violations.
 
 Actuator: `http://localhost:8080/actuator/health`, `/actuator/prometheus`.
-Grafana (local stack): `http://localhost:3000`.
+Grafana (local stack): `http://localhost:3000`, with the kafkafim dashboards in the *kafkafim*
+folder ([deploy/grafana](deploy/grafana/README.md): dashboards and Prometheus alert rules).
 
 ## License
 
