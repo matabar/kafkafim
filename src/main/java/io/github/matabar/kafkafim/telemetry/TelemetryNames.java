@@ -1,5 +1,6 @@
 package io.github.matabar.kafkafim.telemetry;
 
+import io.github.matabar.kafkafim.config.Pipeline;
 import java.util.Map;
 
 /**
@@ -69,8 +70,11 @@ public final class TelemetryNames {
   /** Label key of an Elasticsearch cluster. */
   public static final String ES_CLUSTER = "es_cluster";
 
-  /** {@code route} of a document that failed before a route was selected. */
-  public static final String NO_ROUTE = "none";
+  /**
+   * {@code route} of a document that failed before a route was selected; config validation rejects
+   * a route of that name.
+   */
+  public static final String NO_ROUTE = Pipeline.Route.NO_ROUTE_LABEL;
 
   /** {@code identity} of an unauthenticated {@code http} cluster. */
   public static final String NONE = "none";

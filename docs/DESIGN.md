@@ -324,6 +324,11 @@ missing resource and identity, and leaves the other pipelines in the pod running
 Readiness stays green for the pod if at least one pipeline runs; the alert fires on
 the metric.
 
+The local Compose stack follows the same rule: its broker has topic auto-creation
+disabled, and a one-shot `kafka-init` service in `compose.yaml` stands in for the
+provisioning systems by creating the `local` profile's `demo` topics
+([README, Develop](../README.md#develop)).
+
 How the supervisor runs it (`supervisor/Preflight`, `PipelineRuntime`): every pipeline
 starts on its own thread, so one slow check never delays another pipeline or the
 application context. The DLQ topic is described with the DLQ identity
@@ -480,7 +485,8 @@ kafkafim:
         on-bad-timestamp: dlq                 # dlq (default) | ingest-time
         op: index                             # index | create
       routes:                                 # evaluated in order
-        - when:
+        - name: eu                            # metric label; default: the zero-based position
+          when:
             - { field: /region, equals: eu }
           cluster: search-eu
           identity: orders-writer             # ES identity; default: cluster.default-identity
@@ -604,6 +610,13 @@ conditions all hold, else the default route. In `all`, every non-default route w
 conditions hold, in order; the default route only when none did. No match and no
 default (possible only in `all`) sends the document to the DLQ with
 `error.type=no_route`.
+
+A route's optional `name` is its `route` label in metrics (§10) and names it in log
+and error messages; an unnamed route is labelled by its zero-based position (`0`, `1`,
+…). So that no two labels of a pipeline collide, a name is not blank, is unique within
+the pipeline, and is not reserved: `none` labels documents that failed before a route
+was selected, and digits-only names are the positions of unnamed routes (so `1` would
+merge with the unnamed second route; `01` is rejected too, for simplicity).
 
 Index patterns use the Logstash syntax the team already knows: `%{field}` (a JSON
 pointer or a top-level name, taken literally, so `%{a.b}` is the property `"a.b"`)
@@ -834,7 +847,9 @@ are reported together:
 - **Routes**: in `route-mode: first` exactly one `default: true` route, and every other
   route has at least one `when` condition (an unconditional route would hide the rest);
   in `all` at most one default, and unconditional routes are allowed (fan-out). The
-  default route is last and has no conditions. A route's ingest `pipeline` is optional
+  default route is last and has no conditions. A route `name`, when set, is not blank,
+  is unique within the pipeline, and is neither `none` nor digits-only (both are
+  reserved `route` labels, §5.3). A route's ingest `pipeline` is optional
   but, when set, not blank: `pipeline: ""`, whitespace, or a bare `pipeline:` (which binds
   as an empty string) would make Elasticsearch reject the whole bulk request; omit the key
   instead.
@@ -894,7 +909,7 @@ are reported together:
 | Bulk request rejected with 413 | The request is split in halves and each half retried (recursively); a single-document bulk that still gets 413 sends that document to the DLQ with `error.type=too_large`. |
 | Undecodable record, non-object element, unusable version, missing `_id`, bad timestamp, no matching route, unresolved index pattern | DLQ with the matching `error.type` (`decode`, `missing_id`, `bad_timestamp`, `no_route`, `unresolved_index`). |
 | Missing topic, DLQ topic, or failed authentication at pipeline start | Pipeline stays stopped (`failed_preflight`), clear log naming resource and identity, alert. Other pipelines unaffected. kafkafim never creates the resource. |
-| DLQ produce fails | Block the partition and alert. Losing data is worse than lag. The send is retried forever (100ms doubling to 30s, ±25% jitter) and never completes the source offset until the broker acknowledged it (`acks=all`), so the committed offset stays put. The writer is *blocked* from its first failure until every failed send was acknowledged; the supervisor pauses the pipeline on `onBlocked` and resumes on `onUnblocked`. A missing DLQ topic, failed authentication or authorization, an invalid topic or a record larger than the producer or topic allows is a **configuration** failure (logged at `ERROR`, alert); anything else is **transient**. Both kinds are retried; neither drops the record. A producer error that kafka-clients can make fatal even for an idempotent producer (cluster authorization, authentication, unsupported version, a fenced producer or an invalid producer ID mapping) replaces the shared producer, so fixing the cause unblocks the next attempt without a restart. A missing `Write` ACL is usually not fatal, though: in kafka-clients 4.2 a `CLUSTER_AUTHORIZATION_FAILED` answer to `InitProducerId` is *abortable*: the producer fails the pending batches, goes back to uninitialized and retries `InitProducerId` on its own. The producer becomes fatal only when the error reaches its error state through a failed batch (a produce response carrying it). kafkafim replaces the producer on `ClusterAuthorizationException` either way: replacing it is cheap and covers the fatal path. On the abortable path kafka-clients still logs `Aborting producer batches due to fatal error` at `ERROR`, and kafkafim logs that the producer is in a fatal state and replaces it; both mean only that the pending sends failed and will be retried. |
+| DLQ produce fails | Block the partition and alert. Losing data is worse than lag. The send is retried forever (100ms doubling to 30s, ±25% jitter) and never completes the source offset until the broker acknowledged it (`acks=all`), so the committed offset stays put. The writer is *blocked* from its first failure until every failed send was acknowledged; the supervisor pauses the pipeline on `onBlocked` and resumes on `onUnblocked`. A missing DLQ topic, failed authentication or authorization, an invalid topic or a record larger than the producer or topic allows is a **configuration** failure (logged at `ERROR`, alert); anything else is **transient**. Both kinds are retried; neither drops the record. A producer error that kafka-clients can make fatal even for an idempotent producer (cluster authorization, authentication, unsupported version, a fenced producer or an invalid producer ID mapping) replaces the shared producer, so fixing the cause unblocks the next attempt without a restart. A missing `Write` ACL is usually not fatal, though: in kafka-clients 4.2 a `CLUSTER_AUTHORIZATION_FAILED` answer to `InitProducerId` is *abortable*: the producer fails the pending batches, goes back to uninitialized and retries `InitProducerId` on its own. The producer becomes fatal only when the error reaches its error state through a failed batch (a produce response carrying it). kafkafim replaces the producer on `ClusterAuthorizationException` either way: replacing it is cheap and covers the fatal path. On the abortable path kafka-clients still logs `Aborting producer batches due to fatal error` at `ERROR`, and kafkafim logs that the producer *may be* in a fatal state and replaces it; both mean only that the pending sends failed and will be retried. A send that fails only because of the replacement (closing the producer aborts its batch, or it reached the producer after the close began) is reported by the failure that triggered the replacement, so a missing ACL never shows up as a transient `Producer is closed forcefully`. Each send attempt is reported once, although kafka-clients can both throw from `send` and later fail the batch it had already appended. |
 | Kafka unavailable | Reconnect with backoff (kafka-clients); `kafkafim_kafka_connected` gauge drops, alert. A Kafka authentication or authorization failure after start is retried every 10s instead of stopping the consumer. |
 | Pod SIGTERM | Spring graceful shutdown, higher phases first: the pipeline supervisor (phase MAX-100) stops all pipelines in parallel; each pipeline's Kafka source pauses fetching, gives in-flight records up to 30s to complete (its bulk sinks and the DLQ writer are still open, so outcomes keep arriving), then stops its container (10s), which commits what completed on revoke and leaves the group; records still incomplete are re-delivered to the next owner; then the pipeline's bulk sinks close (up to 10s; outcomes after the revoke are ignored); then the DLQ producers (phase MAX-1000, so they outlive the source drain; closed by `supervisor/PipelineResources`, which owns every configuration generation's producers) flush for up to 10s and close, failing any send still unacknowledged so that its record is not committed; then the web server drains (phase MAX-1024, instant for actuator-only traffic). `spring.lifecycle.timeout-per-shutdown-phase` (60s, `application.yaml`) bounds each phase; the consumer phase must fit the pod's `terminationGracePeriodSeconds` (90s, chart default). |
 
@@ -1036,7 +1051,9 @@ Exact label sets (`telemetry/TelemetryNames`, `telemetry/PipelineMeters`):
 Label discipline: `route` is the route's `name`, or its zero-based position, never the
 resolved index (daily indices would explode cardinality); `route="none"` counts
 documents that failed before a route was selected (`decode`, `missing_id`,
-`bad_timestamp`, `no_route`). There are no partition labels. Series known from the
+`bad_timestamp`, `no_route`). Validation reserves `none` and digits-only names and
+rejects duplicate names (§5.3), so each `route` value means exactly one route or the
+pre-routing failures. There are no partition labels. Series known from the
 configuration (per topic, per route and outcome, the bulk histograms per cluster, the
 gauges) exist from startup with 0; status and error-type series appear with their first
 event. On a reload (§5.6, ADR-0028) a removed pipeline loses every series, an added one
@@ -1099,11 +1116,22 @@ logged by default.
 
 ### Shipped with the repo
 
-`deploy/grafana/`: overview dashboard (lag, throughput, e2e latency, DLQ rate per
-pipeline), per-ES-cluster dashboard (bulk latency, 429s, breaker), alert rules: lag
-growing 5m, DLQ rate > 0 for 10m, bulk reject ratio > 1%, e2e p99 above target,
-breaker open, auth failures > 0, reload failed, pod with 0 assigned partitions for a
-pipeline it serves.
+[`deploy/grafana/`](../deploy/grafana/README.md), written against the
+`/actuator/prometheus` names above:
+
+- `dashboards/kafkafim-overview.json`: per pipeline: state, lag, throughput, e2e
+  latency, DLQ rate, in-flight bytes and heap, assigned partitions, Kafka
+  connectivity, config generation and reloads.
+- `dashboards/kafkafim-elasticsearch.json`: per ES cluster: breaker, bulk requests by
+  status and the 429 ratio, bulk latency, docs and bytes per request, flush reasons,
+  retries, item errors, auth failures.
+- `alerts/kafkafim-alerts.yaml` (Prometheus rules, with `promtool test rules` tests):
+  lag growing 5m, DLQ rate > 0 for 10m, bulk reject (429) ratio > 1%, e2e p99 above
+  target (10s by default), breaker open, auth failures > 0, reload failed, pod with 0
+  assigned partitions for a pipeline it runs; plus `failed_preflight`, `paused` for
+  5m, `starting` for 10m and Kafka disconnected for a running pipeline.
+
+The compose demo provisions both dashboards into its Grafana LGTM.
 
 ## 11. Security
 
@@ -1139,7 +1167,7 @@ Summary; see [TECH_STACK.md](TECH_STACK.md) and the ADRs.
 
 ```
 pom.xml, mvnw                    Maven build (Spring Boot parent)
-compose.yaml                     local Kafka + Elasticsearch + Grafana LGTM
+compose.yaml                     local Kafka + Elasticsearch + Grafana LGTM; one-shot kafka-init creates the demo topics
 src/main/java/io/github/matabar/kafkafim/
   config/         @ConfigurationProperties model, validators, watcher, Binder reload, diff
   supervisor/     pipeline lifecycle, hot reload orchestration, reload endpoint
@@ -1149,11 +1177,12 @@ src/main/java/io/github/matabar/kafkafim/
   sink/es/        Rest5Client per (cluster, identity), batcher, bulk sender, body builder, item parser, error table, breaker
   dlq/            producer, record format
   telemetry/      meters, spans, health indicators
-src/main/resources/application.yaml   defaults + local-dev sample pipeline
+src/main/resources/application.yaml   profile-independent defaults (default profile: local)
+src/main/resources/application-local.yaml   local-dev sample config: clusters + demo pipeline
 src/test/java/...                     unit + Testcontainers integration tests
 charts/kafkafim/                      production Helm chart
 deploy/local/                         Kubernetes demo stack (Kafka + ES operators, local only)
-deploy/grafana/                       dashboards + alert rules
+deploy/grafana/                       Grafana dashboards, Prometheus alert rules + promtool tests, compose provisioning
 docs/                                 DESIGN.md, TECH_STACK.md, decisions/, runbook
 ```
 
