@@ -485,7 +485,8 @@ kafkafim:
         on-bad-timestamp: dlq                 # dlq (default) | ingest-time
         op: index                             # index | create
       routes:                                 # evaluated in order
-        - when:
+        - name: eu                            # metric label; default: the zero-based position
+          when:
             - { field: /region, equals: eu }
           cluster: search-eu
           identity: orders-writer             # ES identity; default: cluster.default-identity
@@ -609,6 +610,13 @@ conditions all hold, else the default route. In `all`, every non-default route w
 conditions hold, in order; the default route only when none did. No match and no
 default (possible only in `all`) sends the document to the DLQ with
 `error.type=no_route`.
+
+A route's optional `name` is its `route` label in metrics (§10) and names it in log
+and error messages; an unnamed route is labelled by its zero-based position (`0`, `1`,
+…). So that no two labels of a pipeline collide, a name is not blank, is unique within
+the pipeline, and is not reserved: `none` labels documents that failed before a route
+was selected, and digits-only names are the positions of unnamed routes (so `1` would
+merge with the unnamed second route; `01` is rejected too, for simplicity).
 
 Index patterns use the Logstash syntax the team already knows: `%{field}` (a JSON
 pointer or a top-level name, taken literally, so `%{a.b}` is the property `"a.b"`)
@@ -839,7 +847,9 @@ are reported together:
 - **Routes**: in `route-mode: first` exactly one `default: true` route, and every other
   route has at least one `when` condition (an unconditional route would hide the rest);
   in `all` at most one default, and unconditional routes are allowed (fan-out). The
-  default route is last and has no conditions. A route's ingest `pipeline` is optional
+  default route is last and has no conditions. A route `name`, when set, is not blank,
+  is unique within the pipeline, and is neither `none` nor digits-only (both are
+  reserved `route` labels, §5.3). A route's ingest `pipeline` is optional
   but, when set, not blank: `pipeline: ""`, whitespace, or a bare `pipeline:` (which binds
   as an empty string) would make Elasticsearch reject the whole bulk request; omit the key
   instead.
@@ -1041,7 +1051,9 @@ Exact label sets (`telemetry/TelemetryNames`, `telemetry/PipelineMeters`):
 Label discipline: `route` is the route's `name`, or its zero-based position, never the
 resolved index (daily indices would explode cardinality); `route="none"` counts
 documents that failed before a route was selected (`decode`, `missing_id`,
-`bad_timestamp`, `no_route`). There are no partition labels. Series known from the
+`bad_timestamp`, `no_route`). Validation reserves `none` and digits-only names and
+rejects duplicate names (§5.3), so each `route` value means exactly one route or the
+pre-routing failures. There are no partition labels. Series known from the
 configuration (per topic, per route and outcome, the bulk histograms per cluster, the
 gauges) exist from startup with 0; status and error-type series appear with their first
 event. On a reload (§5.6, ADR-0028) a removed pipeline loses every series, an added one
