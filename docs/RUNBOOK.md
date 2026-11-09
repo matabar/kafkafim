@@ -99,8 +99,8 @@ Before you call an upgrade done:
 3. For a config-only change: `kafkafim_config_generation` went up by one on every
    pod of the group and `kafkafim_config_reload_total{result="failure"}` did not
    move ([§4.2](#42-reading-the-result)).
-4. `kafkafim_consumer_lag` is flat or falling and
-   `rate(kafkafim_dlq_records_total[5m])` did not jump.
+4. `kafkafim_consumer_lag` is flat or falling and `rate(kafkafim_dlq_records_total[5m])`
+   did not jump.
 
 ### 2.3 Roll back
 
@@ -357,8 +357,8 @@ id is `kafkafim.<pipeline>`).
   (es-auth:<es>/<identity>)` (`<none>` when the route has no identity); bulk sink
   WARNs with `status 401` or `403` and `authentication failure: type=security_exception,
   ..., reason=...`; the reason names the user, roles, action and index.
-  `kafkafim_auth_failures_total{es_cluster,identity}` increasing. Not a
-  breaker failure; nothing goes to the DLQ.
+  `kafkafim_auth_failures_total{es_cluster,identity}` increasing. Not a breaker
+  failure; nothing goes to the DLQ.
 - **Check**: is the credential in the mounted Secret current? Was it rotated in ES
   without the Secret, or the reverse? For 403: does the identity's role still have
   `write` (or `create_doc` for `op: create`), `auto_configure`/`create_index` as
@@ -438,9 +438,8 @@ id is `kafkafim.<pipeline>`).
 
 **DLQ filling** (records are being dead-lettered):
 
-- **Symptom**: `rate(kafkafim_dlq_records_total[10m]) > 0`, by
-  `error_type`; WARN lines per DLQ record naming the source
-  coordinates, error type and target.
+- **Symptom**: `rate(kafkafim_dlq_records_total[10m]) > 0`, by `error_type`; WARN
+  lines per DLQ record naming the source coordinates, error type and target.
 - **Check**: what the records say. Read the DLQ topic with headers:
 
   ```bash
@@ -491,24 +490,23 @@ id is `kafkafim.<pipeline>`).
 
 ### 5.7 Pipeline shows `running` but consumes nothing
 
-- **Symptom**: state `running`, but lag grows and
-  `kafkafim_records_consumed_total` is flat for that pipeline on that pod.
+- **Symptom**: state `running`, but lag grows and `kafkafim_records_consumed_total`
+  is flat for that pipeline on that pod.
 - **Check**, in order:
   1. Logs for `Pipeline '<p>': record handler failed; pausing until the pipeline is
      restarted`. That pause is not a supervisor reason, so the state stays `running`.
   2. Group or topic `Read` authorization errors ([§5.4](#54-kafka-authentication-or-acl-missing)).
-  3. `kafkafim_assigned_partitions`: 0 on this pod is normal only if the
-     group has more pods than partitions (replicas above partitions are idle).
-  4. `kafkafim_in_flight_bytes` at or above `max-in-flight-bytes`:
-     backpressure, see [§5.8](#58-consumer-lag-growing).
+  3. `kafkafim_assigned_partitions`: 0 on this pod is normal only if the group has
+     more pods than partitions (replicas above partitions are idle).
+  4. `kafkafim_in_flight_bytes` at or above `max-in-flight-bytes`: backpressure, see [§5.8](#58-consumer-lag-growing).
 - **Action**: for 1, and for a listener container that stopped on its own (it is not
   restarted and the state still says `running`), restart the pods
   ([§2.4](#24-restart-pods)) and look for the first ERROR before it.
 
 ### 5.8 Consumer lag growing
 
-- **Symptom**: `sum by (pipeline, topic) (kafkafim_consumer_lag)`
-  rising for 5+ minutes; `kafkafim_e2e_latency_seconds` p99 above target.
+- **Symptom**: `sum by (pipeline, topic) (kafkafim_consumer_lag)` rising for 5+
+  minutes; `kafkafim_e2e_latency_seconds` p99 above target.
 - **Check**, in order:
   1. Is the pipeline `paused` on any pod? Then it is [§5.1](#51-elasticsearch-outage-circuit-breaker-open),
      [§5.2](#52-elasticsearch-authentication-failure-pipeline-paused) or
