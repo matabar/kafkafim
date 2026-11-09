@@ -36,7 +36,9 @@ import tools.jackson.databind.JsonNode;
  *       yyyy} works because the era defaults to CE). Without an offset or zone in the pattern the
  *       time is UTC; without any time field it is midnight; a time that cannot resolve (e.g. {@code
  *       hh} without {@code a}) or a pattern that yields no date fails. Era text under {@code
- *       Locale.ROOT} is {@code CE}/{@code BCE}, not {@code AD}/{@code BC}.
+ *       Locale.ROOT} is {@code CE}/{@code BCE}, not {@code AD}/{@code BC}. {@code k} is the clock
+ *       hour 1 to 24, whose {@code 24} is the first hour of the day ({@code 24:30} is {@code 00:30}
+ *       of the same date); {@code HH} rejects ISO-8601's {@code 24:00}.
  * </ul>
  *
  * <p>Every format rejects instants outside years 1 to 9999, which no {@code %{+yyyy...}} index name
@@ -182,6 +184,8 @@ abstract sealed class TimestampFormat {
     private final DateTimeFormatter formatter;
 
     Custom(String pattern) {
+      // config.TimestampPatternSyntax builds the same formatter to validate the pattern; keep the
+      // two identical so a pattern that passes validation behaves the same here.
       this.pattern = pattern;
       this.formatter =
           new DateTimeFormatterBuilder()
