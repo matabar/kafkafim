@@ -57,7 +57,8 @@ import org.testcontainers.kafka.KafkaContainer;
  * <p>kafka-clients 4.2 itself treats this error as abortable, not fatal, for an idempotent
  * producer: the same producer would succeed after the grant. So the test asserts what the writer
  * guarantees (classification, blocking, completion after the grant), not that the producer was
- * replaced.
+ * replaced. kafka-clients still logs "Aborting producer batches due to fatal error" on this path;
+ * the producer is not fatal.
  */
 @Testcontainers
 class DlqWriterAclIntegrationTest {
@@ -112,7 +113,7 @@ class DlqWriterAclIntegrationTest {
 
   @BeforeAll
   static void connect() {
-    admin = Admin.create(Map.copyOf(adminSettings()));
+    admin = Admin.create(adminSettings());
   }
 
   @AfterAll
@@ -128,7 +129,8 @@ class DlqWriterAclIntegrationTest {
   }
 
   @Test
-  void missingWriteAclReplacesTheFatalProducerAndGrantingItCompletesTheSend() throws Exception {
+  void missingWriteAclBlocksAsConfigurationFailureAndGrantingItCompletesTheSameSend()
+      throws Exception {
     String source = "orders-" + UUID.randomUUID();
     DlqWriter writer = writer(source);
     admin
@@ -149,6 +151,10 @@ class DlqWriterAclIntegrationTest {
           assertThat(causes(failure.cause()))
               .hasAtLeastOneElementOfType(ClusterAuthorizationException.class);
         });
+    assertThat(events.failures.subList(0, 2))
+        .extracting(DlqFailure::attempt)
+        .as("retries of the one send")
+        .containsExactly(1, 2);
     assertThat(events.blocked).hasValue(1);
     assertThat(writer.isBlocked()).isTrue();
     assertThat(result).isNotDone();
@@ -158,7 +164,8 @@ class DlqWriterAclIntegrationTest {
     RecordMetadata metadata = result.get(TIMEOUT.toSeconds(), TimeUnit.SECONDS);
     assertThat(readOne(writer.topic(), metadata.offset()).value())
         .isEqualTo(request(source).value());
-    await().atMost(TIMEOUT).until(() -> !writer.isBlocked());
+    // onWritten and onUnblocked run before the future completes, so no wait is needed.
+    assertThat(writer.isBlocked()).isFalse();
     assertThat(events.unblocked).hasValue(1);
     assertThat(events.written).containsExactly(metadata.offset());
   }
