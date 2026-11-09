@@ -18,6 +18,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ExecutionException;
 import java.util.function.Consumer;
 import org.apache.kafka.clients.admin.Admin;
 import org.apache.kafka.clients.admin.ConsumerGroupDescription;
@@ -29,6 +30,7 @@ import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.GroupState;
 import org.apache.kafka.common.TopicPartition;
+import org.apache.kafka.common.errors.GroupIdNotFoundException;
 import org.apache.kafka.common.serialization.ByteArraySerializer;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
@@ -265,8 +267,8 @@ class KafkaPipelineSourceIntegrationTest {
     // a's consumers can form the group one at a time: the first may take all four partitions and
     // hand two to its sibling in a later rebalance. Wait for that split before producing, and
     // forget its revocations, so that b's arrival is the only rebalance asserted on below. If b
-    // joined first, a's late consumer would take a partition from its sibling in b's rebalance,
-    // and a would revoke a partition that b never receives.
+    // joined before that split settled, a's late consumer would take a partition from its sibling
+    // in b's rebalance, and a would revoke a partition that b never receives.
     await()
         .atMost(TIMEOUT)
         .until(() -> {
@@ -376,10 +378,20 @@ class KafkaPipelineSourceIntegrationTest {
     return offset == null ? -1 : offset.offset();
   }
 
-  /** The group's assignment by member id while it is stable, or empty while it is rebalancing. */
+  /**
+   * The group's assignment by member id, or empty unless the group exists and is stable (the group
+   * appears only when the first member's join reaches the coordinator).
+   */
   private static Map<String, Set<TopicPartition>> stableAssignment(String group) throws Exception {
-    ConsumerGroupDescription description =
-        admin.describeConsumerGroups(List.of(group)).all().get().get(group);
+    ConsumerGroupDescription description;
+    try {
+      description = admin.describeConsumerGroups(List.of(group)).all().get().get(group);
+    } catch (ExecutionException e) {
+      if (e.getCause() instanceof GroupIdNotFoundException) {
+        return Map.of();
+      }
+      throw e;
+    }
     if (description.groupState() != GroupState.STABLE) {
       return Map.of();
     }
