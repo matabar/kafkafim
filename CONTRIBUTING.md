@@ -43,7 +43,8 @@
 ```
 
 `verify` runs Google Java Style checks (Spotless + Checkstyle), unit tests,
-Testcontainers integration tests and ArchUnit rules. CI runs the same, plus the
+Testcontainers integration tests and ArchUnit rules. CI runs the same, split into
+"Build and test" (`-DskipITs`) and a parallel "Integration tests" job, plus the
 Dockerfile build and Helm checks; all must pass before merge. A docs-only change
 needs only `./mvnw -DskipTests verify`; CI skips the Java and image jobs for it.
 
