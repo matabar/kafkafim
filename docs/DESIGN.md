@@ -1154,7 +1154,8 @@ src/main/java/io/github/matabar/kafkafim/
   sink/es/        Rest5Client per (cluster, identity), batcher, bulk sender, body builder, item parser, error table, breaker
   dlq/            producer, record format
   telemetry/      meters, spans, health indicators
-src/main/resources/application.yaml   defaults + local-dev sample pipeline
+src/main/resources/application.yaml   profile-independent defaults (default profile: local)
+src/main/resources/application-local.yaml   local-dev sample pipeline (demo)
 src/test/java/...                     unit + Testcontainers integration tests
 charts/kafkafim/                      production Helm chart
 deploy/local/                         Kubernetes demo stack (Kafka + ES operators, local only)
