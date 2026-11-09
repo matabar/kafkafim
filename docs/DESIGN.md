@@ -1191,8 +1191,8 @@ CI-friendly `${revision}` versioning (ADR-0003, ADR-0022, ADR-0023).
   the infrastructure repository's config checks, refusal of the `local` profile on
   Kubernetes.
 - **0.3** traces/logs, Grafana dashboards + alerts, breaker, versioning, data streams.
-- **1.0** runbook, load-test results, first production pipelines, Logstash
-  config translator for the common 80%.
+- **1.0** runbook, load-test results, first production pipelines (each Logstash
+  pipeline translated by hand, §14 and ADR-0017; there is no config translator).
 - **Later**: DLQ tooling, transformations (if ever, as ES ingest pipelines first),
   `update`/`delete` ops, KEDA where allowed, read-only UI over the same config.
 
