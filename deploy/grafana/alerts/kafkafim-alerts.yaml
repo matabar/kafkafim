@@ -43,21 +43,6 @@ groups:
             The pod logs name the failing check.
           runbook_url: https://github.com/matabar/kafkafim/blob/main/docs/RUNBOOK.md#512-pipeline-stuck-in-starting
 
-      - alert: KafkafimConsumerLagGrowing
-        # Lag is reported per pod for the partitions it owns; summed over pods.
-        # tune: the 1000-record floor keeps commit jitter on a small lag from firing.
-        expr: >-
-          deriv((sum by (pipeline, kafka_cluster, topic) (kafkafim_consumer_lag))[5m:30s]) > 0
-          and sum by (pipeline, kafka_cluster, topic) (kafkafim_consumer_lag) > 1000
-        for: 5m
-        labels:
-          severity: warning
-        annotations:
-          summary: "Consumer lag of {{ $labels.pipeline }} on {{ $labels.topic }} growing"
-          description: >-
-            Lag has been rising for 5m+ (now {{ $value | humanize }} records/s of growth).
-          runbook_url: https://github.com/matabar/kafkafim/blob/main/docs/RUNBOOK.md#58-consumer-lag-growing
-
       - alert: KafkafimE2eLatencyHigh
         # tune: the target is per pipeline; 10s is a default for sub-second pipelines with
         # headroom for catch-up after short restarts.
