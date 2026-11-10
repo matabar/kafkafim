@@ -55,7 +55,7 @@ secrets: []
 #       minReplicas: 2
 #       maxReplicas: 12              # keep <= partition count
 #       targetCPUUtilizationPercentage: 70
-#     pdb: {}                        # default: top-level pdb
+#     pdb: {}                        # default: top-level pdb (maxUnavailable: 1 if single-replica)
 #     nodeSelector: {}               # default: top-level nodeSelector
 #     tolerations: []                # default: top-level tolerations
 #     affinity: {}                   # default: top-level affinity, else preferred hostname anti-affinity
@@ -143,7 +143,9 @@ probes:
 
 # PodDisruptionBudget per group. maxUnavailable, when set, wins over minAvailable (so
 # --set pdb.maxUnavailable=1 needs no null for the default). A single-replica group
-# (allowSingleReplica) should set maxUnavailable: 1, or minAvailable 1 blocks drains.
+# (allowSingleReplica with replicas, or autoscaling.minReplicas, below 2) that sets no
+# pdb of its own gets maxUnavailable: 1 instead of this default, because minAvailable 1
+# on one pod would block every node drain.
 pdb:
   minAvailable: 1
 

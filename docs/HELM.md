@@ -122,8 +122,12 @@ For each `groups.<g>`:
   `pdb` apply to every group that does not set its own (a group's value replaces the
   default, it is not merged); `podAnnotations` are merged, the group's winning.
   `replicas` defaults to 2. In a `pdb`, `maxUnavailable` wins over `minAvailable`
-  when both are set (so overriding the default `minAvailable: 1` needs no `null`);
-  a single-replica group should use `maxUnavailable: 1` so it does not block drains.
+  when both are set (so overriding the default `minAvailable: 1` needs no `null`).
+  A single-replica group (`allowSingleReplica` with `replicas`, or
+  `autoscaling.minReplicas` under autoscaling, below 2) that sets no `pdb` of its own
+  gets `maxUnavailable: 1` instead of the top-level `pdb`: `minAvailable: 1` on one pod
+  would block every node drain. A group that wants to block drains anyway sets its
+  own `pdb: { minAvailable: 1 }`.
 - The ConfigMap is mounted as a directory, never with `subPath`, so kubelet updates
   the file in place and hot reload sees it. A `/tmp` `emptyDir` backs the read-only
   root filesystem.

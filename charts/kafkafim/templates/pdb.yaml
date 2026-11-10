@@ -1,6 +1,9 @@
 {{- include "kafkafim.validate" . -}}
 {{- range $g, $group := .Values.groups }}
-{{- $pdb := $group.pdb | default $.Values.pdb }}
+{{- /* A group without its own pdb whose replica floor is 1 (allowSingleReplica) gets
+       maxUnavailable: 1, since the top-level minAvailable: 1 would block every drain. */}}
+{{- $floor := ternary (include "kafkafim.minReplicas" $group) (include "kafkafim.replicas" $group) (eq (include "kafkafim.autoscalingEnabled" $group) "true") | int }}
+{{- $pdb := $group.pdb | default (ternary (dict "maxUnavailable" 1) $.Values.pdb (lt $floor 2)) }}
 ---
 apiVersion: policy/v1
 kind: PodDisruptionBudget

@@ -152,3 +152,59 @@ tests:
           value: 1
       - notExists:
           path: spec.minAvailable
+
+  - it: gives a single-replica group without its own pdb maxUnavailable 1
+    template: templates/pdb.yaml
+    values:
+      - ../ci/minimal-values.yaml
+    set:
+      groups.orders.replicas: 1
+      groups.orders.allowSingleReplica: true
+    asserts:
+      - equal:
+          path: spec.maxUnavailable
+          value: 1
+      - notExists:
+          path: spec.minAvailable
+
+  - it: gives an autoscaled group with minReplicas 1 maxUnavailable 1
+    template: templates/pdb.yaml
+    values:
+      - ../ci/minimal-values.yaml
+    set:
+      groups.orders.allowSingleReplica: true
+      groups.orders.autoscaling: { enabled: true, minReplicas: 1, maxReplicas: 4 }
+    asserts:
+      - equal:
+          path: spec.maxUnavailable
+          value: 1
+      - notExists:
+          path: spec.minAvailable
+
+  - it: keeps the top-level pdb for an autoscaled group with minReplicas 2 even if replicas is 1
+    template: templates/pdb.yaml
+    values:
+      - ../ci/minimal-values.yaml
+    set:
+      groups.orders.replicas: 1
+      groups.orders.allowSingleReplica: true
+      groups.orders.autoscaling: { enabled: true, minReplicas: 2, maxReplicas: 4 }
+    asserts:
+      - equal:
+          path: spec.minAvailable
+          value: 1
+
+  - it: keeps a single-replica group's own pdb
+    template: templates/pdb.yaml
+    values:
+      - ../ci/minimal-values.yaml
+    set:
+      groups.orders.replicas: 1
+      groups.orders.allowSingleReplica: true
+      groups.orders.pdb: { minAvailable: 1 }
+    asserts:
+      - equal:
+          path: spec.minAvailable
+          value: 1
+      - notExists:
+          path: spec.maxUnavailable
