@@ -8,7 +8,7 @@ import java.util.Set;
  * What the meters of one pipeline are labelled with and read from (DESIGN §10).
  *
  * @param kafkaCluster the source Kafka cluster ({@code kafka_cluster} label of every series)
- * @param topics source topics; their consumption counters and lag gauges exist from the start
+ * @param topics source topics; their consumption counters exist from the start
  * @param routes route labels (the route's {@code name} or zero-based position, never an index);
  *     their {@code kafkafim_docs_total} series exist from the start
  * @param esClusters the Elasticsearch clusters the routes write to

@@ -6,7 +6,7 @@ with the repo". Every query uses the metric names and labels of `/actuator/prome
 
 | File | What |
 |---|---|
-| [`dashboards/kafkafim-overview.json`](dashboards/kafkafim-overview.json) | Per pipeline: state, consumer lag, end-to-end latency, records/bytes/documents, DLQ, in-flight bytes and heap, assigned partitions, Kafka connectivity, config generation and reloads |
+| [`dashboards/kafkafim-overview.json`](dashboards/kafkafim-overview.json) | Per pipeline: state, end-to-end latency, records/bytes/documents, DLQ, in-flight bytes and heap, assigned partitions, Kafka connectivity, config generation and reloads |
 | [`dashboards/kafkafim-elasticsearch.json`](dashboards/kafkafim-elasticsearch.json) | Per Elasticsearch cluster: breaker state, bulk requests by status, 429 ratio, bulk latency, docs and bytes per request, flush reasons, retries, item errors, auth failures |
 | [`alerts/kafkafim-alerts.yaml`](alerts/kafkafim-alerts.yaml) | Prometheus alerting rules (below) |
 | [`alerts/kafkafim-alerts.test.yaml`](alerts/kafkafim-alerts.test.yaml) | `promtool test rules` unit tests for every alert |
@@ -32,7 +32,6 @@ to the real one (Prometheus default 1m, the OTLP export step is 15s).
 | `KafkafimPipelineFailedPreflight` | a pipeline is `failed_preflight` on any pod for 1m | critical | [§5.5](../../docs/RUNBOOK.md#55-failed_preflight-pipelines) |
 | `KafkafimPipelinePaused` | a pipeline is `paused` (breaker, identity, DLQ blocked) for 5m | warning | [§3.1](../../docs/RUNBOOK.md#31-pipeline-state) |
 | `KafkafimPipelineStuckStarting` | a pipeline is still `starting` (preflight retrying a transient failure) after 10m | warning | [§5.12](../../docs/RUNBOOK.md#512-pipeline-stuck-in-starting) |
-| `KafkafimConsumerLagGrowing` | lag summed over pods is above **1000** (tune) and rises (`deriv` over 5m) for 5m | warning | [§5.8](../../docs/RUNBOOK.md#58-consumer-lag-growing) |
 | `KafkafimE2eLatencyHigh` | end-to-end p99 over 5m above **10s** for 10m (tune) | warning | [§5.8](../../docs/RUNBOOK.md#58-consumer-lag-growing) |
 | `KafkafimDlqRecords` | DLQ rate > 0 for 10m, per `error_type` | warning | [§5.6](../../docs/RUNBOOK.md#56-dlq-filling-or-dlq-blocked) |
 | `KafkafimNoAssignedPartitions` | a pod runs a pipeline but owns none of its partitions for 10m | info | [§5.7](../../docs/RUNBOOK.md#57-pipeline-shows-running-but-consumes-nothing) |
@@ -44,6 +43,10 @@ to the real one (Prometheus default 1m, the OTLP export step is 15s).
 
 Notes:
 
+- There is no consumer-lag panel or alert: kafkafim exports no lag
+  ([ADR-0034](../../docs/decisions/0034-consumer-lag-is-monitored-outside-kafkafim.md)).
+  Lag and its alerts come from the Kafka team's consumer-lag monitoring, per consumer
+  group (`source.group-id`, default `kafkafim.<pipeline>`).
 - `KafkafimNoAssignedPartitions` is expected on pods beyond a pipeline's partition
   count; silence it for such groups (severity `info`).
 - `kafkafim_auth_failures_total` and `kafkafim_dlq_records_total` appear with their
