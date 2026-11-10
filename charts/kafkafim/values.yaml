@@ -26,7 +26,7 @@ image:
 # Rendered into each group's application-kafkafim.yaml. Only these three keys are
 # accepted (values.schema.json rejects any other key under config.kafkafim, such as
 # allow-inline-secrets, which is for local development only: the application refuses
-# it on Kubernetes however it is set, so secrets always come from secrets[] below).
+# it set to true on Kubernetes however it is set, so secrets always come from secrets[] below).
 # Every group's ConfigMap gets kafka + elasticsearch verbatim plus only its own
 # pipelines.
 config:

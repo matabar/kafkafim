@@ -195,7 +195,7 @@ group names are DNS labels); the cross-field rules above are `fail` calls in
 `config.kafkafim` accepts exactly `kafka`, `elasticsearch` and `pipelines`; the
 schema rejects any other key instead of silently dropping it. That includes
 `allow-inline-secrets`, which is for local development outside Kubernetes only. The
-application refuses it on Kubernetes however it is set (for example through
+application refuses `kafkafim.allow-inline-secrets=true` on Kubernetes however it is set (for example through
 `extraEnv`), and likewise refuses to start with the `local` profile active there
 (`config/LocalProfileGuard`, [DESIGN §5.4](DESIGN.md#54-helm-rendering)). So a chart
 install, including the Docker Desktop demo, mounts its secrets as files like
