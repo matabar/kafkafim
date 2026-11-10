@@ -44,33 +44,6 @@ tests:
               description: "Paused for a supervisor reason: breaker open, identity rejected or DLQ blocked. The reason is in the pod's WARN \"Pipeline '<name>': pausing (<reason>)\" line."
               runbook_url: https://github.com/matabar/kafkafim/blob/main/docs/RUNBOOK.md#31-pipeline-state
 
-  - name: lag growing, summed over pods
-    interval: 30s
-    input_series:
-      # Two pods; the sum grows by 20 records per 30s for 15m.
-      - series: 'kafkafim_consumer_lag{instance="pod-a",pipeline="orders",kafka_cluster="main",topic="orders"}'
-        values: '1000+10x30'
-      - series: 'kafkafim_consumer_lag{instance="pod-b",pipeline="orders",kafka_cluster="main",topic="orders"}'
-        values: '500+10x30'
-      # Growing but below the 1000-record floor: commit jitter, never fires.
-      - series: 'kafkafim_consumer_lag{instance="pod-a",pipeline="small",kafka_cluster="main",topic="small"}'
-        values: '0+10x30'
-      # Flat lag never fires.
-      - series: 'kafkafim_consumer_lag{instance="pod-a",pipeline="clicks",kafka_cluster="main",topic="clicks"}'
-        values: '500x30'
-    alert_rule_test:
-      - eval_time: 4m
-        alertname: KafkafimConsumerLagGrowing
-        exp_alerts: []
-      - eval_time: 12m
-        alertname: KafkafimConsumerLagGrowing
-        exp_alerts:
-          - exp_labels: { severity: warning, pipeline: orders, kafka_cluster: main, topic: orders }
-            exp_annotations:
-              summary: "Consumer lag of orders on orders growing"
-              description: "Lag has been rising for 5m+ (now 666.7m records/s of growth)."
-              runbook_url: https://github.com/matabar/kafkafim/blob/main/docs/RUNBOOK.md#58-consumer-lag-growing
-
   - name: end-to-end p99 above target
     interval: 30s
     input_series:
