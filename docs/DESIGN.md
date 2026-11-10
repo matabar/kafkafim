@@ -690,8 +690,8 @@ ConfigMap never contains a secret. Startup validation refuses literal values in 
 `password`, containing `secret`, `sasl.jaas.config`, `ssl.keystore.key` or
 `user.info`) unless `kafkafim.allow-inline-secrets=true`. That switch is for local
 development outside Kubernetes (`./mvnw spring-boot:run` with Compose): on
-`CloudPlatform.KUBERNETES` the flag itself stops startup (§5.4), so the Docker Desktop
-Kubernetes demo mounts its secrets as files, like production. A
+`CloudPlatform.KUBERNETES` the flag itself stops startup (§5.4), so the planned Docker Desktop
+Kubernetes demo (`deploy/local/`, §13) will mount its secrets as files, like production. A
 secret is accepted when it is read straight from a `configtree` file, or when its raw,
 unresolved text is exactly one `${name}` placeholder (no `:default`, which would be an
 inline fallback) whose chain of references ends in a `configtree` file. The check looks
@@ -1190,7 +1190,7 @@ src/main/resources/application.yaml   profile-independent defaults (default prof
 src/main/resources/application-local.yaml   local-dev sample config: clusters + demo pipeline
 src/test/java/...                     unit + Testcontainers integration tests
 charts/kafkafim/                      production Helm chart
-deploy/local/                         Kubernetes demo stack (Kafka + ES operators, local only)
+deploy/local/                         planned (chore/local-k8s-demo): Kubernetes demo stack (Kafka + ES operators, local only)
 deploy/grafana/                       Grafana dashboards, Prometheus alert rules + promtool tests, compose provisioning
 docs/                                 DESIGN.md, TECH_STACK.md, decisions/, runbook
 ```
