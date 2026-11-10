@@ -36,8 +36,8 @@ bounded by 5s per broker request (two requests). Two problems:
   pod, and that read counts as successful (the pod truthfully owns no lag). A pipeline
   that falls to `failed_preflight` because its cluster is unreachable therefore shows 0
   lag with a fresh timestamp; `kafkafim_pipeline_state` is the signal for it.
-- The timestamp is 0 until the first read, 10s after start; a staleness alert guards on
-  `> 0` (or a `for:` longer than the interval).
+- The timestamp is 0 until the first read ends, 10-15s after start; a staleness alert
+  guards on `> 0` (or a `for:` longer than that).
 
 ## Alternatives
 - **Remove the lag series while stale (gauge absent).** Stale shows as a gap, but a

@@ -1077,9 +1077,9 @@ broker requests together, so a cluster that does not answer delays only its own
 pipelines; a pipeline whose previous read still runs is skipped for that round (ADR-0033).
 A read that fails or is skipped keeps the previous values and does not advance
 `kafkafim_consumer_lag_timestamp_seconds`: a stale lag shows as an old timestamp, never as
-0. Alert on `kafkafim_consumer_lag_timestamp_seconds > 0 and time() -
-kafkafim_consumer_lag_timestamp_seconds > 60` for stale lag (0 means not read yet, as in
-the first 10s after start). A pipeline without a running source (stopped,
+0. Alert on `time() - kafkafim_consumer_lag_timestamp_seconds > 60 and
+kafkafim_consumer_lag_timestamp_seconds > 0` for stale lag (the value is the age; 0
+means not read yet, as in the first 10-15s after start). A pipeline without a running source (stopped,
 `failed_preflight`) or without owned partitions reads 0 on this pod, and that read counts
 as successful: such a pipeline gives no stale signal, so watch `kafkafim_pipeline_state`
 for it. A stop never waits for a broker request of a lag read: it wakes the lag consumer
