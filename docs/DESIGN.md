@@ -788,7 +788,8 @@ agent all work. A changed secret file is picked up by the same reload path.
     gives the pipeline a new writer. When a pipeline leaves an instance that other
     pipelines still use (it moved to a new one, or was removed), its DLQ writer there is
     evicted (ADR-0035): its unacknowledged sends complete with `DlqClosedException` and
-    stop retrying, and their records are re-delivered to the pipeline's next run.
+    stop retrying, and their offsets stay uncommitted (re-delivered if the pipeline runs
+    again).
   - **One reload at a time**: watcher and endpoint share one lock; a second caller
     waits. The watcher reloads once the content hash has been stable for the debounce
     (2s), so a kubelet update of several files is read once, and it does not retry a

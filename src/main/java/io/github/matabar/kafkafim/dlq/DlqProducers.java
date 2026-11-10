@@ -131,10 +131,11 @@ public final class DlqProducers implements SmartLifecycle, AutoCloseable {
   /**
    * Drops a pipeline's writer, for a pipeline that moved to other DLQ producers or was removed
    * (ADR-0035). Its unacknowledged sends, including those waiting to retry, complete with {@link
-   * DlqClosedException} (their source records are re-delivered to the pipeline's next run), later
-   * sends through it fail the same way, and it reports nothing more to the listener. The shared
-   * producer stays until {@link #close()}. A later {@link #writer} call creates a new writer. No-op
-   * if the pipeline has no writer.
+   * DlqClosedException} (their source records stay uncommitted, re-delivered if the pipeline runs
+   * again), later sends through it fail the same way, and it stops retrying; a callback already
+   * under way may still report one last event to the listener. The shared producer stays until
+   * {@link #close()}. A later {@link #writer} call creates a new writer. No-op if the pipeline has
+   * no writer.
    *
    * @param pipelineName a {@code kafkafim.pipelines} entry
    */
@@ -152,7 +153,7 @@ public final class DlqProducers implements SmartLifecycle, AutoCloseable {
     }
     log.info(
         "Dropped the DLQ writer of pipeline '{}' to topic '{}'; {} unacknowledged DLQ record(s)"
-            + " will be re-delivered to its next run",
+            + " stay uncommitted (re-delivered if the pipeline runs again)",
         pipelineName,
         writer.topic(),
         unacknowledged.size());

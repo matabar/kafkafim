@@ -181,6 +181,8 @@ final class PipelineResources implements SmartLifecycle, AutoCloseable {
         unuse(handles.get(sinks), toClose);
       }
     }
+    // Outside the monitor, like closeAll: safe because PipelineSupervisor makes every acquire and
+    // release under its lifecycle lock, so the pipeline cannot re-acquire this instance meanwhile.
     if (evict != null && toClose.stream().noneMatch(handle -> handle.instance() == evictFrom)) {
       try {
         evictFrom.evict(evict);

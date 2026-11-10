@@ -16,8 +16,10 @@ records and showed misleading DLQ failure counts for the pipeline.
 ## Decision
 - **`DlqProducers.evict(pipeline)`** drops one writer. Its unacknowledged sends, including
   those waiting for a retry, complete with `DlqClosedException`, exactly as at `close()`.
-  Later sends through the dropped writer fail the same way, and its late callbacks report
-  nothing to the listener. The shared producer of the `(cluster, DLQ identity)` stays
+  Later sends through the dropped writer fail the same way, and it stops retrying. A
+  producer callback already under way at the eviction may still report one last event
+  (`onWritten`, `onSendFailed`, `onBlocked` or `onUnblocked`); the supervisor ignores it,
+  since it filters by owner. The shared producer of the `(cluster, DLQ identity)` stays
   until the instance closes, because other writers may use it. A later `writer(pipeline)`
   call builds a new writer.
 - **`PipelineResources` evicts on the last use**: it counts each pipeline's uses per
@@ -26,7 +28,7 @@ records and showed misleading DLQ failure counts for the pipeline.
   to a pipeline that moved to a new instance and to a removed pipeline. A pipeline
   restarted onto the same instance takes its new use before it gives back the old one,
   so it keeps its writer, and with it its `dlq-blocked` state, as before.
-- No `onUnblocked` event is sent for a dropped writer that was blocked. The supervisor
+- Evicting a blocked writer sends no `onUnblocked` event of its own. The supervisor
   already ignores the old instance's events for that pipeline (ADR-0028), and telemetry
   does not track the blocked state.
 
@@ -40,8 +42,9 @@ records and showed misleading DLQ failure counts for the pipeline.
 
 ## Consequences
 - After a reload, a pipeline's DLQ writer in an instance it left stops retrying and
-  reporting at once. Each eviction logs one INFO line with the number of unacknowledged
-  records dropped. Those records are re-delivered to the pipeline's next run, as at a
-  close.
+  reporting, apart from at most one callback already under way. Each eviction logs one
+  INFO line with the number of unacknowledged records dropped. Their offsets stay
+  uncommitted, as at a close: the pipeline's next run gets them again, and a removed
+  pipeline's records wait in its consumer group if it ever comes back.
 - The window in which two producers for the same `(cluster, identity)` coexist is
   unchanged (ADR-0028).
