@@ -7,7 +7,7 @@ groups:
   - name: kafkafim-pipelines
     rules:
       - alert: KafkafimPipelineFailedPreflight
-        expr: max by (pipeline) (kafkafim_pipeline_state{state="failed_preflight"}) == 1
+        expr: max by by (pipeline) (kafkafim_pipeline_state{state="failed_preflight"}) == 1
         for: 1m
         labels:
           severity: critical
