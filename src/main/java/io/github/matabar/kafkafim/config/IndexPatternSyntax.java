@@ -66,6 +66,15 @@ final class IndexPatternSyntax {
     if (pattern == null) {
       return warnings;
     }
+    String leading = leadingOutput(pattern);
+    if (leading != null
+        && leading.startsWith(".")
+        && !pattern.equals(".")
+        && !pattern.equals("..")) {
+      warnings.add(
+          "index names starting with '.' are reserved for hidden and system indices;"
+              + " Elasticsearch deprecates creating them (DESIGN §5.7)");
+    }
     int open = pattern.indexOf("%{+");
     while (open >= 0) {
       int close = pattern.indexOf('}', open);
@@ -83,6 +92,26 @@ final class IndexPatternSyntax {
       open = pattern.indexOf("%{+", close);
     }
     return warnings;
+  }
+
+  /**
+   * What the pattern's first part produces: the literal prefix, or a leading date reference
+   * formatted with {@link Locale#ROOT}. Returns {@code null} when it cannot be known at bind time
+   * (a leading {@code %{field}}) or the date pattern is invalid, which {@link #errors} reports.
+   */
+  private static String leadingOutput(String pattern) {
+    if (!pattern.startsWith("%{")) {
+      return pattern;
+    }
+    int close = pattern.indexOf('}');
+    if (!pattern.startsWith("%{+") || close < 0) {
+      return null;
+    }
+    try {
+      return DateTimeFormatter.ofPattern(pattern.substring(3, close), Locale.ROOT).format(SAMPLE);
+    } catch (IllegalArgumentException | DateTimeException e) {
+      return null;
+    }
   }
 
   private static void checkLiteral(String literal, List<String> errors) {
