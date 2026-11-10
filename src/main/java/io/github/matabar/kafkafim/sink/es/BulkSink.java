@@ -209,9 +209,10 @@ public final class BulkSink<H> implements AutoCloseable {
   }
 
   /**
-   * Whether the stream is in a configuration failure: the last bulk request was rejected with
-   * 401/403, or some action is waiting to retry after an item-level 401/403. Stays as it was after
-   * a {@link #close(Duration)} that timed out.
+   * Whether the stream is in a configuration failure: a request was rejected with 401/403 and no
+   * later request was answered with a bulk response or a single-document 413, or some action is
+   * waiting to retry after an item-level 401/403. A 429, 5xx, transport error or other unexpected
+   * status leaves it as it was. Stays as it was after a {@link #close(Duration)} that timed out.
    */
   public boolean authFailing() {
     synchronized (authLock) {
