@@ -201,6 +201,36 @@ class DlqWriterTest {
   }
 
   @Test
+  void timeoutOfSendFailedByReplacementChecksTheTopicAgain() throws Exception {
+    DlqWriter writer = ordersWriter();
+    writer.send(request());
+    FakeClient client = clients.get(0);
+    client.next().ack(0);
+    CompletableFuture<RecordMetadata> second = writer.send(request());
+    client
+        .next()
+        .fail(
+            new ProducerReplacedException(
+                new SaslAuthenticationException("bad secret"),
+                new TimeoutException("Topic not present in metadata after 10000 ms.")));
+    client.next().ack(1);
+
+    second.get(10, TimeUnit.SECONDS);
+    assertThat(client.describes.get()).as("the send's own timeout counts").isEqualTo(2);
+  }
+
+  @Test
+  void timeoutsAreFoundInsideReplacement() {
+    TimeoutException timeout = new TimeoutException("t");
+    NetworkException other = new NetworkException("n");
+    assertThat(DlqFailure.isTimeout(new ExecutionException(timeout))).isTrue();
+    assertThat(DlqFailure.isTimeout(new ProducerReplacedException(other, timeout))).isTrue();
+    assertThat(DlqFailure.isTimeout(new ProducerReplacedException(timeout, other))).isTrue();
+    assertThat(DlqFailure.isTimeout(new ProducerReplacedException(other, other))).isFalse();
+    assertThat(DlqFailure.isTimeout(other)).isFalse();
+  }
+
+  @Test
   void failingTopicCheckIsRetried() throws Exception {
     DlqWriter writer = ordersWriter();
     FakeClient client = clients.get(0);

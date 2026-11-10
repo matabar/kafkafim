@@ -6,7 +6,6 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.clients.producer.RecordMetadata;
-import org.apache.kafka.common.errors.TimeoutException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -246,7 +245,7 @@ public final class DlqWriter {
         abandon();
         return;
       }
-      if (DlqFailure.unwrap(exception) instanceof TimeoutException) {
+      if (DlqFailure.isTimeout(exception)) {
         // Possibly "not present in metadata": the topic may be gone, so check it again.
         producer.forget(topic);
       }
