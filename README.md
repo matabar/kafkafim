@@ -30,7 +30,7 @@ required beyond a JDK 27 on `PATH`.
 ./mvnw spring-boot:run      # starts Kafka, kafka-init, Elasticsearch and Grafana via compose.yaml
 ```
 
-The stack also runs a one-shot `kafka-init` service that creates the topics the `local`
+The one-shot `kafka-init` service creates the topics the `local`
 profile's `demo` pipeline needs (`demo.events`, `demo.events.kafkafim-dlq`; 3 partitions,
 replication 1). kafkafim itself never creates topics ([ADR-0021](docs/decisions/0021-no-resource-provisioning.md)),
 and the local broker has topic auto-creation disabled to mirror production. Smoke test once
