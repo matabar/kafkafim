@@ -21,7 +21,6 @@ import io.micrometer.core.instrument.Timer;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
-import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
@@ -204,7 +203,7 @@ class RecordProcessorTest {
   @Test
   void documentsAreCountedPerRouteAndOutcomeWithTheirEndToEndLatency() {
     SimpleMeterRegistry registry = new SimpleMeterRegistry();
-    try (KafkafimMeters meters = new KafkafimMeters(registry, Duration.ofHours(1))) {
+    try (KafkafimMeters meters = new KafkafimMeters(registry)) {
       meters.sync(
           Map.of(
               "p",
