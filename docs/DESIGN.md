@@ -674,9 +674,10 @@ application refuses to start with the `local` profile active (as the default or
 explicitly) when it detects Kubernetes (`CloudPlatform.KUBERNETES`, which reads
 `KUBERNETES_SERVICE_HOST`/`_PORT` and honours `spring.main.cloud-platform` for tests;
 `config/LocalProfileGuard`, which runs before any bean is created).
-A pod that lost its profile env would otherwise silently run the compose sample with
-inline secrets allowed. As a second application-side check, the same guard refuses `kafkafim.allow-inline-secrets=true` on
-Kubernetes in any profile (for example set by hand next to `kafkafim`): there, secrets
+Without the guard, a pod that lost its profile env would silently run the compose
+sample with inline secrets allowed; with it, such a pod fails at startup with a message
+naming the fix. As a second application-side check, the same guard refuses
+`kafkafim.allow-inline-secrets=true` on Kubernetes in any profile (for example set by hand next to `kafkafim`): there, secrets
 must come from mounted `Secret` files imported with `configtree` (§5.5).
 
 Config location failure mode: the image's default is
