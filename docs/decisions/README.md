@@ -14,10 +14,10 @@ One file per decision, MADR-style. Supersede with a new ADR rather than editing 
 | [0008](0008-batching-per-es-cluster-with-offset-tracker.md) | Batch per ES cluster; track completion per partition |
 | [0009](0009-declarative-routing-no-expression-language.md) | Declarative routing rules with Logstash-style index patterns; no expression language |
 | [0010](0010-kafka-as-the-only-buffer-backpressure.md) | Kafka is the only buffer; backpressure by pausing consumption |
-| [0011](0011-dlq-on-source-kafka-cluster.md) | DLQ topic on the source Kafka cluster; original bytes preserved; poison messages bounded |
+| [0011](0011-dlq-on-source-kafka-cluster.md) | DLQ topic on the source Kafka cluster; original bytes preserved; poison messages bounded (replay-lag backlog number superseded by 0034) |
 | [0012](0012-spring-configuration-helm-configtree-hot-reload.md) | Configuration is Spring Boot configuration rendered by Helm; secrets via `configtree`; hot reload with `Binder` |
 | [0013](0013-observability-otel-via-spring-boot.md) | Observability through Spring Boot's OpenTelemetry starter, OTLP to Elastic APM Server, plus Prometheus endpoint |
-| [0014](0014-scaling-static-plus-cpu-hpa.md) | Scaling: static replicas per group, optional CPU HPA, lag metric exported for future KEDA |
+| [0014](0014-scaling-static-plus-cpu-hpa.md) | Scaling: static replicas per group, optional CPU HPA, lag metric exported for future KEDA (lag metric superseded by 0034) |
 | [0015](0015-local-dev-compose-and-k8s-demo.md) | Local development with Docker Compose; demo on Docker Desktop Kubernetes; production chart deploys only kafkafim |
 | [0016](0016-resilience4j-for-breaker-and-retry.md) | Resilience4j core for circuit breaker and retry |
 | [0017](0017-migration-from-logstash.md) | Migration from Logstash: run in parallel on the same `_id`s, then stop Logstash |
@@ -36,5 +36,6 @@ One file per decision, MADR-style. Supersede with a new ADR rather than editing 
 | [0030](0030-request-level-retry-logs-error-types-not-response-bodies.md) | Request-level retry logs name Elasticsearch's error types, not the response body; the body only at DEBUG (refines 0026) |
 | [0031](0031-elasticsearch-client-timeouts-per-cluster.md) | Elasticsearch client timeouts are set per cluster; the breaker's half-open limit follows the response timeout (refines 0026) |
 | [0032](0032-accepted-reload-retries-failed-preflight-pipelines.md) | An accepted reload retries the pipelines it leaves in `failed_preflight` (refines 0028) |
-| [0033](0033-consumer-lag-read-per-pipeline-in-parallel-staleness-as-timestamp.md) | Consumer lag is read per pipeline in parallel under a 5s deadline; stale lag shows as an old `kafkafim_consumer_lag_timestamp_seconds` (refines 0029) |
+| [0033](0033-consumer-lag-read-per-pipeline-in-parallel-staleness-as-timestamp.md) | Consumer lag is read per pipeline in parallel under a 5s deadline; stale lag shows as an old `kafkafim_consumer_lag_timestamp_seconds` (refines 0029) — **superseded by 0034** |
+| [0034](0034-consumer-lag-is-monitored-outside-kafkafim.md) | Consumer lag is monitored outside kafkafim; kafkafim reads and exports none (supersedes 0033 and the lag parts of 0014 and 0011) |
 | [0035](0035-dlq-writer-evicted-when-its-pipeline-leaves-the-instance.md) | A DLQ writer is evicted when its pipeline leaves its `DlqProducers` instance (refines 0028) |

@@ -86,7 +86,8 @@ For each `groups.<g>`:
   `secrets[]` entry read-only at its `mountPath`, and sets
   `SPRING_PROFILES_ACTIVE=kafkafim` (required: `application-kafkafim.yaml` is a
   profile-specific file, and the active profile also disables the default `local`
-  profile that carries the development sample),
+  profile that carries the development sample; a pod with `local` active fails at
+  startup on Kubernetes),
   `SPRING_CONFIG_ADDITIONAL_LOCATION=/etc/kafkafim/config/` (deliberately **not**
   `optional:`, overriding the image default, so a missing mount fails the pod at
   startup rather than starting it without pipelines),
@@ -122,8 +123,12 @@ For each `groups.<g>`:
   `pdb` apply to every group that does not set its own (a group's value replaces the
   default, it is not merged); `podAnnotations` are merged, the group's winning.
   `replicas` defaults to 2. In a `pdb`, `maxUnavailable` wins over `minAvailable`
-  when both are set (so overriding the default `minAvailable: 1` needs no `null`);
-  a single-replica group should use `maxUnavailable: 1` so it does not block drains.
+  when both are set (so overriding the default `minAvailable: 1` needs no `null`).
+  A single-replica group (`allowSingleReplica` with `replicas`, or
+  `autoscaling.minReplicas` under autoscaling, below 2) that sets no `pdb` of its own
+  gets `maxUnavailable: 1` instead of the top-level `pdb`: `minAvailable: 1` on one pod
+  would block every node drain. A group that wants to block drains anyway sets its
+  own `pdb: { minAvailable: 1 }`.
 - The ConfigMap is mounted as a directory, never with `subPath`, so kubelet updates
   the file in place and hot reload sees it. A `/tmp` `emptyDir` backs the read-only
   root filesystem.
@@ -188,11 +193,13 @@ group names are DNS labels); the cross-field rules above are `fail` calls in
 `templates/_helpers.tpl`, each with its own unit test.
 
 `config.kafkafim` accepts exactly `kafka`, `elasticsearch` and `pipelines`; the
-schema rejects any other key (for example `allow-inline-secrets`, which is for local
-development outside Kubernetes only: the application refuses to start with it on
-Kubernetes (`config/LocalProfileGuard`, [DESIGN §5.4](DESIGN.md#54-helm-rendering)), so a chart install, including the Docker Desktop demo, mounts its secrets as
-files like production) instead of silently
-dropping it. Helm reads values numbers as float64, so integers above 2^53 in
+schema rejects any other key instead of silently dropping it. That includes
+`allow-inline-secrets`, which is for local development outside Kubernetes only. The
+application refuses `kafkafim.allow-inline-secrets=true` on Kubernetes however it is set (for example through
+`extraEnv`), and likewise refuses to start with the `local` profile active there
+(`config/LocalProfileGuard`, [DESIGN §5.4](DESIGN.md#54-helm-rendering)). So a chart
+install, including the Docker Desktop demo, mounts its secrets as files like
+production. Helm reads values numbers as float64, so integers above 2^53 in
 `config` lose precision: quote them. Application-wide settings that are not
 per-group belong in the image's `application.yaml` or in `extraEnv`.
 
