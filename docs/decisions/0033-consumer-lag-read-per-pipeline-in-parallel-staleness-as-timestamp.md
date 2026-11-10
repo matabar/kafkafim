@@ -1,6 +1,6 @@
 # ADR-0033: Consumer lag is read per pipeline in parallel under a 5s deadline; stale lag shows as a timestamp
 
-Status: accepted · Date: 2026-11-10 · Refines [ADR-0029](0029-batch-spans-recorded-at-batch-end-failed-batches-always-sampled.md)
+Status: superseded by [ADR-0034](0034-consumer-lag-is-monitored-outside-kafkafim.md) · Date: 2026-11-10 · Refines [ADR-0029](0029-batch-spans-recorded-at-batch-end-failed-batches-always-sampled.md)
 
 ## Context
 ADR-0029 has `telemetry` own the series and the supervisor feed it; `kafkafim_consumer_lag`

@@ -35,7 +35,7 @@ class TelemetryListenerTest {
   private static final Instant T0 = Instant.parse("2026-11-08T10:00:00Z");
 
   private final SimpleMeterRegistry registry = new SimpleMeterRegistry();
-  private final KafkafimMeters meters = new KafkafimMeters(registry, Duration.ofHours(1));
+  private final KafkafimMeters meters = new KafkafimMeters(registry);
   private final TelemetryListener listener =
       new TelemetryListener(meters, new BatchTracer(Tracer.NOOP));
 
