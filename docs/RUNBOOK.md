@@ -196,7 +196,7 @@ neither (`kafkafim_config_reload_total` has `result`) ([DESIGN §10](DESIGN.md#1
 |---|---|
 | Is every pipeline running? | `kafkafim_pipeline_state{state=...}` |
 | Did the last config change apply? | `kafkafim_config_generation`, `kafkafim_config_reload_total{result="failure"}` (no `pipeline` label) |
-| Are we keeping up? | `kafkafim_consumer_lag{topic}` (owned partitions on this pod, polled every 10s; sum over pods), `kafkafim_e2e_latency_seconds` |
+| Are we keeping up? | `kafkafim_consumer_lag{topic}` (owned partitions on this pod, polled every 10s; sum over pods; as of `kafkafim_consumer_lag_timestamp_seconds`), `kafkafim_e2e_latency_seconds` |
 | Is data flowing? | `rate(kafkafim_records_consumed_total[5m])`, `rate(kafkafim_docs_total{outcome="indexed"}[5m])` |
 | Is Elasticsearch healthy? | `kafkafim_breaker_state{es_cluster}` (0 closed, 1 half-open, 2 open), `kafkafim_bulk_requests_total{es_cluster,status}`, `kafkafim_bulk_latency_seconds`, `kafkafim_retries_total{scope}` |
 | Credentials rejected? | `kafkafim_auth_failures_total{es_cluster,identity}` |
@@ -380,7 +380,8 @@ id is `kafkafim.<pipeline>`).
 - **After start**: kafka-clients reconnects with backoff on its own; state stays
   `running`. `kafkafim_kafka_connected == 0` for the pipeline, and
   readiness goes out of service on a pod where every started pipeline lost its brokers.
-  Lag cannot be read either (the lag poll keeps its previous values).
+  Lag cannot be read either: `kafkafim_consumer_lag` keeps its previous values and
+  `kafkafim_consumer_lag_timestamp_seconds` stops advancing, so its age shows the staleness.
 - **Check**: broker health, DNS, network policy/firewall from the pod's namespace to
   `bootstrap-servers`, TLS trust (an expired or rotated cluster CA shows up as an SSL
   handshake failure in the logs; a rotated truststore file needs a pod restart,

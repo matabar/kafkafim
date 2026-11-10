@@ -23,7 +23,7 @@ import org.apache.kafka.common.TopicPartition;
  */
 final class TelemetryBinder {
 
-  /** Bound on each broker request of a lag poll. */
+  /** Bound on one pipeline's lag read (both broker requests), well inside the 10s interval. */
   static final Duration LAG_TIMEOUT = Duration.ofSeconds(5);
 
   private final PipelineSupervisor supervisor;

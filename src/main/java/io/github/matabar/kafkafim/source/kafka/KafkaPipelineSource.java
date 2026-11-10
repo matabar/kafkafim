@@ -320,10 +320,11 @@ public final class KafkaPipelineSource implements SmartLifecycle {
    * Consumer lag of the partitions this source owns (DESIGN §10, {@code kafkafim_consumer_lag}):
    * log end offset minus the group's committed offset, per partition. Partitions without a
    * committed offset yet are left out. Uses one extra consumer of the pipeline's identity and group
-   * that never joins the group; it is created on first use and closed when the source stops. Call
-   * from one thread at a time (the telemetry poller); blocks up to {@code timeout} per request.
+   * that never joins the group; it is created on first use and closed when the source stops, which
+   * wakes up a read in progress. Concurrent calls take turns; each blocks up to about {@code
+   * timeout}.
    *
-   * @param timeout bound on each of the two broker requests
+   * @param timeout bound on the read's two broker requests together
    * @return lag per owned partition; empty while nothing is assigned
    * @throws KafkaException if the broker cannot answer in time
    */

@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.time.Duration;
+import java.util.Collection;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
@@ -174,5 +175,49 @@ class LagReaderTest {
     assertThat(first.closed()).isTrue();
     assertThat(last.get()).isNotSameAs(first);
     assertThatThrownBy(() -> first.committed(Set.of(P0))).isInstanceOf(IllegalStateException.class);
+  }
+
+  /** A consumer whose committed-offset request takes a while, recording the end-offset bound. */
+  static final class SlowConsumer extends MockConsumer<byte[], byte[]> {
+    final Duration delay;
+    final AtomicReference<Duration> endOffsetsTimeout = new AtomicReference<>();
+
+    SlowConsumer(Duration delay) {
+      super("earliest");
+      this.delay = delay;
+    }
+
+    @Override
+    public Map<TopicPartition, OffsetAndMetadata> committed(
+        Set<TopicPartition> partitions, Duration timeout) {
+      try {
+        Thread.sleep(delay);
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+      }
+      return Map.of();
+    }
+
+    @Override
+    public synchronized Map<TopicPartition, Long> endOffsets(
+        Collection<TopicPartition> partitions, Duration timeout) {
+      endOffsetsTimeout.set(timeout);
+      return Map.of();
+    }
+  }
+
+  /** T21: the timeout bounds the whole read, so one pipeline's read cannot take two timeouts. */
+  @Test
+  void timeoutBoundsBothRequestsTogether() {
+    SlowConsumer slow = new SlowConsumer(Duration.ofMillis(100));
+    LagReader reader = new LagReader("orders", () -> slow, () -> true);
+    reader.read(Set.of(P0), Duration.ofSeconds(1));
+    assertThat(slow.endOffsetsTimeout.get()).isLessThanOrEqualTo(Duration.ofMillis(900));
+
+    SlowConsumer slower = new SlowConsumer(Duration.ofMillis(300));
+    LagReader late = new LagReader("orders", () -> slower, () -> true);
+    assertThatThrownBy(() -> late.read(Set.of(P0), Duration.ofMillis(200)))
+        .isInstanceOf(TimeoutException.class);
+    assertThat(slower.endOffsetsTimeout.get()).as("no end-offset request").isNull();
   }
 }

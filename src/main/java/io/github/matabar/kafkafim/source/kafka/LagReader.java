@@ -10,6 +10,7 @@ import org.apache.kafka.clients.consumer.Consumer;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.common.KafkaException;
 import org.apache.kafka.common.TopicPartition;
+import org.apache.kafka.common.errors.TimeoutException;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -54,7 +55,8 @@ final class LagReader {
    * offset are left out. One thread at a time gets the consumer; others wait for it.
    *
    * @param partitions the partitions to read, not empty
-   * @param timeout bound on each of the two broker requests
+   * @param timeout bound on the whole read: the committed-offset request and the end-offset request
+   *     together (the lock wait and the consumer's creation are not counted)
    * @return lag per partition; empty when the source does not run (or stops during the read)
    * @throws KafkaException if the broker cannot answer in time, or a stop woke the read up
    */
@@ -73,8 +75,14 @@ final class LagReader {
           return Map.of();
         }
       }
+      long deadline = System.nanoTime() + timeout.toNanos();
       Map<TopicPartition, OffsetAndMetadata> committed = current.committed(partitions, timeout);
-      Map<TopicPartition, Long> ends = current.endOffsets(partitions, timeout);
+      Duration left = Duration.ofNanos(deadline - System.nanoTime());
+      if (!left.isPositive()) {
+        throw new TimeoutException(
+            "Lag of " + partitions.size() + " partitions not read in " + timeout);
+      }
+      Map<TopicPartition, Long> ends = current.endOffsets(partitions, left);
       Map<TopicPartition, Long> lag = new LinkedHashMap<>();
       for (Map.Entry<TopicPartition, Long> end : ends.entrySet()) {
         OffsetAndMetadata offset = committed.get(end.getKey());
