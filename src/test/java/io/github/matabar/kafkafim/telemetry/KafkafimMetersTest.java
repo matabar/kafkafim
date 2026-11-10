@@ -1,27 +1,20 @@
 package io.github.matabar.kafkafim.telemetry;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.awaitility.Awaitility.await;
 
 import io.github.resilience4j.circuitbreaker.CircuitBreaker;
 import io.micrometer.core.instrument.Meter;
-import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Tag;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.micrometer.prometheusmetrics.PrometheusConfig;
 import io.micrometer.prometheusmetrics.PrometheusMeterRegistry;
-import java.time.Clock;
 import java.time.Duration;
-import java.time.Instant;
-import java.time.ZoneId;
-import java.time.ZoneOffset;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -33,27 +26,7 @@ import org.junit.jupiter.api.Test;
 class KafkafimMetersTest {
 
   private final SimpleMeterRegistry registry = new SimpleMeterRegistry();
-  private final AtomicLong now = new AtomicLong(1_700_000_000_000L);
-  private final Clock clock =
-      new Clock() {
-        @Override
-        public ZoneId getZone() {
-          return ZoneOffset.UTC;
-        }
-
-        @Override
-        public Clock withZone(ZoneId zone) {
-          return this;
-        }
-
-        @Override
-        public Instant instant() {
-          return Instant.ofEpochMilli(now.get());
-        }
-      };
-  // Lag reads run on the polling thread, so pollLag() is done when it returns.
-  private final KafkafimMeters meters =
-      new KafkafimMeters(registry, Duration.ofHours(1), Runnable::run, clock);
+  private final KafkafimMeters meters = new KafkafimMeters(registry);
   private final Map<String, CircuitBreaker.State> breakers = new HashMap<>();
 
   @AfterEach
@@ -66,8 +39,6 @@ class KafkafimMetersTest {
     final AtomicLong inFlight = new AtomicLong();
     final AtomicInteger assigned = new AtomicInteger();
     volatile boolean connected;
-    volatile Map<String, Long> lag = Map.of();
-    volatile RuntimeException lagFailure;
 
     @Override
     public long inFlightBytes() {
@@ -82,14 +53,6 @@ class KafkafimMetersTest {
     @Override
     public boolean connected() {
       return connected;
-    }
-
-    @Override
-    public Map<String, Long> lagByTopic() {
-      if (lagFailure != null) {
-        throw lagFailure;
-      }
-      return lag;
     }
   }
 
@@ -110,11 +73,7 @@ class KafkafimMetersTest {
   }
 
   private double gauge(String name, String... tags) {
-    return gauge(registry, name, tags);
-  }
-
-  private static double gauge(MeterRegistry on, String name, String... tags) {
-    return on.get(name).tags(tags).gauge().value();
+    return registry.get(name).tags(tags).gauge().value();
   }
 
   private Set<String> pipelinesOf(String name) {
@@ -132,7 +91,6 @@ class KafkafimMetersTest {
       String[] tags = {"pipeline", "orders", "kafka_cluster", "prod-a", "topic", topic};
       assertThat(counter(TelemetryNames.RECORDS_CONSUMED, tags)).isZero();
       assertThat(counter(TelemetryNames.BYTES_CONSUMED, tags)).isZero();
-      assertThat(gauge(TelemetryNames.CONSUMER_LAG, tags)).isZero();
     }
     for (String route : List.of("eu", "1")) {
       for (String outcome : List.of("indexed", "stale", "dlq")) {
@@ -269,7 +227,7 @@ class KafkafimMetersTest {
   }
 
   @Test
-  void gaugesReadTheProbeAndLagIsPolled() {
+  void gaugesReadTheProbe() {
     Probe probe = new Probe();
     sync(Map.of("orders", spec("prod-a", List.of("orders.v1", "orders.v2"), probe)));
     probe.inFlight.set(2048);
@@ -279,82 +237,6 @@ class KafkafimMetersTest {
     assertThat(gauge(TelemetryNames.IN_FLIGHT_BYTES, base)).isEqualTo(2048);
     assertThat(gauge(TelemetryNames.ASSIGNED_PARTITIONS, base)).isEqualTo(3);
     assertThat(gauge(TelemetryNames.KAFKA_CONNECTED, base)).isOne();
-
-    assertThat(gauge(TelemetryNames.CONSUMER_LAG_TIMESTAMP, base)).as("never read").isZero();
-
-    probe.lag = Map.of("orders.v1", 42L);
-    meters.pollLag();
-    assertThat(gauge(TelemetryNames.CONSUMER_LAG, with(base, "topic", "orders.v1"))).isEqualTo(42);
-    assertThat(gauge(TelemetryNames.CONSUMER_LAG, with(base, "topic", "orders.v2"))).isZero();
-    assertThat(gauge(TelemetryNames.CONSUMER_LAG_TIMESTAMP, base)).isEqualTo(1_700_000_000.0);
-
-    // A failed poll keeps the previous values and the time they were read: visibly stale.
-    probe.lagFailure = new IllegalStateException("broker down");
-    now.addAndGet(30_000);
-    meters.pollLag();
-    assertThat(gauge(TelemetryNames.CONSUMER_LAG, with(base, "topic", "orders.v1"))).isEqualTo(42);
-    assertThat(gauge(TelemetryNames.CONSUMER_LAG_TIMESTAMP, base)).isEqualTo(1_700_000_000.0);
-
-    probe.lagFailure = null;
-    meters.pollLag();
-    assertThat(gauge(TelemetryNames.CONSUMER_LAG_TIMESTAMP, base)).isEqualTo(1_700_000_030.0);
-  }
-
-  /** T21: a pipeline whose cluster does not answer delays no other pipeline's lag. */
-  @Test
-  void hangingLagReadDelaysNoOtherPipelineAndIsNotStartedTwice() throws Exception {
-    CountDownLatch release = new CountDownLatch(1);
-    AtomicInteger hangingReads = new AtomicInteger();
-    SourceProbe hanging =
-        new SourceProbe() {
-          @Override
-          public Map<String, Long> lagByTopic() {
-            hangingReads.incrementAndGet();
-            try {
-              release.await();
-            } catch (InterruptedException e) {
-              Thread.currentThread().interrupt();
-            }
-            throw new IllegalStateException("timed out");
-          }
-        };
-    Probe healthy = new Probe();
-    healthy.lag = Map.of("orders.v1", 7L);
-    Map<String, PipelineSpec> specs = new LinkedHashMap<>();
-    for (int i = 0; i < 20; i++) {
-      specs.put("stuck-" + i, spec("unreachable", List.of("stuck"), hanging));
-    }
-    specs.put("orders", spec("prod-a", List.of("orders.v1"), healthy));
-    SimpleMeterRegistry own = new SimpleMeterRegistry();
-    try (KafkafimMeters parallel = new KafkafimMeters(own, Duration.ofHours(1))) {
-      parallel.sync(specs, Set.of("search-eu"), c -> null);
-      final String[] orders = {"pipeline", "orders", "kafka_cluster", "prod-a"};
-      final String[] stuck = {"pipeline", "stuck-0", "kafka_cluster", "unreachable"};
-
-      parallel.pollLag();
-      await()
-          .atMost(Duration.ofSeconds(5))
-          .untilAsserted(() -> {
-            assertThat(gauge(own, TelemetryNames.CONSUMER_LAG_TIMESTAMP, orders)).isPositive();
-            assertThat(hangingReads).hasValue(20);
-          });
-      assertThat(gauge(own, TelemetryNames.CONSUMER_LAG, with(orders, "topic", "orders.v1")))
-          .isEqualTo(7);
-
-      // The next round reads the healthy pipeline again and skips the reads still hanging.
-      healthy.lag = Map.of("orders.v1", 9L);
-      parallel.pollLag();
-      await()
-          .atMost(Duration.ofSeconds(5))
-          .untilAsserted(() ->
-              assertThat(
-                      gauge(own, TelemetryNames.CONSUMER_LAG, with(orders, "topic", "orders.v1")))
-                  .isEqualTo(9));
-      assertThat(hangingReads).hasValue(20);
-      assertThat(gauge(own, TelemetryNames.CONSUMER_LAG_TIMESTAMP, stuck)).isZero();
-    } finally {
-      release.countDown();
-    }
   }
 
   @Test
@@ -384,7 +266,6 @@ class KafkafimMetersTest {
     sync(second);
 
     assertThat(pipelinesOf(TelemetryNames.RECORDS_CONSUMED)).containsOnly("orders", "billing");
-    assertThat(pipelinesOf(TelemetryNames.CONSUMER_LAG)).containsOnly("orders", "billing");
     assertThat(pipelinesOf(TelemetryNames.IN_FLIGHT_BYTES)).containsOnly("orders", "billing");
     // An unchanged pipeline keeps its counters across the reload.
     assertThat(
@@ -439,7 +320,7 @@ class KafkafimMetersTest {
   @Test
   void prometheusRendersTheDesignNames() {
     PrometheusMeterRegistry prometheus = new PrometheusMeterRegistry(PrometheusConfig.DEFAULT);
-    try (KafkafimMeters onPrometheus = new KafkafimMeters(prometheus, Duration.ofHours(1))) {
+    try (KafkafimMeters onPrometheus = new KafkafimMeters(prometheus)) {
       onPrometheus.sync(
           Map.of("orders", spec("prod-a", List.of("orders.v1"), new Probe())),
           Set.of("search-eu"),
@@ -472,19 +353,18 @@ class KafkafimMetersTest {
               "kafkafim_retries_total{",
               "kafkafim_breaker_state{es_cluster=\"search-eu\"} 0.0",
               "kafkafim_auth_failures_total{es_cluster=\"search-eu\",identity=\"writer\",",
-              "kafkafim_consumer_lag{kafka_cluster=\"prod-a\",pipeline=\"orders\","
-                  + "topic=\"orders.v1\"} 0.0",
               "kafkafim_e2e_latency_seconds_bucket{",
               "kafkafim_batch_flush_total{es_cluster=\"search-eu\",kafka_cluster=\"prod-a\","
                   + "pipeline=\"orders\",reason=\"age\"} 1.0",
               "kafkafim_in_flight_bytes{kafka_cluster=\"prod-a\",pipeline=\"orders\"} 0.0",
               "kafkafim_assigned_partitions{kafka_cluster=\"prod-a\",pipeline=\"orders\"} 0.0",
               "kafkafim_kafka_connected{kafka_cluster=\"prod-a\",pipeline=\"orders\"} 0.0",
-              "kafkafim_consumer_lag_timestamp_seconds{kafka_cluster=\"prod-a\","
-                  + "pipeline=\"orders\"} 0.0",
               "kafkafim_dlq_records_total{error_type=\"decode\",kafka_cluster=\"prod-a\","
                   + "pipeline=\"orders\"} 1.0")
-          .doesNotContain("kafkafim_bulk_bytes_bytes", "kafkafim_in_flight_bytes_bytes");
+          .doesNotContain(
+              "kafkafim_bulk_bytes_bytes",
+              "kafkafim_in_flight_bytes_bytes",
+              "kafkafim_consumer_lag");
     } finally {
       prometheus.close();
     }

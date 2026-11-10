@@ -43,15 +43,6 @@ public final class TelemetryNames {
   /** {@code kafkafim_auth_failures_total{pipeline,kafka_cluster,es_cluster,identity}}. */
   public static final String AUTH_FAILURES = "kafkafim.auth.failures";
 
-  /** {@code kafkafim_consumer_lag{pipeline,kafka_cluster,topic}}. */
-  public static final String CONSUMER_LAG = "kafkafim.consumer.lag";
-
-  /**
-   * {@code kafkafim_consumer_lag_timestamp_seconds{pipeline,kafka_cluster}}: Unix time of the last
-   * lag read that succeeded, 0 before the first.
-   */
-  public static final String CONSUMER_LAG_TIMESTAMP = "kafkafim.consumer.lag.timestamp";
-
   /** {@code kafkafim_e2e_latency_seconds{pipeline,kafka_cluster}} (histogram). */
   public static final String E2E_LATENCY = "kafkafim.e2e.latency";
 
@@ -103,10 +94,6 @@ public final class TelemetryNames {
               BREAKER_STATE,
               "Circuit breaker per Elasticsearch cluster: 0 closed, 1 half-open, 2 open"),
           Map.entry(AUTH_FAILURES, "Elasticsearch 401/403 per cluster and identity"),
-          Map.entry(CONSUMER_LAG, "Log end offset minus committed offset of the owned partitions"),
-          Map.entry(
-              CONSUMER_LAG_TIMESTAMP,
-              "Unix time of the last successful consumer lag read (0: never); older means stale"),
           Map.entry(
               E2E_LATENCY, "Elasticsearch acknowledgement time minus the Kafka record timestamp"),
           Map.entry(BATCH_FLUSH, "Sealed batches by the limit that sealed them"),

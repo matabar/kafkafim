@@ -9,7 +9,6 @@ import io.micrometer.core.instrument.Tags;
 import io.micrometer.core.instrument.Timer;
 import io.micrometer.core.instrument.config.MeterFilter;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
-import java.time.Clock;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -17,7 +16,6 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BiFunction;
 import java.util.function.ToDoubleFunction;
 import org.jspecify.annotations.Nullable;
@@ -28,11 +26,11 @@ import org.jspecify.annotations.Nullable;
  * route} is the route's {@code name} or position, never a resolved index, and there are no
  * partition labels.
  *
- * <p>Series that are known from the configuration (consumption and lag per topic, documents per
- * route and outcome, bulk histograms per Elasticsearch cluster, the gauges) exist from the start
- * with 0, so {@code rate()} works from the first event; the others (statuses, error types) appear
- * with their first event. {@link #close()} removes every series of the pipeline, which is what a
- * reload does for a removed pipeline (ADR-0028); events after that are ignored.
+ * <p>Series that are known from the configuration (consumption per topic, documents per route and
+ * outcome, bulk histograms per Elasticsearch cluster, the gauges) exist from the start with 0, so
+ * {@code rate()} works from the first event; the others (statuses, error types) appear with their
+ * first event. {@link #close()} removes every series of the pipeline, which is what a reload does
+ * for a removed pipeline (ADR-0028); events after that are ignored.
  *
  * <p>Thread-safe; the recording methods are called from consumer, sender and DLQ threads.
  */
@@ -60,10 +58,6 @@ public final class PipelineMeters {
   private final PipelineSpec spec;
   private final Tags base;
   private final Map<String, Meter> meters = new ConcurrentHashMap<>();
-  private final Map<String, Long> lag = new ConcurrentHashMap<>();
-  private final Clock clock;
-  private final AtomicBoolean lagReading = new AtomicBoolean();
-  private volatile long lagReadMillis; // 0: never read
   // Hot-path caches (per record, per document): no key building per event.
   private final Map<String, Counter[]> consumedByTopic = new ConcurrentHashMap<>();
   private final Map<String, Counter[]> docsByRoute = new ConcurrentHashMap<>();
@@ -76,30 +70,22 @@ public final class PipelineMeters {
     this.pipeline = "";
     this.spec = new PipelineSpec("", List.of(), List.of(), Set.of(), SourceProbe.NONE);
     this.base = Tags.empty();
-    this.clock = Clock.systemUTC();
     this.probe = SourceProbe.NONE;
     this.e2e = null;
     this.closed = true;
   }
 
-  PipelineMeters(MeterRegistry registry, String pipeline, PipelineSpec spec, Clock clock) {
+  PipelineMeters(MeterRegistry registry, String pipeline, PipelineSpec spec) {
     this.registry = registry;
     this.pipeline = pipeline;
     this.spec = spec;
-    this.clock = clock;
     this.base = Tags.of(TelemetryNames.PIPELINE, pipeline, "kafka_cluster", spec.kafkaCluster());
     this.probe = spec.probe();
     gauge(TelemetryNames.IN_FLIGHT_BYTES, "bytes", m -> m.probe.inFlightBytes(), Tags.empty());
     gauge(
         TelemetryNames.ASSIGNED_PARTITIONS, null, m -> m.probe.assignedPartitions(), Tags.empty());
     gauge(TelemetryNames.KAFKA_CONNECTED, null, m -> m.probe.connected() ? 1 : 0, Tags.empty());
-    gauge(
-        TelemetryNames.CONSUMER_LAG_TIMESTAMP,
-        "seconds",
-        m -> m.lagReadMillis / 1000.0,
-        Tags.empty());
     for (String topic : spec.topics()) {
-      gauge(TelemetryNames.CONSUMER_LAG, null, m -> m.lag.getOrDefault(topic, 0L), topic(topic));
       counter(TelemetryNames.RECORDS_CONSUMED, topic(topic));
       counter(TelemetryNames.BYTES_CONSUMED, topic(topic));
     }
@@ -267,34 +253,6 @@ public final class PipelineMeters {
   /** A DLQ record was acknowledged by the broker. */
   public void dlqRecord(String errorType) {
     counter(TelemetryNames.DLQ_RECORDS, Tags.of("error_type", errorType)).increment();
-  }
-
-  // ---- lag ----
-
-  /**
-   * Asks the probe for the lag and keeps the result with the time it was read; on failure the
-   * previous values and their time stay, so {@code kafkafim_consumer_lag_timestamp_seconds} shows
-   * how stale they are.
-   */
-  void refreshLag() {
-    if (closed) {
-      return;
-    }
-    Map<String, Long> current = probe.lagByTopic();
-    for (String topic : spec.topics()) {
-      lag.put(topic, current.getOrDefault(topic, 0L));
-    }
-    lagReadMillis = clock.millis();
-  }
-
-  /** Claims the next lag read; {@code false} while the previous one still runs. */
-  boolean beginLagRead() {
-    return lagReading.compareAndSet(false, true);
-  }
-
-  /** Releases the claim of {@link #beginLagRead()}. */
-  void endLagRead() {
-    lagReading.set(false);
   }
 
   // ---- registration ----

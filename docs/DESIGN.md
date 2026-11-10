@@ -903,7 +903,8 @@ are reported together:
 - **HPA on CPU** (core Kubernetes): CPU tracks throughput closely for JSON decode and
   gzip. Optional per group.
 - **Lag-based**: needs KEDA (a CRD) or a custom-metrics adapter, not available in
-  production. `kafkafim_consumer_lag` is exported so this is a chart toggle later.
+  production. If it ever is, it scales on the consumer-lag metrics of the Kafka team's
+  monitoring for the group's consumer groups; kafkafim exports no lag (ADR-0034).
 - Scaling beyond partitions is wasted; repartitioning is a Kafka-side action.
 - Per-cluster knobs: `bulk.max-docs/max-bytes/max-age/in-flight`,
   `client.connect-timeout/response-timeout`; per pipeline
@@ -914,7 +915,7 @@ are reported together:
 
 | Situation | Behaviour |
 |---|---|
-| ES returns 429 / 5xx / connection error or timeout for a bulk request | Retried with the same documents **forever**, exponential backoff with jitter (100ms doubling to 30s, ±50%); counts as a breaker failure. The pipeline's container is paused when in-flight bytes (key + value of every delivered, incomplete record) reach `max-in-flight-bytes`, and resumes once they drop to half of it. A poll that crosses the budget is delivered whole, so the overshoot is at most one poll per consumer. Kafka lag grows. No local buffering. Never DLQ. |
+| ES returns 429 / 5xx / connection error or timeout for a bulk request | Retried with the same documents **forever**, exponential backoff with jitter (100ms doubling to 30s, ±50%); counts as a breaker failure. The pipeline's container is paused when in-flight bytes (key + value of every delivered, incomplete record) reach `max-in-flight-bytes`, and resumes once they drop to half of it. A poll that crosses the budget is delivered whole, so the overshoot is at most one poll per consumer. Kafka lag grows (visible in the Kafka team's consumer-lag monitoring). No local buffering. Never DLQ. |
 | Repeated cluster-level failures | Circuit breaker per ES cluster (Resilience4j, shared by all identities and pipelines): count window of 20 requests, opens at ≥50% failures after at least 10, stays open 10s, then lets 2 probes through. While it is open every sender for that cluster waits; pipelines routing to that cluster pause (supervisor reason `es-breaker:<cluster>`, from open until the breaker is closed again; half-open keeps the pause), others proceed. |
 | Bulk request rejected with 401 / 403 | Configuration failure, not data failure: retried with backoff forever and reported through the sink listener (the supervisor pauses the pipeline; `kafkafim_auth_failures_total` and an alert fire). Not a breaker failure. Nothing goes to the DLQ. The log line and the listener event keep the security error's type and `reason` (user, roles, action, index), never the raw body (ADR-0030). An **item** with 401/403 (the identity may not write that index) is handled the same way. |
 | Bulk request with any other unexpected status (a 400 for the whole request, a 404 from a proxy or a wrong path, a 3xx) or a 2xx body that is not a bulk response | Retried forever with backoff and logged with Elasticsearch's `error.type` and `root_cause[].type`s, never its `reason`, which can quote field values (ADR-0030; a body that is not JSON is logged by its size, an unparsable 2xx body by what was wrong with it; the body itself only at DEBUG on the `BulkSink` logger): it cannot be attributed to one document, so it never reaches the DLQ. An unexpected status is not a cluster-health signal and does not open the breaker; an unparsable 2xx body does. |
@@ -1025,12 +1026,14 @@ kafkafim:
       dlq: { topic: orders.kafkafim-dlq-2 }
 ```
 
-Remove it when `kafkafim_consumer_lag{pipeline="orders-replay"}` is zero. Inspection
+Remove it when its consumer group's lag (`source.group-id`, in the Kafka team's
+consumer-lag monitoring; kafkafim exports none, ADR-0034) reaches zero. Inspection
 uses standard Kafka tooling (`kafka-console-consumer` with headers, Kafka UI).
 Purge is retention. A dedicated DLQ tool is a post-MVP item.
 
-Metrics: `kafkafim_dlq_records_total{pipeline,error_type}`; the DLQ topic's consumer
-lag under a replay pipeline is the unresolved-backlog number.
+Metrics: `kafkafim_dlq_records_total{pipeline,error_type}`; the replay pipeline's
+consumer-group lag on the DLQ topic, in the Kafka team's monitoring, is the
+unresolved-backlog number.
 
 ## 10. Observability
 
@@ -1058,8 +1061,6 @@ Exact label sets (`telemetry/TelemetryNames`, `telemetry/PipelineMeters`):
 | `kafkafim_auth_failures_total` | `es_cluster`, `identity` (`none` for an unauthenticated cluster) | every response carrying a 401/403, for the request or for any item (one per response, not per item) |
 | `kafkafim_batch_flush_total` | `es_cluster`, `reason=docs\|bytes\|age\|explicit` | every sealed batch (`explicit`: revoke, stop) |
 | `kafkafim_e2e_latency_seconds` (histogram) | — | every Elasticsearch ack: ack time minus the Kafka record timestamp (DLQ'd documents are not counted) |
-| `kafkafim_consumer_lag` | `topic` | owned partitions summed: log end offset minus committed offset, polled every 10s |
-| `kafkafim_consumer_lag_timestamp_seconds` | — | Unix time of the pipeline's last successful lag read, 0 before the first; `time() - …` is the age of its `kafkafim_consumer_lag` values |
 | `kafkafim_in_flight_bytes`, `kafkafim_assigned_partitions`, `kafkafim_kafka_connected` (1/0) | — | the pipeline's running source, read on scrape |
 | `kafkafim_dlq_records_total` | `error_type` | every DLQ record the broker acknowledged |
 | `kafkafim_breaker_state` | only `es_cluster`: 0 closed, 1 half-open, 2 open | the breakers the pipelines send through (the worst one while a reload leaves two generations alive) |
@@ -1078,23 +1079,16 @@ event. On a reload (§5.6, ADR-0028) a removed pipeline loses every series, an a
 gains them, a pipeline whose labels changed (source cluster, topics, routes, clusters)
 gets fresh series, and an unchanged one keeps its counters across a restart.
 
-Lag is read by one extra consumer per running pipeline (its identity and group, never
-joining the group) every 10s; a partition without a committed offset yet is left out.
-Each round starts one read per pipeline on its own virtual thread, bounded by 5s for both
-broker requests together, so a cluster that does not answer delays only its own
-pipelines; a pipeline whose previous read still runs is skipped for that round (ADR-0033).
-A read that fails or is skipped keeps the previous values and does not advance
-`kafkafim_consumer_lag_timestamp_seconds`: a stale lag shows as an old timestamp, never as
-0. Alert on `time() - kafkafim_consumer_lag_timestamp_seconds > 60 and
-kafkafim_consumer_lag_timestamp_seconds > 0` for stale lag (the value is the age; 0
-means not read yet, as in the first 10-15s after start). A pipeline without a running source (stopped,
-`failed_preflight`) or without owned partitions reads 0 on this pod, and that read counts
-as successful: such a pipeline gives no stale signal, so watch `kafkafim_pipeline_state`
-for it. A stop never waits for a broker request of a lag read: it wakes the lag consumer
-up, including one created as the stop begins. `kafkafim_kafka_connected` is 1 while every
-consumer of the pipeline holds a broker connection (kafka-clients'
-`connection-count`); a stopped pipeline reads 0, as do its in-flight bytes and
-assigned partitions.
+Consumer lag is not a kafkafim metric (ADR-0034): the Kafka team's consumer-lag
+monitoring already shows and alerts on it per consumer group (`source.group-id`), and
+reading it here would cost one extra consumer per pipeline and two broker requests per
+pipeline every 10s. kafkafim's own "are we keeping up" signals are
+`kafkafim_e2e_latency_seconds` and the throughput counters, read next to
+`kafkafim_pipeline_state` and `kafkafim_breaker_state`.
+
+`kafkafim_kafka_connected` is 1 while every consumer of the pipeline holds a broker
+connection (kafka-clients' `connection-count`); a stopped pipeline reads 0, as do its
+in-flight bytes and assigned partitions.
 
 ### Traces
 
@@ -1147,14 +1141,14 @@ logged by default.
 [`deploy/grafana/`](../deploy/grafana/README.md), written against the
 `/actuator/prometheus` names above:
 
-- `dashboards/kafkafim-overview.json`: per pipeline: state, lag, throughput, e2e
+- `dashboards/kafkafim-overview.json`: per pipeline: state, throughput, e2e
   latency, DLQ rate, in-flight bytes and heap, assigned partitions, Kafka
   connectivity, config generation and reloads.
 - `dashboards/kafkafim-elasticsearch.json`: per ES cluster: breaker, bulk requests by
   status and the 429 ratio, bulk latency, docs and bytes per request, flush reasons,
   retries, item errors, auth failures.
 - `alerts/kafkafim-alerts.yaml` (Prometheus rules, with `promtool test rules` tests):
-  lag growing 5m, DLQ rate > 0 for 10m, bulk reject (429) ratio > 1%, e2e p99 above
+  DLQ rate > 0 for 10m, bulk reject (429) ratio > 1%, e2e p99 above
   target (10s by default), breaker open, auth failures > 0, reload failed, pod with 0
   assigned partitions for a pipeline it runs; plus `failed_preflight`, `paused` for
   5m, `starting` for 10m and Kafka disconnected for a running pipeline.

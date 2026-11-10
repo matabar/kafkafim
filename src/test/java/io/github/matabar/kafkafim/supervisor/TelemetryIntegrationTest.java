@@ -5,7 +5,6 @@ import static org.awaitility.Awaitility.await;
 
 import io.github.matabar.kafkafim.KafkaTestContainers;
 import io.github.matabar.kafkafim.KafkafimApplication;
-import io.github.matabar.kafkafim.source.kafka.KafkaPipelineSource;
 import io.github.matabar.kafkafim.telemetry.BatchTracer;
 import io.opentelemetry.api.common.AttributeKey;
 import io.opentelemetry.sdk.common.CompletableResultCode;
@@ -53,10 +52,10 @@ import org.testcontainers.utility.DockerImageName;
 /**
  * DESIGN §10 end to end: real Kafka → Elasticsearch traffic (good documents, a mapping failure, an
  * undecodable record), then {@code /actuator/prometheus} carries the §10 series with their labels,
- * the consumer lag follows a paused pipeline, the liveness and readiness groups contain the {@code
- * supervisor} and {@code kafka} contributors, and the failed batch is traced although the sampling
- * probability is 0: a {@code pipeline.batch} span with an {@code es.bulk} child and a link to the
- * trace of the record's {@code traceparent} header.
+ * the liveness and readiness groups contain the {@code supervisor} and {@code kafka} contributors,
+ * and the failed batch is traced although the sampling probability is 0: a {@code pipeline.batch}
+ * span with an {@code es.bulk} child and a link to the trace of the record's {@code traceparent}
+ * header.
  */
 class TelemetryIntegrationTest {
 
@@ -209,7 +208,6 @@ class TelemetryIntegrationTest {
           assertThat(value(scrape, "kafkafim_assigned_partitions", base)).isEqualTo(2);
           assertThat(value(scrape, "kafkafim_kafka_connected", base)).isEqualTo(1);
           assertThat(value(scrape, "kafkafim_in_flight_bytes", base)).isZero();
-          assertThat(value(scrape, "kafkafim_consumer_lag", base, "topic=\"tel.events\"")).isZero();
           assertThat(value(scrape, "kafkafim_breaker_state", "es_cluster=\"local\"")).isZero();
           assertThat(
                   value(scrape, "kafkafim_pipeline_state", "pipeline=\"tel\"", "state=\"running\""))
@@ -220,8 +218,8 @@ class TelemetryIntegrationTest {
                       .lines()
                       .filter(l -> l.startsWith("kafkafim_"))
                       .collect(Collectors.joining("\n")))
-              .as("no resolved index or partition labels")
-              .doesNotContain("tel-docs", "partition=\"");
+              .as("no resolved index or partition labels, and no consumer lag (ADR-0034)")
+              .doesNotContain("tel-docs", "partition=\"", "kafkafim_consumer_lag");
         });
     System.out.println(
         "---- /actuator/prometheus (kafkafim_*) ----\n"
@@ -229,39 +227,6 @@ class TelemetryIntegrationTest {
                 .lines()
                 .filter(l -> l.startsWith("kafkafim_") && !l.contains("_bucket{"))
                 .collect(Collectors.joining("\n")));
-
-    // ---- consumer lag: a paused pipeline accumulates it, polled every 10s ----
-    KafkaPipelineSource source = supervisor.source("tel");
-    source.pause("it-lag");
-    await().atMost(TIMEOUT).until(source::isConsumerPaused);
-    for (int i = 0; i < 5; i++) {
-      send("{\"id\":\"late-" + i + "\",\"n\":" + i + "}", null);
-    }
-    producer.flush();
-    assertThat(
-            source.consumerLag(Duration.ofSeconds(5)).values().stream()
-                .mapToLong(Long::longValue)
-                .sum())
-        .isEqualTo(5);
-    await()
-        .atMost(TIMEOUT)
-        .until(() ->
-            value(
-                    get(port, "/actuator/prometheus"),
-                    "kafkafim_consumer_lag",
-                    "pipeline=\"tel\"",
-                    "topic=\"tel.events\"")
-                == 5);
-    source.resume("it-lag");
-    await()
-        .atMost(TIMEOUT)
-        .until(() ->
-            value(
-                    get(port, "/actuator/prometheus"),
-                    "kafkafim_consumer_lag",
-                    "pipeline=\"tel\"",
-                    "topic=\"tel.events\"")
-                == 0);
 
     // ---- probes ----
     String liveness = get(port, "/actuator/health/liveness");

@@ -6,14 +6,12 @@ import io.github.matabar.kafkafim.source.kafka.KafkaPipelineSource;
 import io.github.matabar.kafkafim.telemetry.KafkafimMeters;
 import io.github.matabar.kafkafim.telemetry.PipelineSpec;
 import io.github.matabar.kafkafim.telemetry.SourceProbe;
-import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import org.apache.kafka.common.TopicPartition;
 
 /**
  * Keeps the §10 meters in line with the supervisor (DESIGN §10, §5.6): at startup and after every
@@ -22,9 +20,6 @@ import org.apache.kafka.common.TopicPartition;
  * the {@code kafka} readiness contributor.
  */
 final class TelemetryBinder {
-
-  /** Bound on one pipeline's lag read (both broker requests), well inside the 10s interval. */
-  static final Duration LAG_TIMEOUT = Duration.ofSeconds(5);
 
   private final PipelineSupervisor supervisor;
   private final KafkafimMeters meters;
@@ -110,19 +105,6 @@ final class TelemetryBinder {
     public boolean started() {
       PipelineState state = supervisor.stateOrNull(pipeline);
       return state != null && state.isStarted();
-    }
-
-    @Override
-    public Map<String, Long> lagByTopic() {
-      KafkaPipelineSource source = supervisor.sourceOrNull(pipeline);
-      if (source == null) {
-        return Map.of();
-      }
-      Map<String, Long> byTopic = new LinkedHashMap<>();
-      for (Map.Entry<TopicPartition, Long> lag : source.consumerLag(LAG_TIMEOUT).entrySet()) {
-        byTopic.merge(lag.getKey().topic(), lag.getValue(), Long::sum);
-      }
-      return byTopic;
     }
   }
 }
