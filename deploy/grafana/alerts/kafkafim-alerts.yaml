@@ -41,7 +41,7 @@ groups:
           description: >-
             Preflight keeps retrying a transient failure: Kafka or Elasticsearch is unreachable.
             The pod logs name the failing check.
-          runbook_url: https://github.com/matabar/kafkafim/blob/main/docs/RUNBOOK.md#31-pipeline-state
+          runbook_url: https://github.com/matabar/kafkafim/blob/main/docs/RUNBOOK.md#512-pipeline-stuck-in-starting
 
       - alert: KafkafimConsumerLagGrowing
         # Lag is reported per pod for the partitions it owns; summed over pods.
