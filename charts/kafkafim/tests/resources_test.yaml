@@ -208,3 +208,30 @@ tests:
           value: 1
       - notExists:
           path: spec.maxUnavailable
+
+  - it: gives a single-replica group whose own pdb has only null keys maxUnavailable 1
+    template: templates/pdb.yaml
+    values:
+      - ../ci/minimal-values.yaml
+    set:
+      groups.orders.replicas: 1
+      groups.orders.allowSingleReplica: true
+      groups.orders.pdb: { minAvailable: null, maxUnavailable: null }
+    asserts:
+      - equal:
+          path: spec.maxUnavailable
+          value: 1
+      - notExists:
+          path: spec.minAvailable
+
+  - it: ignores autoscaling.minReplicas when autoscaling is disabled
+    template: templates/pdb.yaml
+    values:
+      - ../ci/minimal-values.yaml
+    set:
+      groups.orders.allowSingleReplica: true
+      groups.orders.autoscaling: { enabled: false, minReplicas: 1, maxReplicas: 4 }
+    asserts:
+      - equal:
+          path: spec.minAvailable
+          value: 1
