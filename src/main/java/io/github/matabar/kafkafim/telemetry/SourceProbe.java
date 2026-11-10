@@ -41,10 +41,12 @@ public interface SourceProbe {
 
   /**
    * Lag of the partitions this pod owns, summed per topic (log end offset minus committed offset).
-   * Called every 10s by one poller thread; may block for a few seconds.
+   * Called every 10s on a thread of its own per pipeline, never while the pipeline's previous call
+   * still runs; may block for a few seconds and should bound that itself.
    *
    * @return lag per topic; topics without owned partitions may be absent
-   * @throws RuntimeException if the broker cannot be asked; the previous values are kept
+   * @throws RuntimeException if the broker cannot be asked; the previous values and the time they
+   *     were read are kept
    */
   default Map<String, Long> lagByTopic() {
     return Map.of();

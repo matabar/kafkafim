@@ -36,3 +36,4 @@ One file per decision, MADR-style. Supersede with a new ADR rather than editing 
 | [0030](0030-request-level-retry-logs-error-types-not-response-bodies.md) | Request-level retry logs name Elasticsearch's error types, not the response body; the body only at DEBUG (refines 0026) |
 | [0031](0031-elasticsearch-client-timeouts-per-cluster.md) | Elasticsearch client timeouts are set per cluster; the breaker's half-open limit follows the response timeout (refines 0026) |
 | [0032](0032-accepted-reload-retries-failed-preflight-pipelines.md) | An accepted reload retries the pipelines it leaves in `failed_preflight` (refines 0028) |
+| [0033](0033-consumer-lag-read-per-pipeline-in-parallel-staleness-as-timestamp.md) | Consumer lag is read per pipeline in parallel under a 5s deadline; stale lag shows as an old `kafkafim_consumer_lag_timestamp_seconds` (refines 0029) |

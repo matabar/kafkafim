@@ -1058,6 +1058,7 @@ Exact label sets (`telemetry/TelemetryNames`, `telemetry/PipelineMeters`):
 | `kafkafim_batch_flush_total` | `es_cluster`, `reason=docs\|bytes\|age\|explicit` | every sealed batch (`explicit`: revoke, stop) |
 | `kafkafim_e2e_latency_seconds` (histogram) | — | every Elasticsearch ack: ack time minus the Kafka record timestamp (DLQ'd documents are not counted) |
 | `kafkafim_consumer_lag` | `topic` | owned partitions summed: log end offset minus committed offset, polled every 10s |
+| `kafkafim_consumer_lag_timestamp_seconds` | — | Unix time of the pipeline's last successful lag read, 0 before the first; `time() - …` is the age of its `kafkafim_consumer_lag` values |
 | `kafkafim_in_flight_bytes`, `kafkafim_assigned_partitions`, `kafkafim_kafka_connected` (1/0) | — | the pipeline's running source, read on scrape |
 | `kafkafim_dlq_records_total` | `error_type` | every DLQ record the broker acknowledged |
 | `kafkafim_breaker_state` | only `es_cluster`: 0 closed, 1 half-open, 2 open | the breakers the pipelines send through (the worst one while a reload leaves two generations alive) |
@@ -1077,9 +1078,19 @@ gains them, a pipeline whose labels changed (source cluster, topics, routes, clu
 gets fresh series, and an unchanged one keeps its counters across a restart.
 
 Lag is read by one extra consumer per running pipeline (its identity and group, never
-joining the group) every 10s; a partition without a committed offset yet is left out,
-and a failed poll keeps the previous values; a pipeline without a running source (stopped,
-failed) or without owned partitions reads 0 on this pod. `kafkafim_kafka_connected` is 1 while every
+joining the group) every 10s; a partition without a committed offset yet is left out.
+Each round starts one read per pipeline on its own virtual thread, bounded by 5s for both
+broker requests together, so a cluster that does not answer delays only its own
+pipelines; a pipeline whose previous read still runs is skipped for that round (ADR-0033).
+A read that fails or is skipped keeps the previous values and does not advance
+`kafkafim_consumer_lag_timestamp_seconds`: a stale lag shows as an old timestamp, never as
+0. Alert on `time() - kafkafim_consumer_lag_timestamp_seconds > 60 and
+kafkafim_consumer_lag_timestamp_seconds > 0` for stale lag (the value is the age; 0
+means not read yet, as in the first 10-15s after start). A pipeline without a running source (stopped,
+`failed_preflight`) or without owned partitions reads 0 on this pod, and that read counts
+as successful: such a pipeline gives no stale signal, so watch `kafkafim_pipeline_state`
+for it. A stop never waits for a broker request of a lag read: it wakes the lag consumer
+up, including one created as the stop begins. `kafkafim_kafka_connected` is 1 while every
 consumer of the pipeline holds a broker connection (kafka-clients'
 `connection-count`); a stopped pipeline reads 0, as do its in-flight bytes and
 assigned partitions.
