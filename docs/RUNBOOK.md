@@ -500,7 +500,8 @@ tooling shows it too (`kafka-consumer-groups.sh --describe --group kafkafim.<pip
   `document.timestamp-field` uses the original record time
   (`kafkafim.source.timestamp`) for date-based index names
   ([ADR-0027](decisions/0027-dlq-record-timestamp-and-headers.md)). Remove it once its
-  consumer group's lag, in the Kafka team's consumer-lag monitoring, is zero. Purge is retention; there is no DLQ tool.
+  consumer group's lag, in the Kafka team's consumer-lag monitoring, is zero. Purge is
+  retention; there is no DLQ tool.
 
 **DLQ blocked** (the DLQ cannot be written):
 

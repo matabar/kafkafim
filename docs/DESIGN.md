@@ -1084,10 +1084,10 @@ reading it here would cost one extra consumer per pipeline and two broker reques
 pipeline every 10s. kafkafim's own "are we keeping up" signals are
 `kafkafim_e2e_latency_seconds` and the throughput counters, read next to
 `kafkafim_pipeline_state` and `kafkafim_breaker_state`.
-`kafkafim_kafka_connected` is 1 while every
-consumer of the pipeline holds a broker connection (kafka-clients'
-`connection-count`); a stopped pipeline reads 0, as do its in-flight bytes and
-assigned partitions.
+
+`kafkafim_kafka_connected` is 1 while every consumer of the pipeline holds a broker
+connection (kafka-clients' `connection-count`); a stopped pipeline reads 0, as do its
+in-flight bytes and assigned partitions.
 
 ### Traces
 
