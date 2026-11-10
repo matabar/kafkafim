@@ -15,6 +15,7 @@ import io.github.matabar.kafkafim.config.ElasticsearchCluster.Trust;
 import io.github.matabar.kafkafim.config.Pipeline.OnVersionConflict;
 import io.github.matabar.kafkafim.sink.es.SinkHarness.Events;
 import io.github.matabar.kafkafim.sink.es.SinkHarness.Outcomes;
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
@@ -33,6 +34,7 @@ import org.testcontainers.elasticsearch.ElasticsearchContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.utility.DockerImageName;
+import tools.jackson.core.JacksonException;
 import tools.jackson.databind.JsonNode;
 
 /**
@@ -48,7 +50,7 @@ class ElasticsearchSinkSecurityIntegrationTest {
   static final String WRONG_PASSWORD = "wrong-pw-55d0";
   static final String INDEX = "kfm-secure";
   static final Duration WAIT = Duration.ofSeconds(60);
-  static final Duration PROVISION_WAIT = Duration.ofMinutes(2);
+  static final Duration PROVISION_WAIT = Duration.ofMinutes(3);
   static final Set<Integer> TRANSIENT = Set.of(429, 502, 503, 504);
 
   @Container
@@ -78,20 +80,26 @@ class ElasticsearchSinkSecurityIntegrationTest {
                 Map.of("admin", new ElasticsearchIdentity("elastic", ADMIN_PASSWORD, null, null))),
             "admin",
             ClientSettings.DEFAULT)) {
-      awaitSecurityReady(admin);
-      provisionCall(admin, "PUT", "/" + INDEX, "{\"settings\":{\"number_of_replicas\":0}}");
+      // One deadline for the whole provisioning, so a slow node fails @BeforeAll in bounded time.
+      long deadline = System.nanoTime() + PROVISION_WAIT.toNanos();
+      awaitSecurityReady(admin, deadline);
+      provisionCall(
+          admin, deadline, "PUT", "/" + INDEX, "{\"settings\":{\"number_of_replicas\":0}}");
       provisionCall(
           admin,
+          deadline,
           "PUT",
           "/_security/role/kfm-writer",
           "{\"indices\":[{\"names\":[\"" + INDEX + "\"],\"privileges\":[\"write\"]}]}");
       provisionCall(
           admin,
+          deadline,
           "PUT",
           "/_security/user/kfm-writer",
           "{\"password\":\"" + WRITER_PASSWORD + "\",\"roles\":[\"kfm-writer\"]}");
       provisionCall(
           admin,
+          deadline,
           "PUT",
           "/_security/user/kfm-viewer",
           "{\"password\":\"" + WRITER_PASSWORD + "\",\"roles\":[\"viewer\"]}");
@@ -99,6 +107,7 @@ class ElasticsearchSinkSecurityIntegrationTest {
           required(
               provisionCall(
                   admin,
+                  deadline,
                   "POST",
                   "/_security/api_key",
                   "{\"name\":\"kfm-it\",\"role_descriptors\":{\"w\":{\"indices\":"
@@ -114,32 +123,61 @@ class ElasticsearchSinkSecurityIntegrationTest {
    * The wait strategy only waits for the node's "started" log line; security can still be
    * initialising then. Waits until the admin authenticates and the cluster is at least yellow.
    */
-  static void awaitSecurityReady(Rest5Client admin) {
-    await("Elasticsearch security ready")
-        .atMost(PROVISION_WAIT)
-        .pollInterval(Duration.ofSeconds(1))
-        .ignoreExceptions()
-        .until(() ->
-            send(admin, "GET", "/_security/_authenticate", null).status() == 200
-                && send(admin, "GET", "/_cluster/health?wait_for_status=yellow&timeout=5s", null)
-                        .status()
-                    == 200);
+  static void awaitSecurityReady(Rest5Client admin, long deadline) throws Exception {
+    String last = "no reply yet";
+    while (true) {
+      try {
+        Reply auth = send(admin, "GET", "/_security/_authenticate", null);
+        if (auth.status() == 200) {
+          Reply health =
+              send(admin, "GET", "/_cluster/health?wait_for_status=yellow&timeout=5s", null);
+          if (health.status() == 200) {
+            return;
+          }
+          last = "cluster health: HTTP " + health.status() + ", body: " + health.body();
+        } else {
+          last = "_security/_authenticate: HTTP " + auth.status() + ", body: " + auth.body();
+        }
+      } catch (IOException e) {
+        last = e.toString();
+      }
+      if (System.nanoTime() > deadline) {
+        throw new AssertionError(
+            "Elasticsearch security not ready within "
+                + PROVISION_WAIT
+                + "; last: "
+                + last
+                + nodeLogTail());
+      }
+      Thread.sleep(1000);
+    }
   }
 
   /**
-   * One provisioning request, retried only on clearly transient statuses (429, 502, 503, 504); any
-   * other non-2xx fails with the status, the body and the node's log tail.
+   * One provisioning request, retried until the shared deadline only on clearly transient outcomes
+   * (429, 502, 503, 504, or an I/O error); any other non-2xx fails with the status, the body and
+   * the node's log tail. A retried {@code POST /_security/api_key} may leave an extra key behind in
+   * this throwaway node; the key from the successful reply is the one used.
    */
-  static Reply provisionCall(Rest5Client admin, String method, String path, String json)
-      throws Exception {
-    long deadline = System.nanoTime() + PROVISION_WAIT.toNanos();
+  static Reply provisionCall(
+      Rest5Client admin, long deadline, String method, String path, String json) throws Exception {
+    String request = method + " " + path;
     while (true) {
-      Reply reply = send(admin, method, path, json);
+      Reply reply;
+      try {
+        reply = send(admin, method, path, json);
+      } catch (IOException e) {
+        if (System.nanoTime() > deadline) {
+          throw new AssertionError(request + ": " + e + nodeLogTail(), e);
+        }
+        Thread.sleep(1000);
+        continue;
+      }
       if (reply.status() / 100 == 2) {
         return reply;
       }
       if (!TRANSIENT.contains(reply.status()) || System.nanoTime() > deadline) {
-        throw reply.failure(method + " " + path, "unexpected status");
+        throw reply.failure(request, "unexpected status", null);
       }
       Thread.sleep(1000);
     }
@@ -150,11 +188,11 @@ class ElasticsearchSinkSecurityIntegrationTest {
     JsonNode value;
     try {
       value = SinkHarness.JSON.readTree(reply.body()).get(field);
-    } catch (RuntimeException e) {
-      throw reply.failure(request, "unparseable body");
+    } catch (JacksonException e) {
+      throw reply.failure(request, "unparseable body", e);
     }
     if (value == null || !value.isString()) {
-      throw reply.failure(request, "no '" + field + "' field");
+      throw reply.failure(request, "no '" + field + "' field", null);
     }
     return value.asString();
   }
@@ -177,9 +215,9 @@ class ElasticsearchSinkSecurityIntegrationTest {
   }
 
   record Reply(int status, String body) {
-    AssertionError failure(String request, String why) {
+    AssertionError failure(String request, String why, @Nullable Throwable cause) {
       return new AssertionError(
-          request + ": " + why + ", HTTP " + status + ", body: " + body + nodeLogTail());
+          request + ": " + why + ", HTTP " + status + ", body: " + body + nodeLogTail(), cause);
     }
   }
 
