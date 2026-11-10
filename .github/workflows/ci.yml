@@ -5,9 +5,13 @@ on:
   pull_request:
 permissions:
   contents: read
+# A newer push to a pull request cancels its older run. On main every merged commit gets its
+# own complete run (docs/DELIVERY.md): a per-commit group, never cancelled. With one group for
+# main, a run still in progress would survive (cancel-in-progress false) but a pending one
+# would still be replaced by the next merge, leaving that commit without an image build.
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.ref == 'refs/heads/main' && github.sha || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 jobs:
   # Decides which gate jobs a pull request needs (docs/DELIVERY.md, "Docs-only pull requests").
   # Skipped jobs report success, so the check names stay usable as required checks; a

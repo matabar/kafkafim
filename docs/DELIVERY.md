@@ -48,6 +48,11 @@ Helm distribution model and is what `helm pull`/`helm push` and `skopeo` underst
 | `image` (check "Container image") | Needs only `build`, so it runs while `integration` is still running. The Dockerfile builds from `build`'s jar (no push); `hadolint` on the Dockerfile; the container starts read-only and answers `/actuator/health/liveness` within 60 s. |
 | `helm` (check "Helm chart") | `helm lint`, `helm template` with every `charts/kafkafim/ci/*-values.yaml`, `kubeconform -strict` (v0.8.0) against Kubernetes schemas, `helm unittest` (helm-unittest 1.2.1) for the group-rendering logic and every template-time `fail`. Helm is pinned (`azure/setup-helm` `version:`, currently v4.3.1, the same in `release.yml`); helm-unittest is installed from its signed release tarball: the tarball and its `.prov` are fetched through the GitHub API asset endpoint (not `releases/download/`), checked against pinned SHA-256s, and Helm verifies the provenance with the release key committed at `.github/keys/helm-unittest-public-key.asc` (fingerprint pinned in `ci.yml`). Both tools are kept in an `actions/cache` keyed on their pins, so once a passing run has warmed it (caches unused for 7 days are evicted) an outage of github.com release downloads or of the Go module proxy cannot fail the job. Checkout, the Actions cache service, `azure/setup-helm` (get.helm.sh) and kubeconform's schemas (raw.githubusercontent.com) are still needed on every run. Skipped until the chart exists, and on pull requests that change none of `charts/**`, `.github/workflows/ci.yml` or `.github/keys/**`. |
 
+A new push to a pull request cancels the pull request's run still in progress. Runs on
+`main` are never cancelled or replaced: each pushed commit has its own concurrency group
+(keyed on the commit SHA), so every merged commit gets a complete run, including the
+image build, even when several merges land within minutes.
+
 ### Docs-only pull requests
 
 A pull request whose every changed path (both sides of a rename) is `*.md` outside
