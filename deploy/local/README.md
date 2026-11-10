@@ -51,6 +51,9 @@ since the tag stays `dev`.
 
 ## Look around
 
+The commands below use the kind context; with `CLUSTER=docker-desktop` replace
+`--context kind-kafkafim-demo` with `--context docker-desktop`.
+
 ```bash
 kubectl --context kind-kafkafim-demo -n kafkafim-demo logs deploy/kafkafim-demo -f
 ```

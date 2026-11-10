@@ -47,7 +47,7 @@ up() {
 
   if [[ "$CLUSTER" == kind ]]; then
     need kind
-    kind get clusters 2>/dev/null | grep -qx "$KIND_NAME" || kind create cluster --name "$KIND_NAME" --wait 120s
+    kind get clusters 2>/dev/null | grep -x "$KIND_NAME" >/dev/null || kind create cluster --name "$KIND_NAME" --wait 120s
     kind load docker-image "$IMAGE" --name "$KIND_NAME"
   fi
   # Docker Desktop (kubeadm mode) runs on the same Docker engine, so it sees kafkafim:dev.
@@ -85,7 +85,7 @@ smoke() {
     local hits
     hits="$(k exec deploy/elasticsearch -- sh -c \
       "curl -fsS -u \"elastic:\$ELASTIC_PASSWORD\" 'http://127.0.0.1:9200/demo-eu-*/_count?q=_id:$id'" \
-      2>/dev/null | sed -n 's/.*"count":\([0-9]*\).*/\1/p')"
+      2>/dev/null | sed -n 's/.*"count":\([0-9]*\).*/\1/p')" || hits=0   # retry on any hiccup
     if [[ "${hits:-0}" -ge 1 ]]; then
       echo "OK: $id is in Elasticsearch (demo-eu-*)"
       return 0
