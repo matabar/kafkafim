@@ -1046,6 +1046,16 @@ Boot), secret ones (the APM Server token) as `configtree` files the chart mounts
 exporters' `headers` property paths (`otel.secretHeaders`, [HELM.md](HELM.md)). Header
 secrets are read at startup; rotating one needs a pod restart.
 
+Both OTLP resources carry `service.name=kafkafim`, `service.namespace=kafkafim` and
+`service.instance.id` = the pod name (`POD_NAME`, which the chart sets from the downward
+API; `HOSTNAME` in a plain container, `localhost` without either), so series and spans
+stay per pod; Prometheus-compatible OTLP backends derive `job` (`kafkafim/kafkafim`) and
+`instance` from them. OTLP metrics use seconds as the base time unit
+(`management.otlp.metrics.export.base-time-unit`; Micrometer's OTLP default is
+milliseconds), so timers export with unit `seconds` and seconds buckets: through OTLP the names
+below are the same as on `/actuator/prometheus` (`kafkafim_e2e_latency_seconds_*`). These
+attributes come from `application.yaml` and win over `OTEL_RESOURCE_ATTRIBUTES`.
+
 ### Metrics (all with `pipeline`, `kafka_cluster`; `topic`/`es_cluster`/`route` where it applies)
 
 Exact label sets (`telemetry/TelemetryNames`, `telemetry/PipelineMeters`):
@@ -1139,7 +1149,7 @@ logged by default.
 ### Shipped with the repo
 
 [`deploy/grafana/`](../deploy/grafana/README.md), written against the
-`/actuator/prometheus` names above:
+`/actuator/prometheus` names above (the same through OTLP):
 
 - `dashboards/kafkafim-overview.json`: per pipeline: state, throughput, e2e
   latency, DLQ rate, in-flight bytes and heap, assigned partitions, Kafka

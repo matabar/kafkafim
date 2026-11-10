@@ -6,6 +6,14 @@ import static org.awaitility.Awaitility.await;
 import com.sun.net.httpserver.Headers;
 import com.sun.net.httpserver.HttpServer;
 import io.github.matabar.kafkafim.KafkafimApplication;
+import io.opentelemetry.proto.collector.metrics.v1.ExportMetricsServiceRequest;
+import io.opentelemetry.proto.collector.trace.v1.ExportTraceServiceRequest;
+import io.opentelemetry.proto.common.v1.KeyValue;
+import io.opentelemetry.proto.metrics.v1.Metric;
+import io.opentelemetry.proto.metrics.v1.ResourceMetrics;
+import io.opentelemetry.proto.metrics.v1.ScopeMetrics;
+import io.opentelemetry.proto.resource.v1.Resource;
+import io.opentelemetry.proto.trace.v1.ResourceSpans;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.InetAddress;
@@ -18,6 +26,8 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.OptionalInt;
@@ -33,10 +43,19 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * Proves the OTLP header contract the Helm chart renders (docs/HELM.md, {@code otel}): a non-secret
- * header from {@code OTEL_EXPORTER_OTLP_HEADERS} and a secret header from a {@code configtree} file
- * both arrive on the OTLP metrics ({@code /v1/metrics}) and trace ({@code /v1/traces}) export
- * requests.
+ * Proves the OTLP export contract against the real application.
+ *
+ * <p>It checks three things:
+ *
+ * <ul>
+ *   <li>the header contract the Helm chart renders (docs/HELM.md, {@code otel}): a non-secret
+ *       header from {@code OTEL_EXPORTER_OTLP_HEADERS} and a secret header from a {@code
+ *       configtree} file both arrive on the OTLP metrics ({@code /v1/metrics}) and trace ({@code
+ *       /v1/traces}) export requests;
+ *   <li>both resources carry {@code service.instance.id} from the chart's {@code POD_NAME};
+ *   <li>timers export in seconds (unit {@code seconds}, bucket bounds in seconds), so the OTLP
+ *       names match {@code /actuator/prometheus} and the PromQL in deploy/grafana/ (DESIGN §10).
+ * </ul>
  *
  * <p>The application runs in a child JVM because Spring Boot maps {@code OTEL_*} variables from the
  * real process environment only, which a test cannot set in its own JVM. The child gets exactly the
@@ -44,7 +63,7 @@ import org.junit.jupiter.api.io.TempDir;
  * {@code otel.secretHeaders} projected volume mounts them, and exports to a local HTTP capture. No
  * Docker is needed: nothing connects to Kafka or Elasticsearch at startup yet.
  */
-class OtlpExportHeadersIntegrationTest {
+class OtlpExportIntegrationTest {
 
   /**
    * Mount paths below the configtree root. Keep in sync with {@code
@@ -61,7 +80,9 @@ class OtlpExportHeadersIntegrationTest {
   /** Tomcat's startup line, which names the port the child bound for {@code SERVER_PORT=0}. */
   private static final Pattern SERVER_STARTED = Pattern.compile("Tomcat started on port (\\d+)");
 
-  private record Captured(String path, Headers headers) {}
+  private static final String POD_NAME = "kafkafim-default-7d9f8c6b5-x2x4q";
+
+  private record Captured(String path, Headers headers, byte[] body) {}
 
   private final Queue<Captured> captured = new ConcurrentLinkedQueue<>();
 
@@ -77,11 +98,12 @@ class OtlpExportHeadersIntegrationTest {
     collector.createContext(
         "/",
         exchange -> {
-          try (InputStream body = exchange.getRequestBody()) {
-            body.readAllBytes();
+          byte[] body;
+          try (InputStream in = exchange.getRequestBody()) {
+            body = in.readAllBytes();
           }
           captured.add(
-              new Captured(exchange.getRequestURI().getPath(), exchange.getRequestHeaders()));
+              new Captured(exchange.getRequestURI().getPath(), exchange.getRequestHeaders(), body));
           exchange.sendResponseHeaders(200, -1);
           exchange.close();
         });
@@ -100,7 +122,7 @@ class OtlpExportHeadersIntegrationTest {
   }
 
   @Test
-  void plainAndSecretHeadersReachMetricsAndTraceExport() throws Exception {
+  void exportCarriesHeadersInstanceIdAndSecondsUnits() throws Exception {
     Path secrets = temp.resolve("secrets");
     for (String dir : SECRET_HEADER_DIRS) {
       Path headerDir = Files.createDirectories(secrets.resolve(dir));
@@ -128,12 +150,15 @@ class OtlpExportHeadersIntegrationTest {
                 || name.startsWith("KUBERNETES_")
                 || name.startsWith("KAFKAFIM_")
                 || name.equals("JAVA_TOOL_OPTIONS")
+                || name.equals("POD_NAME")
+                || name.equals("HOSTNAME")
                 || name.equals("JDK_JAVA_OPTIONS"));
     // As rendered by the chart (otel.endpoint, otel.headers, the configtree import).
     env.put("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:" + collector.getAddress().getPort());
     // The chart percent-encodes "%" and "," in otel.headers values: "a,b%c" -> "a%2Cb%25c".
     env.put("OTEL_EXPORTER_OTLP_HEADERS", "x-kafkafim-tenant=ingest,x-kafkafim-list=a%2Cb%25c");
     env.put("SPRING_CONFIG_IMPORT", "configtree:" + secrets.toAbsolutePath() + "/");
+    env.put("POD_NAME", POD_NAME); // the chart's downward API value (metadata.name)
     // Test-only: no compose stack, every request sampled, fast export. The child binds an
     // ephemeral port itself and logs it, so no other process can take it between check and use.
     env.put("SPRING_DOCKER_COMPOSE_ENABLED", "false");
@@ -186,6 +211,61 @@ class OtlpExportHeadersIntegrationTest {
             assertThat(headers.getFirst("X-Api-Key")).isEqualTo("k1");
           });
     }
+
+    List<ExportMetricsServiceRequest> metrics = new ArrayList<>();
+    List<ExportTraceServiceRequest> traces = new ArrayList<>();
+    for (Captured c : captured) {
+      switch (c.path()) {
+        case "/v1/metrics" -> metrics.add(ExportMetricsServiceRequest.parseFrom(c.body()));
+        case "/v1/traces" -> traces.add(ExportTraceServiceRequest.parseFrom(c.body()));
+        default -> {}
+      }
+    }
+    List<Resource> resources = new ArrayList<>();
+    metrics.forEach(r ->
+        r.getResourceMetricsList().stream()
+            .map(ResourceMetrics::getResource)
+            .forEach(resources::add));
+    traces.forEach(r ->
+        r.getResourceSpansList().stream().map(ResourceSpans::getResource).forEach(resources::add));
+    assertThat(resources)
+        .as("metric and trace resources")
+        .isNotEmpty()
+        .allSatisfy(resource ->
+            assertThat(attributes(resource))
+                .containsEntry("service.instance.id", POD_NAME)
+                .containsEntry("service.name", "kafkafim")
+                .containsEntry("service.namespace", "kafkafim"));
+
+    // The demo pipeline of the local profile registers its e2e timer at startup (DESIGN §10).
+    List<Metric> e2e =
+        metrics.stream()
+            .flatMap(r -> r.getResourceMetricsList().stream())
+            .flatMap(r -> r.getScopeMetricsList().stream())
+            .map(ScopeMetrics::getMetricsList)
+            .flatMap(List::stream)
+            .filter(m -> m.getName().equals(TelemetryNames.E2E_LATENCY))
+            .toList();
+    assertThat(e2e)
+        .as("%s in the OTLP metrics", TelemetryNames.E2E_LATENCY)
+        .isNotEmpty()
+        .allSatisfy(m -> {
+          // Micrometer sends the unit as a word; Prometheus' OTLP translation appends it as the
+          // _seconds suffix (the default "milliseconds" became _milliseconds).
+          assertThat(m.getUnit()).isEqualTo("seconds");
+          assertThat(m.hasHistogram()).isTrue();
+          assertThat(m.getHistogram().getDataPointsList())
+              .isNotEmpty()
+              .allSatisfy(p -> assertThat(p.getExplicitBoundsList()).contains(0.05, 3600.0));
+        });
+  }
+
+  private static Map<String, String> attributes(Resource resource) {
+    Map<String, String> attributes = new HashMap<>();
+    for (KeyValue kv : resource.getAttributesList()) {
+      attributes.put(kv.getKey(), kv.getValue().getStringValue());
+    }
+    return attributes;
   }
 
   private List<String> paths() {
