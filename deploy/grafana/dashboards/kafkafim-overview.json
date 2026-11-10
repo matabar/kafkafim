@@ -1,7 +1,7 @@
 {
   "uid": "kafkafim-overview",
   "title": "kafkafim / Overview",
-  "description": "Pipelines: state, lag, throughput, end-to-end latency, DLQ, backpressure, partitions, reloads (DESIGN \u00a710).",
+  "description": "Pipelines: state, throughput, end-to-end latency, DLQ, backpressure, partitions, reloads (DESIGN \u00a710).",
   "tags": [
     "kafkafim"
   ],
@@ -500,78 +500,17 @@
     },
     {
       "type": "timeseries",
-      "id": 9,
-      "title": "Consumer lag",
-      "description": "Log end offset minus committed offset of the owned partitions, summed over pods (each pod reports the partitions it owns; polled every 10s).",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 14
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short",
-          "custom": {
-            "drawStyle": "line",
-            "lineWidth": 1,
-            "fillOpacity": 10,
-            "showPoints": "never",
-            "spanNulls": false,
-            "stacking": {
-              "mode": "none",
-              "group": "A"
-            }
-          },
-          "min": 0
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "table",
-          "placement": "bottom",
-          "calcs": [
-            "lastNotNull",
-            "max"
-          ]
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "refId": "A",
-          "expr": "sum by (pipeline, topic) (kafkafim_consumer_lag{pipeline=~\"$pipeline\"})",
-          "legendFormat": "{{pipeline}} {{topic}}",
-          "range": true,
-          "instant": false
-        }
-      ]
-    },
-    {
-      "type": "timeseries",
       "id": 10,
       "title": "End-to-end latency",
-      "description": "Elasticsearch ack time minus the Kafka record timestamp (DLQ'd documents are not counted). Buckets end at 1h; above it the quantile reads as 1h.",
+      "description": "Elasticsearch ack time minus the Kafka record timestamp (DLQ'd documents are not counted). Buckets end at 1h; above it the quantile reads as 1h. Consumer lag is not a kafkafim metric: see the Kafka team's consumer-lag monitoring for the pipeline's consumer group (ADR-0034).",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
       },
       "gridPos": {
         "h": 8,
-        "w": 12,
-        "x": 12,
+        "w": 24,
+        "x": 0,
         "y": 14
       },
       "fieldConfig": {

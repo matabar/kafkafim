@@ -19,8 +19,7 @@ public class TelemetryConfiguration {
 
   @Bean(destroyMethod = "close")
   KafkafimMeters kafkafimMeters(ObjectProvider<MeterRegistry> registry) {
-    return new KafkafimMeters(
-        registry.getIfAvailable(SimpleMeterRegistry::new), KafkafimMeters.LAG_INTERVAL);
+    return new KafkafimMeters(registry.getIfAvailable(SimpleMeterRegistry::new));
   }
 
   @Bean
