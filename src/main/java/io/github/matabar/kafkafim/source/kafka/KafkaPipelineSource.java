@@ -392,7 +392,9 @@ public final class KafkaPipelineSource implements SmartLifecycle {
     created.setBatchInterceptor(new CommitBeforePoll());
     // The listener never throws to the container; if something still does, stop rather than skip.
     created.setCommonErrorHandler(new CommonContainerStoppingErrorHandler());
-    // Only to hear of consumers that stop on their own; the children inherit the publisher.
+    // To hear of consumers that stop on their own; the children inherit the publisher. With a
+    // publisher set, a stopping child also notifies its parent (childStopped); harmless here, since
+    // every start builds a new container and restartAfterAuthExceptions stays off.
     created.setApplicationEventPublisher(this::onContainerEvent);
     created.setBeanName(clientId);
     return created;

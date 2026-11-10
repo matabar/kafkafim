@@ -546,9 +546,11 @@ tooling shows it too (`kafka-consumer-groups.sh --describe --group kafkafim.<pip
      more pods than partitions (replicas above partitions are idle).
   3. `kafkafim_in_flight_bytes` at or above `max-in-flight-bytes`:
      backpressure, see [§5.8](#58-consumer-lag-growing).
-
-  A record handler that threw or a listener container that stopped on its own no
-  longer shows as `running`: the pipeline is `failed` ([§5.13](#513-failed-pipelines)).
+- **Action**: for 1, fix the ACL ([§5.4](#54-kafka-authentication-or-acl-missing));
+  for 2, nothing if the group has more pods than partitions, else check the group's
+  other members; for 3, see [§5.8](#58-consumer-lag-growing). A record handler that
+  threw or a listener container that stopped on its own no longer shows as `running`:
+  the pipeline is `failed` ([§5.13](#513-failed-pipelines)).
 
 ### 5.8 Consumer lag growing
 
@@ -669,9 +671,11 @@ or roll back. Until then the pods run the previous generation and new pods fail.
 - **Symptom**: `kafkafim_pipeline_state{state="failed"} == 1`; ERROR
   `Pipeline '<p>': failed while running; stopping it until the next accepted reload or
   a restart: <cause>`, then INFO `Pipeline '<p>': running -> failed` (or `paused ->
-  failed`). The pipeline consumes nothing on this pod. It left the consumer group, so
+  failed`, or `starting -> failed` if it failed right after its source started). The pipeline consumes nothing on this pod. It left the consumer group, so
   the group's other pods take its partitions; records it had not finished are
-  re-delivered to them (idempotent by `_id`). Other pipelines of the pod keep running;
+  re-delivered to them (idempotent by `_id`). After a handler failure the stop waits
+  the full drain timeout (30s) for the failed batch before it leaves the group, and a
+  shutdown or reload in that time waits with it. Other pipelines of the pod keep running;
   the pod goes unready only if this was its last started pipeline.
 - **Check**: the cause, and the ERROR line just before it, which carries the stack
   trace:
