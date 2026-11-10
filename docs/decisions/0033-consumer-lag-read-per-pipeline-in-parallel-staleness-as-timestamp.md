@@ -33,7 +33,11 @@ bounded by 5s per broker request (two requests). Two problems:
   an alert or panel can use that. The shipped alert rules and dashboards do not yet.
 - One more gauge per pipeline. At most one blocked virtual thread per pipeline.
 - A pipeline without a running source or without owned partitions still reads 0 on this
-  pod, and that read counts as successful (the pod truthfully owns no lag).
+  pod, and that read counts as successful (the pod truthfully owns no lag). A pipeline
+  that falls to `failed_preflight` because its cluster is unreachable therefore shows 0
+  lag with a fresh timestamp; `kafkafim_pipeline_state` is the signal for it.
+- The timestamp is 0 until the first read, 10s after start; a staleness alert guards on
+  `> 0` (or a `for:` longer than the interval).
 
 ## Alternatives
 - **Remove the lag series while stale (gauge absent).** Stale shows as a gap, but a
