@@ -131,7 +131,7 @@ class BulkSinkTest {
         Thread.currentThread().interrupt();
       }
     });
-    held.await();
+    assertThat(held.await(WAIT.toMillis(), TimeUnit.MILLISECONDS)).as("timer held").isTrue();
     try {
       submitAll(sink, ids);
     } finally {
