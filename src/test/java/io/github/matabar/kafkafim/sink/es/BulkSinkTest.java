@@ -583,18 +583,16 @@ class BulkSinkTest {
                 request,
                 sent ->
                     call == 1 ? new String[] {"403", "security_exception"} : new String[] {"201"}));
-    BulkSink<String> sink = sink(retrying(3, Duration.ofMillis(5), 10, HOUR), transport);
+    // max-docs seals both the batch and the three retries, which share one backoff; no age timer.
+    // Ordering against outcomes is pinned by itemAuthFailureIsReportedBeforeTheResponsesOutcomes.
+    BulkSink<String> sink = sink(retrying(3, HOUR, 10, HOUR), transport);
     events.authFailingProbe = sink::authFailing;
-    Map<String, Integer> authFailuresAtOutcome = new ConcurrentHashMap<>();
-    outcomes.beforeEach = handle -> authFailuresAtOutcome.put(handle, events.authFailures.get());
 
     submitAll(sink, "a", "b", "c");
 
     assertThat(sink.awaitIdle(WAIT)).isTrue();
     assertThat(transport.requests().getFirst().ids()).containsExactly("a", "b", "c");
     assertThat(events.authFailures).as("one event per response, not per item").hasValue(1);
-    assertThat(authFailuresAtOutcome)
-        .containsOnly(Map.entry("a", 1), Map.entry("b", 1), Map.entry("c", 1));
     assertThat(events.authFailingAtFailure).as("state set before the event").containsOnly(true);
     assertThat(events.authThreads)
         .singleElement()
@@ -608,18 +606,14 @@ class BulkSinkTest {
     CountDownLatch release = new CountDownLatch(1);
     FakeTransport transport =
         new FakeTransport((request, call) -> {
-          switch (call) {
-            case 1 -> {
-              return new Result(401, Fixtures.load("request-401.json"));
-            }
-            case 2 -> {
-              return FakeTransport.status(503);
-            }
+          return switch (call) {
+            case 1 -> new Result(401, Fixtures.load("request-401.json"));
+            case 2 -> FakeTransport.status(503);
             default -> {
               block(release);
-              return FakeTransport.allOk();
+              yield FakeTransport.allOk();
             }
-          }
+          };
         });
     BulkSink<String> sink = sink(poison(1, Duration.ZERO), transport);
     List<Integer> recoveredAtOutcome = new CopyOnWriteArrayList<>();
