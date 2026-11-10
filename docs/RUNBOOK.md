@@ -636,7 +636,7 @@ or roll back. Until then the pods run the previous generation and new pods fail.
   could not start, retrying: ...`) repeated with a growing interval. A new pod whose
   every pipeline is `starting` stays unready, so a rollout waits; the old pods keep
   running.
-- **Check**: `<problems>` names what did not answer:
+- **Check**: the WARN line names what did not answer:
 
   | Log line contains | Cause | See |
   |---|---|---|
