@@ -159,7 +159,14 @@ number (`SourceRecord.expectParts`): one part per routed copy of a decoded docum
 (`route-mode: all` fan-out makes several), one per document that fails decoding or
 routing (`missing_id`, `bad_timestamp`, `decode` with `doc-index`, `no_route`,
 `unresolved_index` with the route's `target.cluster`), and exactly one for a record that
-fails as a whole (oversize, never decoded; undecodable; tombstone). A part completes on
+fails as a whole (oversize, never decoded; undecodable; tombstone). Each parsed object is
+routed before its id, version and timestamp problems apply: decoding extracts them and
+keeps any error with the document, and the error becomes a part only for a document that
+routing sends to Elasticsearch. Every route indexes, so today that is every document,
+including one no route selected (it reports its id, version or timestamp error rather than
+`no_route`), and it stays one part per document, with `route="none"` (§10), however many
+copies `route-mode: all` would have made. The timestamp is therefore known before any
+`%{+...}` pattern is resolved. A part completes on
 `indexed` or `stale`, or when the broker acknowledged its DLQ record (a sink `dlq` outcome
 or a decode/route failure); a DLQ send failed by shutdown leaves the record uncommitted.
 Outcomes for a record whose partition was revoked are ignored and not dead-lettered (the
@@ -279,7 +286,8 @@ element, `kafkafim.doc-index`.
   would otherwise read whichever duplicate the parser kept. Inside a valid array each
   element stands alone: a non-object element (including a nested array), or an id,
   version or timestamp problem, fails only that element (`doc-index` set), and the
-  other elements are indexed. An empty array is zero documents, so its offset is
+  other elements are indexed. A non-object element fails at once; an id, version or
+  timestamp problem is held with the parsed object and applies after routing (§4.2). An empty array is zero documents, so its offset is
   committable at once.
 - **Source bytes.** Each document is indexed from its own bytes in the value (the
   whole value for an object, the element's slice for an array), not from a

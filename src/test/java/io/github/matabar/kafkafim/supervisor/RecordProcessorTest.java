@@ -37,6 +37,8 @@ import org.apache.kafka.common.header.internals.RecordHeader;
 import org.apache.kafka.common.header.internals.RecordHeaders;
 import org.apache.kafka.common.record.TimestampType;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 /**
  * Record-completion accounting (DESIGN §4.3): a record completes only when every part (routed copy
@@ -351,6 +353,109 @@ class RecordProcessorTest {
     assertThat(r.isComplete()).isFalse();
     dlq.get(3).ack();
     assertThat(r.isComplete()).isTrue();
+  }
+
+  /**
+   * Routing comes before the id, version and timestamp checks, but while every route indexes an
+   * extraction problem is still one DLQ part per document, with the same {@code error.type}, no
+   * target and the {@code none} route label, however many routes the document matched.
+   */
+  @ParameterizedTest(name = "route-mode: {0}")
+  @ValueSource(strings = {"first", "all"})
+  void extractionErrorsAreOneDeadLetterPerDocumentWhateverTheRoutes(String mode) {
+    SimpleMeterRegistry registry = new SimpleMeterRegistry();
+    try (KafkafimMeters meters = new KafkafimMeters(registry, Duration.ofHours(1))) {
+      meters.sync(
+          Map.of(
+              "p",
+              new PipelineSpec(
+                  "k",
+                  List.of("t"),
+                  List.of("0", "1", "2"),
+                  Set.of("es", "es2"),
+                  SourceProbe.NONE)),
+          Set.of("es", "es2"),
+          cluster -> null);
+      processor =
+          processor(
+              """
+              p:
+                source: { cluster: k, topics: [t], max-record-bytes: 1KB }
+                route-mode: %s
+                document: { timestamp-field: /ts, version-field: /v }
+                routes:
+                  - when: [ { field: /region, equals: eu } ]
+                    cluster: es
+                    index: "eu-%%{+yyyy.MM.dd}"
+                  - when: [ { field: /copy, exists: true } ]
+                    cluster: es2
+                    index: "copy-%%{tenant}"
+                  - { default: true, cluster: es, index: other }
+              """
+                  .formatted(mode),
+              meters.pipeline("p"));
+
+      // Every element matches both conditional routes (two copies in `all`) and has a problem,
+      // except 0, which is indexed so the record has a sibling to wait for.
+      String both = "\"region\":\"eu\",\"copy\":1,\"tenant\":\"x\"";
+      FakeRecord r =
+          record(
+              "["
+                  + "{\"id\":\"ok\",\"v\":1,\"ts\":\"2026-01-02T03:04:05Z\","
+                  + both
+                  + "}," // 0: indexed
+                  + "{\"v\":1,\"ts\":\"2026-01-02T03:04:05Z\","
+                  + both
+                  + "}," // 1: missing_id
+                  + "{\"id\":\"b\",\"ts\":\"2026-01-02T03:04:05Z\","
+                  + both
+                  + "}," // 2: decode (no version)
+                  + "{\"id\":\"c\",\"v\":1,\"ts\":\"yesterday\","
+                  + both
+                  + "}," // 3: bad_timestamp
+                  + "{\"v\":1,\"ts\":\"2026-01-02T03:04:05Z\"}" // 4: missing_id, default route
+                  + "]");
+      processor.process(List.of(r));
+
+      int copies = mode.equals("all") ? 2 : 1;
+      assertThat(r.expected).isEqualTo(copies + 4);
+      assertThat(actions(ES)).extracting(BulkAction::id).containsExactly("ok");
+      assertThat(actions(ES2)).hasSize(copies - 1);
+      assertThat(dlq)
+          .extracting(
+              s -> s.request().errorType(),
+              s -> s.request().docIndex(),
+              s -> s.request().targetCluster())
+          .containsExactly(
+              org.assertj.core.groups.Tuple.tuple("missing_id", 1, null),
+              org.assertj.core.groups.Tuple.tuple("decode", 2, null),
+              org.assertj.core.groups.Tuple.tuple("bad_timestamp", 3, null),
+              org.assertj.core.groups.Tuple.tuple("missing_id", 4, null));
+      assertThat(dlq.get(1).request().reason()).isEqualTo("version at /v is missing");
+
+      dlq.forEach(Sent::ack);
+      assertThat(r.isComplete()).isFalse();
+      actions(ES).forEach(this::ack);
+      actions(ES2).forEach(this::ack);
+      assertThat(r.isComplete()).isTrue();
+      assertThat(docs(registry, TelemetryNames.NO_ROUTE, "dlq")).isEqualTo(4);
+      assertThat(docs(registry, "0", "dlq")).isZero();
+      assertThat(docs(registry, "1", "dlq")).isZero();
+      assertThat(docs(registry, "2", "dlq")).isZero();
+    }
+  }
+
+  @Test
+  void extractionErrorWinsOverNoRoute() {
+    FakeRecord r = record("[{\"region\":\"us\"},{\"id\":\"lost\"}]");
+    processor.process(List.of(r));
+
+    assertThat(r.expected).isEqualTo(2);
+    assertThat(dlq)
+        .extracting(s -> s.request().errorType(), s -> s.request().docIndex())
+        .containsExactly(
+            org.assertj.core.groups.Tuple.tuple("missing_id", 0),
+            org.assertj.core.groups.Tuple.tuple("no_route", 1));
   }
 
   @Test

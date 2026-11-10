@@ -28,7 +28,7 @@ public sealed interface DecodeResult {
    *
    * @param array whether the value was an array, i.e. whether a DLQ record for one of its outcomes
    *     carries {@code kafkafim.doc-index}
-   * @param outcomes one per document, each either decoded or failed on its own
+   * @param outcomes one per document, each decoded, unindexable or failed on its own
    */
   record Documents(boolean array, List<DocumentOutcome> outcomes) implements DecodeResult {
 
