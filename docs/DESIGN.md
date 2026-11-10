@@ -199,13 +199,14 @@ then the only ones that count. A pipeline that is stopping cannot be started unt
   outcome. Actions still unresolved at the timeout normally get no outcome (one whose
   response arrives at that moment may still get it), so their offsets are not committed
   and the records are re-delivered (idempotent by `_id`).
-- **Auth state**: the stream is failing from a request-level 401/403 until a later
-  request is answered with a bulk response or a single-document 413, and while any
+- **Auth state**: the stream is failing from a request-level 401/403 until a request
+  (any, even one sent earlier) is next answered with a bulk response or a
+  single-document 413, and while any
   action waits to retry after an item-level 401/403; a 429, 5xx, transport error or other
   unexpected status leaves the state as it was. The listener hears one `onAuthFailure`
   per answered request that carries a 401/403 (request or items; never one per item, and
-  again on every rejected retry, so `kafkafim_auth_failures_total` counts rejected
-  requests) and one `onAuthRecovered` when the stream leaves that state, so the
+  again on every rejected retry, so `kafkafim_auth_failures_total` counts responses
+  carrying a 401/403) and one `onAuthRecovered` when the stream leaves that state, so the
   supervisor can pause and resume without flapping. Both come on the sender thread, once
   `authFailing()` reflects the response and before that response's outcomes. Senders run
   concurrently, so the two events of one stream can arrive out of order: they are hints,
@@ -1053,7 +1054,7 @@ Exact label sets (`telemetry/TelemetryNames`, `telemetry/PipelineMeters`):
 | `kafkafim_bulk_latency_seconds`, `kafkafim_bulk_docs`, `kafkafim_bulk_bytes` (histograms) | `es_cluster` | every answered bulk request |
 | `kafkafim_item_errors_total` | `es_cluster`, `error_type` (Elasticsearch error type, `status_<n>` without one), `retryable` | every failed item: retried, or dead-lettered as `es_error` / `version_conflict` |
 | `kafkafim_retries_total` | `es_cluster`, `scope=request\|item` | every retryable failure of a whole request, and of an item (an item whose poison bound is reached also counts its last failure) |
-| `kafkafim_auth_failures_total` | `es_cluster`, `identity` (`none` for an unauthenticated cluster) | every 401/403 response |
+| `kafkafim_auth_failures_total` | `es_cluster`, `identity` (`none` for an unauthenticated cluster) | every response carrying a 401/403, for the request or for any item (one per response, not per item) |
 | `kafkafim_batch_flush_total` | `es_cluster`, `reason=docs\|bytes\|age\|explicit` | every sealed batch (`explicit`: revoke, stop) |
 | `kafkafim_e2e_latency_seconds` (histogram) | — | every Elasticsearch ack: ack time minus the Kafka record timestamp (DLQ'd documents are not counted) |
 | `kafkafim_consumer_lag` | `topic` | owned partitions summed: log end offset minus committed offset, polled every 10s |
