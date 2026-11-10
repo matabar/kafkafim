@@ -5,6 +5,7 @@ import static org.awaitility.Awaitility.await;
 
 import io.github.resilience4j.circuitbreaker.CircuitBreaker;
 import io.micrometer.core.instrument.Meter;
+import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Tag;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.micrometer.prometheusmetrics.PrometheusConfig;
@@ -109,7 +110,11 @@ class KafkafimMetersTest {
   }
 
   private double gauge(String name, String... tags) {
-    return registry.get(name).tags(tags).gauge().value();
+    return gauge(registry, name, tags);
+  }
+
+  private static double gauge(MeterRegistry on, String name, String... tags) {
+    return on.get(name).tags(tags).gauge().value();
   }
 
   private Set<String> pipelinesOf(String name) {
@@ -320,7 +325,8 @@ class KafkafimMetersTest {
       specs.put("stuck-" + i, spec("unreachable", List.of("stuck"), hanging));
     }
     specs.put("orders", spec("prod-a", List.of("orders.v1"), healthy));
-    try (KafkafimMeters parallel = new KafkafimMeters(registry, Duration.ofHours(1))) {
+    SimpleMeterRegistry own = new SimpleMeterRegistry();
+    try (KafkafimMeters parallel = new KafkafimMeters(own, Duration.ofHours(1))) {
       parallel.sync(specs, Set.of("search-eu"), c -> null);
       final String[] orders = {"pipeline", "orders", "kafka_cluster", "prod-a"};
       final String[] stuck = {"pipeline", "stuck-0", "kafka_cluster", "unreachable"};
@@ -329,10 +335,10 @@ class KafkafimMetersTest {
       await()
           .atMost(Duration.ofSeconds(5))
           .untilAsserted(() -> {
-            assertThat(gauge(TelemetryNames.CONSUMER_LAG_TIMESTAMP, orders)).isPositive();
+            assertThat(gauge(own, TelemetryNames.CONSUMER_LAG_TIMESTAMP, orders)).isPositive();
             assertThat(hangingReads).hasValue(20);
           });
-      assertThat(gauge(TelemetryNames.CONSUMER_LAG, with(orders, "topic", "orders.v1")))
+      assertThat(gauge(own, TelemetryNames.CONSUMER_LAG, with(orders, "topic", "orders.v1")))
           .isEqualTo(7);
 
       // The next round reads the healthy pipeline again and skips the reads still hanging.
@@ -341,10 +347,11 @@ class KafkafimMetersTest {
       await()
           .atMost(Duration.ofSeconds(5))
           .untilAsserted(() ->
-              assertThat(gauge(TelemetryNames.CONSUMER_LAG, with(orders, "topic", "orders.v1")))
+              assertThat(
+                      gauge(own, TelemetryNames.CONSUMER_LAG, with(orders, "topic", "orders.v1")))
                   .isEqualTo(9));
       assertThat(hangingReads).hasValue(20);
-      assertThat(gauge(TelemetryNames.CONSUMER_LAG_TIMESTAMP, stuck)).isZero();
+      assertThat(gauge(own, TelemetryNames.CONSUMER_LAG_TIMESTAMP, stuck)).isZero();
     } finally {
       release.countDown();
     }
