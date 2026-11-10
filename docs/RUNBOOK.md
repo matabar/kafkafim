@@ -154,9 +154,10 @@ Each pipeline on each pod is in one `PipelineState`
 | `failed_preflight` | A preflight or start check found a **configuration** problem. Stays stopped until the next accepted reload (any `applied` or `unchanged` one, including a no-op `POST /actuator/reload`) retries it, or the pod restarts. | No. |
 | `stopped` | Not started yet, or stopped by a reload or shutdown. | Only transiently. |
 
-Where to read it (alert [`KafkafimPipelinePaused`](../deploy/grafana/alerts/kafkafim-alerts.yaml) fires on a pipeline
-`paused` for 5m; the pause reason is in the logs below, and §5 has a section per
-reason):
+**Alerts**: [`KafkafimPipelinePaused`](../deploy/grafana/alerts/kafkafim-alerts.yaml) (a pipeline `paused` for 5m; the
+reason is in the log lines below, and §5 has a section per reason).
+
+Where to read it:
 
 - **Metric** `kafkafim_pipeline_state{pipeline,state}`: 1 for the current state, 0
   for the others, per pod. This is the source of truth for alerts:
@@ -454,7 +455,8 @@ id is `kafkafim.<pipeline>`).
   the group ([§4.1](#41-how-a-change-gets-in)); any accepted reload, such as the next
   `helm upgrade` of the group, does the same. The pipeline appears under `retried` in
   the response and goes `starting` → `running`; if it is back in `failed_preflight`,
-  the ERROR line says what is still wrong. **Fixing the resource alone does not
+  the ERROR line says what is still wrong, and if it stays `starting`, something is
+  unreachable ([§5.12](#512-pipeline-stuck-in-starting)). **Fixing the resource alone does not
   recover the pipeline**: nothing retries on its own, only a reload or a pod restart
   ([ADR-0032](decisions/0032-accepted-reload-retries-failed-preflight-pipelines.md)).
   Transient causes (unreachable broker or ES, 5xx) never produce `failed_preflight`;
@@ -636,14 +638,15 @@ or roll back. Until then the pods run the previous generation and new pods fail.
   running.
 - **Check**: `<problems>` names what did not answer:
 
-  | Problem contains | Cause | See |
+  | Log line contains | Cause | See |
   |---|---|---|
-  | `DLQ topic '<t>' (...): broker did not answer`, or `source could not start` | Kafka unreachable | [§5.3](#53-kafka-unreachable) |
+  | `DLQ topic '<t>' (...): broker did not answer` in `<problems>` | Kafka unreachable for the DLQ identity | [§5.3](#53-kafka-unreachable) |
+  | `source could not start, retrying: <KafkaException>` (its own WARN line, after preflight passed) | Kafka unreachable for the source | [§5.3](#53-kafka-unreachable) |
   | `Elasticsearch identity '<id>' on cluster '<es>' not reachable: <exception>` | No connection to the ES cluster within the preflight's short timeouts: DNS, network policy or firewall, ES down | The cluster and the network path from the pod's namespace to its `uris` |
   | `Elasticsearch identity ... not reachable: HTTP 5xx from _security/_authenticate` | ES or a proxy in front of it answers 5xx | The ES cluster's own monitoring |
 
-  Preflight sends one `GET /_security/_authenticate` per Elasticsearch identity the
-  pipeline routes to. A TLS handshake failure, 401 or 403 is not transient: it sends
+  Preflight sends one `GET /_security/_authenticate` per Elasticsearch cluster and
+  identity the pipeline routes to. A TLS handshake failure, 401 or 403 is not transient: it sends
   the pipeline to `failed_preflight` ([§5.5](#55-failed_preflight-pipelines)).
 - **Action**: fix the path or the cluster. Preflight retries on its own (1s doubling
   to 30s, forever, [§3.1](#31-pipeline-state)) and the pipeline goes `running` at the
