@@ -23,6 +23,7 @@ jobs:
     outputs:
       docs_only: ${{ steps.diff.outputs.docs_only }}
       helm: ${{ steps.diff.outputs.helm }}
+      grafana: ${{ steps.diff.outputs.grafana }}
     steps:
       - if: github.event_name == 'pull_request'
         uses: actions/checkout@v7
@@ -36,16 +37,16 @@ jobs:
         run: |
           if [ "$EVENT" != pull_request ]; then
             # Pushes to main run everything.
-            printf 'docs_only=false\nhelm=true\n' >> "$GITHUB_OUTPUT"; exit 0
+            printf 'docs_only=false\nhelm=true\ngrafana=true\n' >> "$GITHUB_OUTPUT"; exit 0
           fi
           # What merging the PR would change. --no-renames lists both sides of a rename, so
           # renaming code to *.md is not docs-only. quotePath=false keeps non-ASCII paths unquoted;
           # git still quotes a path containing a control character (tab, newline, ...), " or \
           # ("docs/a\tb.md"). It then matches no docs pattern and counts as non-docs (the safe
-          # side: build, integration and image run), but it matches no helm pattern either.
+          # side: build, integration and image run), but it matches no helm or grafana pattern.
           git -c core.quotePath=false diff --no-renames --name-only HEAD^1 HEAD > "$RUNNER_TEMP/changed"
           sed 's/^/  /' "$RUNNER_TEMP/changed"
-          docs_only=false helm=false
+          docs_only=false helm=false grafana=false
           [ -s "$RUNNER_TEMP/changed" ] && docs_only=true
           while IFS= read -r f; do
             case "$f" in
@@ -56,9 +57,12 @@ jobs:
             case "$f" in
               charts/* | .github/workflows/ci.yml | .github/keys/*) helm=true ;;
             esac
+            case "$f" in
+              deploy/grafana/* | .github/workflows/ci.yml) grafana=true ;;
+            esac
           done < "$RUNNER_TEMP/changed"
-          echo "docs_only=$docs_only helm=$helm"
-          printf 'docs_only=%s\nhelm=%s\n' "$docs_only" "$helm" >> "$GITHUB_OUTPUT"
+          echo "docs_only=$docs_only helm=$helm grafana=$grafana"
+          printf 'docs_only=%s\nhelm=%s\ngrafana=%s\n' "$docs_only" "$helm" "$grafana" >> "$GITHUB_OUTPUT"
 
   build:
     name: Build and test
@@ -183,16 +187,22 @@ jobs:
           done
           echo "container did not become live"; docker logs "$cid"; docker rm -f "$cid" >/dev/null; exit 1
 
+  # Also checks the Grafana dashboards and Prometheus alert rules under deploy/grafana/, so the
+  # set of required checks stays the same. Each half runs only when its paths changed.
   helm:
     name: Helm chart
     needs: changes
-    if: ${{ !cancelled() && needs.changes.outputs.helm != 'false' }}
+    if: ${{ !cancelled() && (needs.changes.outputs.helm != 'false' || needs.changes.outputs.grafana != 'false') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - name: Chart present?
+      - name: Chart present and changed?
         id: chart
-        run: test -f charts/kafkafim/Chart.yaml && echo "exists=true" >> "$GITHUB_OUTPUT" || echo "exists=false" >> "$GITHUB_OUTPUT"
+        env:
+          HELM_CHANGED: ${{ needs.changes.outputs.helm }}
+        run: |
+          if [ "$HELM_CHANGED" != false ] && [ -f charts/kafkafim/Chart.yaml ]; then exists=true; else exists=false; fi
+          echo "exists=$exists" >> "$GITHUB_OUTPUT"
       - if: steps.chart.outputs.exists == 'true'
         uses: azure/setup-helm@v5
         with:
@@ -269,3 +279,55 @@ jobs:
           helm plugin install "$d/$TGZ" --keyring "$RUNNER_TEMP/helm-unittest.gpg"
           helm plugin list | grep -E '^unittest[[:space:]]+1\.2\.1[[:space:]].*[[:space:]]signed[[:space:]]'
           helm unittest charts/kafkafim
+      # Same pinning as the chart tools: the Prometheus release tarball (promtool) is fetched
+      # through the GitHub API asset endpoint, checked against a pinned SHA-256 on every run,
+      # and cached under a key that changes with the pin.
+      - if: needs.changes.outputs.grafana != 'false'
+        name: Restore Grafana tools cache
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/grafana-tools
+          key: grafana-tools-${{ runner.os }}-${{ runner.arch }}-prometheus-3.15.1-6a726885
+      - if: needs.changes.outputs.grafana != 'false'
+        name: Dashboards and alert rules
+        shell: bash
+        env:
+          ASSET_TOKEN: ${{ github.token }}
+          TOOLS: ${{ runner.temp }}/grafana-tools
+          # Prometheus 3.15.1, linux-amd64; the SHA-256 matches the release's sha256sums.txt.
+          # A version bump changes the asset id, the SHA-256 and the cache key above.
+          TGZ: prometheus-3.15.1.linux-amd64.tar.gz
+          TGZ_ASSET: '662697731'
+          TGZ_SHA256: 6a726885328ad9efebbf36e876ce2fb6225468a71fd1e7ce3ba666d5f4d97a84
+        run: |
+          shopt -s nullglob
+          dashboards=(deploy/grafana/dashboards/*.json)
+          cd deploy/grafana/alerts
+          tests=(*.test.yaml)
+          rules=()
+          for f in *.yaml; do [[ "$f" == *.test.yaml ]] || rules+=("$f"); done
+          cd - >/dev/null
+          if [ ${#dashboards[@]} -eq 0 ] || [ ${#rules[@]} -eq 0 ] || [ ${#tests[@]} -eq 0 ]; then
+            echo "expected deploy/grafana/dashboards/*.json, deploy/grafana/alerts/*.yaml and *.test.yaml" >&2; exit 1
+          fi
+          jq empty "${dashboards[@]}"
+          echo "dashboards: ${dashboards[*]} parse"
+          mkdir -p "$TOOLS"
+          if [ ! -s "$TOOLS/$TGZ" ]; then
+            for i in 1 2 3 4 5; do
+              if GH_TOKEN="$ASSET_TOKEN" gh api -H 'Accept: application/octet-stream' "repos/prometheus/prometheus/releases/assets/$TGZ_ASSET" > "$TOOLS/$TGZ.part"; then
+                mv "$TOOLS/$TGZ.part" "$TOOLS/$TGZ"; break
+              fi
+              echo "download of $TGZ failed (attempt $i)" >&2
+              if [ "$i" -eq 5 ]; then exit 1; fi
+              sleep $((i * 10))
+            done
+          fi
+          unset ASSET_TOKEN
+          printf '%s  %s\n' "$TGZ_SHA256" "$TOOLS/$TGZ" | sha256sum -c -
+          tar -xzf "$TOOLS/$TGZ" -C "$RUNNER_TEMP" --strip-components=1 "${TGZ%.tar.gz}/promtool"
+          promtool="$RUNNER_TEMP/promtool"
+          "$promtool" --version
+          cd deploy/grafana/alerts   # the tests name their rule_files relative to themselves
+          "$promtool" check rules "${rules[@]}"
+          "$promtool" test rules "${tests[@]}"
