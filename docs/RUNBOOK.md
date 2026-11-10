@@ -129,9 +129,10 @@ any record re-read after a restart.
 kubectl -n <ns> rollout restart deployment/kafkafim-<g>
 ```
 
-Needed for: a pipeline stuck in `failed_preflight` after the cause was fixed outside
-kafkafim, a pipeline paused by a record-handler failure, an OTLP header Secret
+Needed for: a pipeline paused by a record-handler failure, an OTLP header Secret
 rotation, rotated TLS certificate or keystore files ([§4.3](#43-rotating-a-secret)).
+A pipeline in `failed_preflight` does not need a restart: after fixing the cause, a
+no-op `POST /actuator/reload` retries it ([§5.5](#55-failed_preflight-pipelines)).
 Shutdown is graceful: each pipeline stops fetching, gives
 in-flight records up to 30s to complete, commits and leaves its group; records still
 incomplete are re-delivered to the next owner. The pod has 90s
@@ -150,8 +151,11 @@ Each pipeline on each pod is in one `PipelineState`
 | `starting` | Preflight running, or retrying after a **transient** failure (broker or ES unreachable, 5xx): 1s doubling to 30s, forever. | Briefly at start and after a restart. Minutes in `starting` means something is unreachable. |
 | `running` | Source started and fetching (it may still be throttled by the in-flight byte budget, which is ordinary backpressure). | Yes. |
 | `paused` | Source started, fetching stopped for a supervisor reason: `es-breaker:<cluster>`, `es-auth:<cluster>/<identity>` or `dlq-blocked`. Resumes by itself when the reason clears. | No; see [§5](#5-incidents). |
-| `failed_preflight` | A preflight or start check found a **configuration** problem. Stays stopped until a reload changes this pipeline, or the pod restarts. | No. |
+| `failed_preflight` | A preflight or start check found a **configuration** problem. Stays stopped until the next accepted reload (any `applied` or `unchanged` one, including a no-op `POST /actuator/reload`) retries it, or the pod restarts. | No. |
 | `stopped` | Not started yet, or stopped by a reload or shutdown. | Only transiently. |
+
+**Alerts**: [`KafkafimPipelinePaused`](../deploy/grafana/alerts/kafkafim-alerts.yaml) (a pipeline `paused` for 5m; the
+reason is in the log lines below, and §5 has a section per reason).
 
 Where to read it:
 
@@ -184,8 +188,8 @@ Where to read it:
 | `/actuator/health/readiness` | `readinessState` and `pipelines`: at least one pipeline `running` or `paused`, or zero pipelines configured; and `kafka`: at least one started pipeline's consumers hold broker connections (or none is started). Never gated on Elasticsearch. | Readiness probe; the `Service` (actuator only, no business traffic). |
 
 An unready pod still consumes: readiness only gates the actuator `Service` and the
-rollout. A pod whose every pipeline is `failed_preflight` stays unready forever
-without being restarted.
+rollout. A pod whose every pipeline is `failed_preflight` stays unready, without
+being restarted, until a reload retries them ([§5.5](#55-failed_preflight-pipelines)).
 
 ### 3.3 Metrics to look at first
 
@@ -204,8 +208,11 @@ neither (`kafkafim_config_reload_total` has `result`) ([DESIGN §10](DESIGN.md#1
 | Backpressure / memory? | `kafkafim_in_flight_bytes` against the pipeline's `source.max-in-flight-bytes`; `jvm_memory_used_bytes{area="heap"}` |
 | Does this pod own partitions? Is Kafka connected? | `kafkafim_assigned_partitions`, `kafkafim_kafka_connected` (1/0) |
 
-`deploy/grafana/` (dashboards and alert rules, [DESIGN §10](DESIGN.md#shipped-with-the-repo))
-does not exist yet; see [Known gaps](#known-gaps).
+Dashboards and alert rules for these metrics ship in `deploy/grafana/`
+([DESIGN §10](DESIGN.md#shipped-with-the-repo)): see
+[deploy/grafana/README.md](../deploy/grafana/README.md) for importing the dashboards
+and loading the rules. Every alert's `runbook_url` points to a section of §5 (or
+§3.1), and each of those sections names the alerts that lead to it.
 
 ## 4. Hot reload and secret rotation
 
@@ -235,7 +242,9 @@ What a reload restarts ([DESIGN §5.6](DESIGN.md#56-validation-and-hot-reload),
 - every pipeline using a cluster whose definition changed (other than its identities);
 - only the pipelines referencing an identity that changed, including a rotated
   secret value or a new `default-identity` they inherit;
-- added pipelines start, removed ones drain and stop; everything else is untouched.
+- added pipelines start, removed ones drain and stop; everything else is untouched,
+  except that every unchanged pipeline in `failed_preflight` is started once more
+  ([ADR-0032](decisions/0032-accepted-reload-retries-failed-preflight-pipelines.md)).
 
 A restart drains first (stop fetching, finish in-flight work, commit, leave the
 group), so nothing that completed is re-delivered; the group still rebalances.
@@ -246,13 +255,14 @@ The endpoint answers JSON (names and violations only, never values):
 
 ```json
 {"result":"applied","generation":7,"added":["audit"],"removed":[],
- "restarted":[{"pipeline":"orders","reasons":["..."]}],"unchanged":["iam"],"errors":[]}
+ "restarted":[{"pipeline":"orders","reasons":["..."]}],"retried":["billing"],
+ "unchanged":["iam"],"errors":[]}
 ```
 
 | HTTP / `result` | Meaning | What to do |
 |---|---|---|
-| 200 `applied` | Valid and changed something; `generation` went up by one. `kafkafim_config_reload_total{result="success"}` +1; INFO lines `Configuration reload (<trigger>): applying generation <n>: added ..., removed ..., restarted ..., unchanged ...` and `... generation <n> applied`. | Check the restarted and added pipelines reach `running`. |
-| 200 `unchanged` | Valid, identical to what runs; nothing restarted. Counts as `success`. | If you expected a change: kubelet has not refreshed the mount yet, or the change was outside `kafkafim.*`. |
+| 200 `applied` | Valid and changed something; `generation` went up by one. `kafkafim_config_reload_total{result="success"}` +1; INFO lines `Configuration reload (<trigger>): applying generation <n>: added ..., removed ..., restarted ..., unchanged ...` and `... generation <n> applied`, with `; retrying failed_preflight pipeline(s) [...]` appended when `retried` is not empty. | Check the restarted, added and retried pipelines reach `running`. |
+| 200 `unchanged` | Valid, identical to what runs; nothing restarted, `generation` stays. Pipelines in `failed_preflight` are still retried and listed under `retried`; INFO `Configuration reload (<trigger>): no change, generation <n> stays`. Counts as `success`. | If you expected a change: kubelet has not refreshed the mount yet, or the change was outside `kafkafim.*`. Check the retried pipelines reach `running`. |
 | 400 `rejected` | The new tree is invalid or unreadable; **the running configuration stays**, nothing was touched. `errors` lists every violation as `<property path>: <problem>`; `kafkafim_config_reload_total{result="failure"}` +1; one ERROR line `Configuration reload (<trigger>) rejected; generation <n> keeps running. ...`. | Fix the values and upgrade again. See the warning below. |
 | 503 | Body `"result":"rejected"` with the reason in `errors`. Usually the supervisor is not running (startup not finished, or shutting down); an internal state error while applying is also mapped here. | Retry once the pod is up; if it persists on a running pod, treat it like a 500. |
 | 500 | Applying a valid tree failed part-way (ERROR `... failed while applying generation <n>; pipelines may be partly reconfigured`); `kafkafim_config_reload_total{result="failure"}` +1. | Restart the group's pods ([§2.4](#24-restart-pods)) so they start cleanly from the files. |
@@ -268,8 +278,13 @@ headers and endpoint, and anything outside `kafkafim.*`. With the chart these on
 arrive through `otel.*`, `extraEnv` or the image, which roll the pods anyway (except
 rotating the contents of an `otel.secretHeaders` Secret, which needs a restart; the
 chart's `config.kafkafim` accepts only `kafka`, `elasticsearch` and `pipelines`).
-A pipeline in
-`failed_preflight` is retried only when a reload **changes** it.
+Every accepted reload (`applied` or `unchanged`, from the watcher or the endpoint)
+starts each unchanged `failed_preflight` pipeline once more and lists it under
+`retried` instead of `unchanged`; a rejected reload retries nothing. A retry is one
+ordinary start in the background, so the response does not say whether it worked:
+watch `kafkafim_pipeline_state` and the pipeline's log lines. A pipeline that fails
+again waits in `failed_preflight` for the next reload; nothing retries on its own
+([ADR-0032](decisions/0032-accepted-reload-retries-failed-preflight-pipelines.md)).
 
 ### 4.3 Rotating a secret
 
@@ -310,6 +325,8 @@ to cross-check it, use the consumer group's lag from Kafka tooling
 id is `kafkafim.<pipeline>`).
 
 ### 5.1 Elasticsearch outage, circuit breaker open
+
+**Alerts**: [`KafkafimBreakerOpen`](../deploy/grafana/alerts/kafkafim-alerts.yaml).
 
 - **Symptom**: pipelines routing to one ES cluster go `paused`; lag grows. Logs: WARN `Elasticsearch cluster '<es>' circuit breaker: State transition
   from CLOSED to OPEN`, WARN `Pipeline '<p>': pausing (es-breaker:<es>)`, WARN
@@ -353,6 +370,8 @@ id is `kafkafim.<pipeline>`).
 
 ### 5.2 Elasticsearch authentication failure (pipeline paused)
 
+**Alerts**: [`KafkafimEsAuthFailures`](../deploy/grafana/alerts/kafkafim-alerts.yaml).
+
 - **Symptom**: a pipeline is `paused`; WARN `Pipeline '<p>': pausing
   (es-auth:<es>/<identity>)` (`<none>` when the route has no identity); bulk sink
   WARNs with `status 401` or `403` and `authentication failure: type=security_exception,
@@ -371,6 +390,8 @@ id is `kafkafim.<pipeline>`).
   restarts the pipelines using that identity ([§4.3](#43-rotating-a-secret)).
 
 ### 5.3 Kafka unreachable
+
+**Alerts**: [`KafkafimKafkaDisconnected`](../deploy/grafana/alerts/kafkafim-alerts.yaml).
 
 - **At pipeline start**: the pipeline stays `starting`; WARN `Pipeline '<p>': preflight
   could not complete, retrying: ...` or `source could not start, retrying: ...`.
@@ -408,10 +429,13 @@ id is `kafkafim.<pipeline>`).
   already needs for `InitProducerId`): see [§5.6](#56-dlq-filling-or-dlq-blocked).
 - **Action**: add the ACL in the provisioning system (consumer identity: `Read` and
   `Describe` on the topics and `Read` on the group; DLQ identity: `Write` and
-  `Describe` on the DLQ topic). Running consumers pick it up within 10s; a
-  `failed_preflight` pipeline needs a pod restart.
+  `Describe` on the DLQ topic). Running consumers pick it up within 10s; for a
+  `failed_preflight` pipeline, run a no-op `POST /actuator/reload` on each pod
+  ([§5.5](#55-failed_preflight-pipelines)).
 
 ### 5.5 `failed_preflight` pipelines
+
+**Alerts**: [`KafkafimPipelineFailedPreflight`](../deploy/grafana/alerts/kafkafim-alerts.yaml).
 
 - **Symptom**: `kafkafim_pipeline_state{state="failed_preflight"} == 1`; ERROR
   `Pipeline '<p>': failed preflight, staying stopped: <problems>`. One line lists every
@@ -428,14 +452,20 @@ id is `kafkafim.<pipeline>`).
   | `Elasticsearch identity ... rejected: TLS handshake failed: ...` | Wrong or expired cluster CA (`ssl.ca-certificate`) or hostname mismatch | Fix the CA Secret (then restart the pods, [§4.3](#43-rotating-a-secret)) or `uris` |
   | `configuration cannot run: ...`, unknown identity, unreadable trust material | Bad mount or config | Fix the values / Secret mounts |
 
-- **Action**: fix the cause, then either change the pipeline's configuration (a reload
-  restarts only pipelines that changed) or restart the group's pods
-  ([§2.4](#24-restart-pods)). **Fixing the resource alone does not recover the
-  pipeline**; there is no automatic retry and no per-pipeline restart endpoint.
+- **Action**: fix the cause, then run a no-op `POST /actuator/reload` on each pod of
+  the group ([§4.1](#41-how-a-change-gets-in)); any accepted reload, such as the next
+  `helm upgrade` of the group, does the same. The pipeline appears under `retried` in
+  the response and goes `starting` → `running`; if it is back in `failed_preflight`,
+  the ERROR line says what is still wrong, and if it stays `starting`, something is
+  unreachable ([§5.12](#512-pipeline-stuck-in-starting)). **Fixing the resource alone does not
+  recover the pipeline**: nothing retries on its own, only a reload or a pod restart
+  ([ADR-0032](decisions/0032-accepted-reload-retries-failed-preflight-pipelines.md)).
   Transient causes (unreachable broker or ES, 5xx) never produce `failed_preflight`;
   they keep the pipeline in `starting`.
 
 ### 5.6 DLQ filling, or DLQ blocked
+
+**Alerts**: [`KafkafimDlqRecords`](../deploy/grafana/alerts/kafkafim-alerts.yaml).
 
 **DLQ filling** (records are being dead-lettered):
 
@@ -500,6 +530,8 @@ id is `kafkafim.<pipeline>`).
 
 ### 5.7 Pipeline shows `running` but consumes nothing
 
+**Alerts**: [`KafkafimNoAssignedPartitions`](../deploy/grafana/alerts/kafkafim-alerts.yaml).
+
 - **Symptom**: state `running`, but lag grows and `kafkafim_records_consumed_total`
   is flat for that pipeline on that pod.
 - **Check**, in order:
@@ -515,6 +547,8 @@ id is `kafkafim.<pipeline>`).
   ([§2.4](#24-restart-pods)) and look for the first ERROR before it.
 
 ### 5.8 Consumer lag growing
+
+**Alerts**: [`KafkafimConsumerLagGrowing`](../deploy/grafana/alerts/kafkafim-alerts.yaml), [`KafkafimE2eLatencyHigh`](../deploy/grafana/alerts/kafkafim-alerts.yaml), [`KafkafimBulkRejectRatioHigh`](../deploy/grafana/alerts/kafkafim-alerts.yaml).
 
 - **Symptom**: `sum by (pipeline, topic) (kafkafim_consumer_lag)` rising for 5+
   minutes; `kafkafim_e2e_latency_seconds` p99 above target.
@@ -587,10 +621,39 @@ id is `kafkafim.<pipeline>`).
 
 ### 5.11 Reload failure alert
 
+**Alerts**: [`KafkafimConfigReloadFailed`](../deploy/grafana/alerts/kafkafim-alerts.yaml).
+
 `increase(kafkafim_config_reload_total{result="failure"}[10m]) > 0`: see
 [§4.2](#42-reading-the-result). Find the ERROR `Configuration reload (...) rejected`
 (or `... failed while applying generation`) line on any pod of the group for the violations, fix the values and upgrade again,
 or roll back. Until then the pods run the previous generation and new pods fail.
+
+### 5.12 Pipeline stuck in `starting`
+
+**Alerts**: [`KafkafimPipelineStuckStarting`](../deploy/grafana/alerts/kafkafim-alerts.yaml).
+
+- **Symptom**: `kafkafim_pipeline_state{state="starting"} == 1` for minutes; WARN
+  `Pipeline '<p>': preflight could not complete, retrying: <problems>` (or `source
+  could not start, retrying: ...`) repeated with a growing interval. A new pod whose
+  every pipeline is `starting` stays unready, so a rollout waits; the old pods keep
+  running.
+- **Check**: the WARN line names what did not answer:
+
+  | Log line contains | Cause | See |
+  |---|---|---|
+  | `DLQ topic '<t>' (...): broker did not answer` in `<problems>` | Kafka unreachable for the DLQ identity | [§5.3](#53-kafka-unreachable) |
+  | `source could not start, retrying: <KafkaException>` (its own WARN line, after preflight passed) | Kafka unreachable for the source | [§5.3](#53-kafka-unreachable) |
+  | `Elasticsearch identity '<id>' on cluster '<es>' not reachable: <exception>` | No connection to the ES cluster within the preflight's short timeouts: DNS, network policy or firewall, ES down | The cluster and the network path from the pod's namespace to its `uris` |
+  | `Elasticsearch identity ... not reachable: HTTP 5xx from _security/_authenticate` | ES or a proxy in front of it answers 5xx | The ES cluster's own monitoring |
+
+  Preflight sends one `GET /_security/_authenticate` per Elasticsearch cluster and
+  identity the pipeline routes to. A TLS handshake failure, 401 or 403 is not transient: it sends
+  the pipeline to `failed_preflight` ([§5.5](#55-failed_preflight-pipelines)).
+- **Action**: fix the path or the cluster. Preflight retries on its own (1s doubling
+  to 30s, forever, [§3.1](#31-pipeline-state)) and the pipeline goes `running` at the
+  next attempt that gets through; no restart or reload is needed. Elasticsearch
+  becoming unreachable **after** start is [§5.1](#51-elasticsearch-outage-circuit-breaker-open)
+  instead: the pipeline is `paused`, not `starting`.
 
 ## 6. Escalation data to collect
 
@@ -618,13 +681,8 @@ Current behaviour that this runbook works around; each is a follow-up, not a fea
   of preflight; the source retries the join every 10s.
 - **Rotated TLS files are not reloaded.** Certificate and keystore files are bound
   by path, so a content change is `unchanged` to the reload; restart the pods.
-- **`failed_preflight` has no retry and no per-pipeline restart.** Fixing the missing
-  resource requires a config change to that pipeline or a pod restart.
 - **Pause reasons are only in logs.** The metric and the health endpoint say `paused`
   without the reason; health details are hidden by `show-details: when-authorized`.
-- **No shipped dashboards or alert rules.** `deploy/grafana/` named in
-  [DESIGN §10](DESIGN.md#shipped-with-the-repo) does not exist yet; the PromQL above
-  is a starting point.
 - **No `validate` profile yet** ([DESIGN §5.6](DESIGN.md#56-validation-and-hot-reload),
   roadmap 0.2): an invalid configuration is found only by a running pod's reload or a
   new pod's startup.

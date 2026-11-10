@@ -27,10 +27,10 @@ Requires Docker (for the local stack and tests). No local Maven or Java install 
 required beyond a JDK 27 on `PATH`.
 
 ```bash
-./mvnw spring-boot:run      # starts Kafka, Elasticsearch and Grafana via compose.yaml
+./mvnw spring-boot:run      # starts Kafka, kafka-init, Elasticsearch and Grafana via compose.yaml
 ```
 
-The stack also runs a one-shot `kafka-init` service that creates the topics the `local`
+The one-shot `kafka-init` service creates the topics the `local`
 profile's `demo` pipeline needs (`demo.events`, `demo.events.kafkafim-dlq`; 3 partitions,
 replication 1). kafkafim itself never creates topics ([ADR-0021](docs/decisions/0021-no-resource-provisioning.md)),
 and the local broker has topic auto-creation disabled to mirror production. Smoke test once
@@ -65,7 +65,9 @@ Code follows the [Google Java Style Guide](https://google.github.io/styleguide/j
 
 Actuator: `http://localhost:8080/actuator/health`, `/actuator/prometheus`.
 Grafana (local stack): `http://localhost:3000`, with the kafkafim dashboards in the *kafkafim*
-folder ([deploy/grafana](deploy/grafana/README.md): dashboards and Prometheus alert rules).
+folder. [deploy/grafana](deploy/grafana/README.md) holds those dashboards and the Prometheus
+alert rules for production; the local stack does not load the rules, and its latency panels
+stay empty unless you export seconds (see that README's *Compose demo*).
 
 ## License
 

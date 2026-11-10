@@ -34,7 +34,7 @@ tests:
             exp_annotations:
               summary: "Pipeline slow still starting after 10m"
               description: "Preflight keeps retrying a transient failure: Kafka or Elasticsearch is unreachable. The pod logs name the failing check."
-              runbook_url: https://github.com/matabar/kafkafim/blob/main/docs/RUNBOOK.md#31-pipeline-state
+              runbook_url: https://github.com/matabar/kafkafim/blob/main/docs/RUNBOOK.md#512-pipeline-stuck-in-starting
       - eval_time: 6m
         alertname: KafkafimPipelinePaused
         exp_alerts:
