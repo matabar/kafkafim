@@ -705,10 +705,7 @@ inline fallback) whose chain of references ends in a `configtree` file. The chec
 at the property source that wins for each name, before placeholder resolution, and
 reports the origin but never the value; likewise the bound configuration records print
 every secret (passwords, API keys, keystore and key passwords, secret passthrough
-`properties` values) as `******` in `toString()`, while usernames stay readable. No
-Bean Validation constraint sits on a secret component (a reflection test enforces it):
-Boot's bind-failure report prints the raw `Value:` of a failed constraint, so secret
-rules live in `ConfigValidator`, whose messages never include values. A
+`properties` values) as `******` in `toString()`, while usernames stay readable. A
 literal in YAML, an environment variable or a system property is rejected, also when
 reached through a placeholder. A credential
 placeholder (secret or username) that nothing defines always fails startup, even with
@@ -717,7 +714,10 @@ missing secret file would otherwise become the password. A value with a placehol
 other text (for example a `sasl.jaas.config` string containing `password="${...}"`)
 counts as a literal, so such a value is mounted whole as one secret file. Secret provisioning stays outside the chart
 (`existingSecret` names): plain Secrets, Sealed Secrets, External Secrets or a Vault
-agent all work. A changed secret file is picked up by the same reload path.
+agent all work. A changed secret file is picked up by the same reload path. No Bean
+Validation constraint sits on a secret component (a reflection test enforces it): Boot's
+bind-failure report prints the raw `Value:` of a failed constraint, so secret rules live
+in `ConfigValidator`, whose messages never include values.
 
 ### 5.6 Validation and hot reload
 

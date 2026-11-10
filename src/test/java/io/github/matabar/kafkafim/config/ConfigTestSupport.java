@@ -190,7 +190,9 @@ final class ConfigTestSupport {
 
   /**
    * Whether a record component holds a secret, or a map of passthrough keys that may (DESIGN §5.5).
-   * The redaction and Bean Validation guards share this rule.
+   * The redaction and Bean Validation guards share this rule. It matches the Java component name,
+   * so a secret component must be named after what it holds (not {@code @Name("password") pw}), and
+   * a new kind of secret (a token, say) must be added here.
    */
   static boolean holdsSecret(RecordComponent component) {
     String name = component.getName().toLowerCase(Locale.ROOT);
@@ -200,7 +202,11 @@ final class ConfigTestSupport {
         || name.equals("properties");
   }
 
-  /** Every record of the configuration model reachable from {@code root}. */
+  /**
+   * Every record of the configuration model reachable from {@code root}, through record components
+   * and generic type arguments. Arrays, wildcards, type variables and non-record component types
+   * are not followed; the model has none that lead to a record.
+   */
   static Set<Class<?>> recordsReachableFrom(Class<?> root) {
     Set<Class<?>> seen = new HashSet<>();
     List<Type> pending = new ArrayList<>(List.of(root));

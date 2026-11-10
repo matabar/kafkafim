@@ -3,11 +3,16 @@ package io.github.matabar.kafkafim.config;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import jakarta.validation.Constraint;
+import jakarta.validation.Payload;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotEmpty;
 import jakarta.validation.constraints.Size;
 import java.lang.annotation.Annotation;
+import java.lang.annotation.ElementType;
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
+import java.lang.annotation.Target;
 import java.lang.reflect.AnnotatedElement;
 import java.lang.reflect.AnnotatedParameterizedType;
 import java.lang.reflect.AnnotatedType;
@@ -37,12 +42,17 @@ class SecretConstraintTest {
 
   @Test
   void theCheckFindsConstraintsOnSecrets() {
-    // Guards the test above: each place a constraint can sit on a record component is detected.
+    // Guards the test above. Built-in constraints target FIELD, METHOD, PARAMETER and TYPE_USE at
+    // once, so the single-target probes below show that each lookup is needed on its own.
+    String probe = Probe.class.getName();
     assertThat(constrainedSecrets(Probe.class))
         .containsExactlyInAnyOrder(
-            Probe.class.getName() + ".password: @NotBlank",
-            Probe.class.getName() + ".apiKey: @Size",
-            Probe.class.getName() + ".properties: @NotBlank");
+            probe + ".password: @NotBlank",
+            probe + ".apiKey: @Size",
+            probe + ".properties: @NotBlank",
+            probe + ".fieldPassword: @FieldOnly",
+            probe + ".accessorPassword: @MethodOnly",
+            probe + ".parameterPassword: @ParameterOnly");
   }
 
   /** Secret components of a record with a constraint, as {@code record.component: @Constraint}. */
@@ -58,8 +68,8 @@ class SecretConstraintTest {
       }
       List<Annotation> annotations = new ArrayList<>();
       // A constraint on a component propagates to the field, the accessor and the constructor
-      // parameter, depending on its @Target; type-use constraints sit on the (nested) type.
-      annotations.addAll(List.of(component.getAnnotations()));
+      // parameter, depending on its @Target; type-use constraints sit on the (nested) type. No
+      // Bean Validation constraint targets RECORD_COMPONENT, so the component itself has none.
       annotations.addAll(List.of(component.getAccessor().getAnnotations()));
       annotations.addAll(annotationsOf(() -> record.getDeclaredField(component.getName())));
       int position = i;
@@ -102,6 +112,45 @@ class SecretConstraintTest {
       @NotBlank String password,
       @Size(min = 8) String apiKey,
       Map<String, @NotBlank String> properties,
+      @FieldOnly String fieldPassword,
+      @MethodOnly String accessorPassword,
+      @ParameterOnly String parameterPassword,
       @NotEmpty String username,
       @Valid KafkaCluster.Sasl sasl) {}
+
+  /** A constraint that propagates from a record component to the field only. */
+  @Constraint(validatedBy = {})
+  @Target(ElementType.FIELD)
+  @Retention(RetentionPolicy.RUNTIME)
+  private @interface FieldOnly {
+    String message() default "";
+
+    Class<?>[] groups() default {};
+
+    Class<? extends Payload>[] payload() default {};
+  }
+
+  /** A constraint that propagates from a record component to the accessor only. */
+  @Constraint(validatedBy = {})
+  @Target(ElementType.METHOD)
+  @Retention(RetentionPolicy.RUNTIME)
+  private @interface MethodOnly {
+    String message() default "";
+
+    Class<?>[] groups() default {};
+
+    Class<? extends Payload>[] payload() default {};
+  }
+
+  /** A constraint that propagates from a record component to the constructor parameter only. */
+  @Constraint(validatedBy = {})
+  @Target(ElementType.PARAMETER)
+  @Retention(RetentionPolicy.RUNTIME)
+  private @interface ParameterOnly {
+    String message() default "";
+
+    Class<?>[] groups() default {};
+
+    Class<? extends Payload>[] payload() default {};
+  }
 }
