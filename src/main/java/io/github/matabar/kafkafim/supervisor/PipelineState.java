@@ -19,6 +19,12 @@ public enum PipelineState {
   PAUSED,
   /** A preflight check found a configuration problem; stays stopped until reload or restart. */
   FAILED_PREFLIGHT,
+  /**
+   * Was running, then failed: the record handler threw, or the Kafka listener container stopped on
+   * its own (a fatal consumer error). The supervisor stops the pipeline; it stays stopped until the
+   * next accepted reload or a restart (ADR-0036).
+   */
+  FAILED,
   /** Not started, or stopped. */
   STOPPED;
 
@@ -30,5 +36,10 @@ public enum PipelineState {
   /** Whether the pipeline's source is started (running or paused). */
   public boolean isStarted() {
     return this == RUNNING || this == PAUSED;
+  }
+
+  /** Whether the pipeline failed and waits for an accepted reload or a restart. */
+  public boolean isFailed() {
+    return this == FAILED_PREFLIGHT || this == FAILED;
   }
 }

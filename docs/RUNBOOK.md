@@ -153,6 +153,7 @@ Each pipeline on each pod is in one `PipelineState`
 | `running` | Source started and fetching (it may still be throttled by the in-flight byte budget, which is ordinary backpressure). | Yes. |
 | `paused` | Source started, fetching stopped for a supervisor reason: `es-breaker:<cluster>`, `es-auth:<cluster>/<identity>` or `dlq-blocked`. Resumes by itself when the reason clears. | No; see [§5](#5-incidents). |
 | `failed_preflight` | A preflight or start check found a **configuration** problem. Stays stopped until the next accepted reload (any `applied` or `unchanged` one, including a no-op `POST /actuator/reload`) retries it, or the pod restarts. | No. |
+| `failed` | Was running, then the record handler threw or a Kafka consumer stopped on its own. kafkafim stopped the pipeline (drained, committed, left the group); it stays stopped until the next accepted reload retries it, or the pod restarts ([§5.13](#513-failed-pipelines)). | No. |
 | `stopped` | Not started yet, or stopped by a reload or shutdown. | Only transiently. |
 
 **Alerts**: [`KafkafimPipelinePaused`](../deploy/grafana/alerts/kafkafim-alerts.yaml) (a pipeline `paused` for 5m; the
@@ -164,7 +165,7 @@ Where to read it:
   for the others, per pod. This is the source of truth for alerts:
 
   ```promql
-  max by (pipeline) (kafkafim_pipeline_state{state="failed_preflight"}) == 1
+  max by (pipeline) (kafkafim_pipeline_state{state=~"failed_preflight|failed"}) == 1
   ```
 
   From a port-forwarded pod:
@@ -189,8 +190,9 @@ Where to read it:
 | `/actuator/health/readiness` | `readinessState` and `pipelines`: at least one pipeline `running` or `paused`, or zero pipelines configured; and `kafka`: at least one started pipeline's consumers hold broker connections (or none is started). Never gated on Elasticsearch. | Readiness probe; the `Service` (actuator only, no business traffic). |
 
 An unready pod still consumes: readiness only gates the actuator `Service` and the
-rollout. A pod whose every pipeline is `failed_preflight` stays unready, without
-being restarted, until a reload retries them ([§5.5](#55-failed_preflight-pipelines)).
+rollout. A pod whose every pipeline is `failed_preflight` or `failed` stays unready,
+without being restarted, until a reload retries them ([§5.5](#55-failed_preflight-pipelines),
+[§5.13](#513-failed-pipelines)).
 
 ### 3.3 Metrics to look at first
 
@@ -262,8 +264,8 @@ The endpoint answers JSON (names and violations only, never values):
 
 | HTTP / `result` | Meaning | What to do |
 |---|---|---|
-| 200 `applied` | Valid and changed something; `generation` went up by one. `kafkafim_config_reload_total{result="success"}` +1; INFO lines `Configuration reload (<trigger>): applying generation <n>: added ..., removed ..., restarted ..., unchanged ...` and `... generation <n> applied`, with `; retrying failed_preflight pipeline(s) [...]` appended when `retried` is not empty. | Check the restarted, added and retried pipelines reach `running`. |
-| 200 `unchanged` | Valid, identical to what runs; nothing restarted, `generation` stays. Pipelines in `failed_preflight` are still retried and listed under `retried`; INFO `Configuration reload (<trigger>): no change, generation <n> stays`. Counts as `success`. | If you expected a change: kubelet has not refreshed the mount yet, or the change was outside `kafkafim.*`. Check the retried pipelines reach `running`. |
+| 200 `applied` | Valid and changed something; `generation` went up by one. `kafkafim_config_reload_total{result="success"}` +1; INFO lines `Configuration reload (<trigger>): applying generation <n>: added ..., removed ..., restarted ..., unchanged ...` and `... generation <n> applied`, with `; retrying failed pipeline(s) [...]` appended when `retried` is not empty. | Check the restarted, added and retried pipelines reach `running`. |
+| 200 `unchanged` | Valid, identical to what runs; nothing restarted, `generation` stays. Pipelines in `failed_preflight` or `failed` are still retried and listed under `retried`; INFO `Configuration reload (<trigger>): no change, generation <n> stays`. Counts as `success`. | If you expected a change: kubelet has not refreshed the mount yet, or the change was outside `kafkafim.*`. Check the retried pipelines reach `running`. |
 | 400 `rejected` | The new tree is invalid or unreadable; **the running configuration stays**, nothing was touched. `errors` lists every violation as `<property path>: <problem>`; `kafkafim_config_reload_total{result="failure"}` +1; one ERROR line `Configuration reload (<trigger>) rejected; generation <n> keeps running. ...`. | Fix the values and upgrade again. See the warning below. |
 | 503 | Body `"result":"rejected"` with the reason in `errors`. Usually the supervisor is not running (startup not finished, or shutting down); an internal state error while applying is also mapped here. | Retry once the pod is up; if it persists on a running pod, treat it like a 500. |
 | 500 | Applying a valid tree failed part-way (ERROR `... failed while applying generation <n>; pipelines may be partly reconfigured`); `kafkafim_config_reload_total{result="failure"}` +1. | Restart the group's pods ([§2.4](#24-restart-pods)) so they start cleanly from the files. |
@@ -280,12 +282,13 @@ arrive through `otel.*`, `extraEnv` or the image, which roll the pods anyway (ex
 rotating the contents of an `otel.secretHeaders` Secret, which needs a restart; the
 chart's `config.kafkafim` accepts only `kafka`, `elasticsearch` and `pipelines`).
 Every accepted reload (`applied` or `unchanged`, from the watcher or the endpoint)
-starts each unchanged `failed_preflight` pipeline once more and lists it under
-`retried` instead of `unchanged`; a rejected reload retries nothing. A retry is one
-ordinary start in the background, so the response does not say whether it worked:
+starts each unchanged `failed_preflight` or `failed` pipeline once more and lists it
+under `retried` instead of `unchanged`; a rejected reload retries nothing. A retry is
+one ordinary start in the background, so the response does not say whether it worked:
 watch `kafkafim_pipeline_state` and the pipeline's log lines. A pipeline that fails
-again waits in `failed_preflight` for the next reload; nothing retries on its own
-([ADR-0032](decisions/0032-accepted-reload-retries-failed-preflight-pipelines.md)).
+again waits in a failed state for the next reload; nothing retries on its own
+([ADR-0032](decisions/0032-accepted-reload-retries-failed-preflight-pipelines.md),
+[ADR-0036](decisions/0036-pipeline-that-fails-while-running-is-stopped-as-failed.md)).
 
 ### 4.3 Rotating a secret
 
@@ -538,16 +541,14 @@ tooling shows it too (`kafka-consumer-groups.sh --describe --group kafkafim.<pip
 - **Symptom**: state `running`, but lag grows and `kafkafim_records_consumed_total`
   is flat for that pipeline on that pod.
 - **Check**, in order:
-  1. Logs for `Pipeline '<p>': record handler failed; pausing until the pipeline is
-     restarted`. That pause is not a supervisor reason, so the state stays `running`.
-  2. Group or topic `Read` authorization errors ([§5.4](#54-kafka-authentication-or-acl-missing)).
-  3. `kafkafim_assigned_partitions`: 0 on this pod is normal only if the group has
+  1. Group or topic `Read` authorization errors ([§5.4](#54-kafka-authentication-or-acl-missing)).
+  2. `kafkafim_assigned_partitions`: 0 on this pod is normal only if the group has
      more pods than partitions (replicas above partitions are idle).
-  4. `kafkafim_in_flight_bytes` at or above `max-in-flight-bytes`:
+  3. `kafkafim_in_flight_bytes` at or above `max-in-flight-bytes`:
      backpressure, see [§5.8](#58-consumer-lag-growing).
-- **Action**: for 1, and for a listener container that stopped on its own (it is not
-  restarted and the state still says `running`), restart the pods
-  ([§2.4](#24-restart-pods)) and look for the first ERROR before it.
+
+  A record handler that threw or a listener container that stopped on its own no
+  longer shows as `running`: the pipeline is `failed` ([§5.13](#513-failed-pipelines)).
 
 ### 5.8 Consumer lag growing
 
@@ -660,6 +661,33 @@ or roll back. Until then the pods run the previous generation and new pods fail.
   becoming unreachable **after** start is [§5.1](#51-elasticsearch-outage-circuit-breaker-open)
   instead: the pipeline is `paused`, not `starting`.
 
+### 5.13 `failed` pipelines
+
+**Alerts**: none shipped yet ([Known gaps](#known-gaps)); alert on
+`kafkafim_pipeline_state{state="failed"} == 1`.
+
+- **Symptom**: `kafkafim_pipeline_state{state="failed"} == 1`; ERROR
+  `Pipeline '<p>': failed while running; stopping it until the next accepted reload or
+  a restart: <cause>`, then INFO `Pipeline '<p>': running -> failed` (or `paused ->
+  failed`). The pipeline consumes nothing on this pod. It left the consumer group, so
+  the group's other pods take its partitions; records it had not finished are
+  re-delivered to them (idempotent by `_id`). Other pipelines of the pod keep running;
+  the pod goes unready only if this was its last started pipeline.
+- **Check**: the cause, and the ERROR line just before it, which carries the stack
+  trace:
+
+  | `<cause>` | Before it | Meaning |
+  |---|---|---|
+  | `record handler failed: <exception>` | `Pipeline '<p>': record handler failed; pausing until the pipeline is restarted` | Decoding, routing or submitting a batch threw: a kafkafim bug. The batch's records were not committed, so whoever reads them next (a retry, or another pod) may hit it again. |
+  | `Kafka consumer stopped (<reason>)` | Spring Kafka's ERROR from the listener container, such as `Stopping container due to an Error` | A consumer hit an error the container does not retry. Authentication and authorization errors are retried every 10s instead ([§5.4](#54-kafka-authentication-or-acl-missing)), so they do not end here. |
+
+- **Action**: collect the ERROR lines ([§6](#6-escalation-data-to-collect)), fix the
+  cause if it is outside kafkafim, then run a no-op `POST /actuator/reload` on the pod
+  ([§4.1](#41-how-a-change-gets-in)). The pipeline appears under `retried` and goes
+  `starting` → `running`. A pipeline that fails again on the same records points to a
+  bug: escalate with the logs. A pod restart also recovers it. Nothing retries on its
+  own ([ADR-0036](decisions/0036-pipeline-that-fails-while-running-is-stopped-as-failed.md)).
+
 ## 6. Escalation data to collect
 
 Before escalating to the kafkafim maintainers, collect for the affected pod(s):
@@ -676,10 +704,9 @@ Logs never contain document bodies or secret values; they are safe to attach.
 
 Current behaviour that this runbook works around; each is a follow-up, not a feature:
 
-- **A listener container that stops on its own keeps `running`.** The supervisor does
-  not notice a stopped container, and the record-handler-failure pause is a source
-  reason, not a supervisor one, so neither shows in `kafkafim_pipeline_state`. Only a
-  pod restart recovers them.
+- **No shipped alert on `failed` yet.** The rules in `deploy/grafana/alerts/` alert on
+  `failed_preflight` but not on `failed` ([§5.13](#513-failed-pipelines)); add the
+  query of [§3.1](#31-pipeline-state) to your own rules meanwhile.
 - **A missing topic `Read` ACL shows `running`.** The start check fetches metadata
   only (`Describe`); fetches then fail and are retried every 10s.
 - **A denied consumer-group join shows `running`.** The group permission is not part
