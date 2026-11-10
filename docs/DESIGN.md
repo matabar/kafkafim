@@ -705,7 +705,10 @@ inline fallback) whose chain of references ends in a `configtree` file. The chec
 at the property source that wins for each name, before placeholder resolution, and
 reports the origin but never the value; likewise the bound configuration records print
 every secret (passwords, API keys, keystore and key passwords, secret passthrough
-`properties` values) as `******` in `toString()`, while usernames stay readable. A
+`properties` values) as `******` in `toString()`, while usernames stay readable. No
+Bean Validation constraint sits on a secret component (a reflection test enforces it):
+Boot's bind-failure report prints the raw `Value:` of a failed constraint, so secret
+rules live in `ConfigValidator`, whose messages never include values. A
 literal in YAML, an environment variable or a system property is rejected, also when
 reached through a placeholder. A credential
 placeholder (secret or username) that nothing defines always fails startup, even with

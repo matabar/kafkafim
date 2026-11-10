@@ -3,15 +3,10 @@ package io.github.matabar.kafkafim.config;
 import static io.github.matabar.kafkafim.config.ConfigTestSupport.MINIMAL;
 import static org.assertj.core.api.Assertions.assertThat;
 
-import java.lang.reflect.ParameterizedType;
 import java.lang.reflect.RecordComponent;
-import java.lang.reflect.Type;
 import java.util.ArrayList;
-import java.util.HashSet;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
-import java.util.Set;
 import org.junit.jupiter.api.Test;
 
 /** No secret value appears in the {@code toString()} of the configuration model (DESIGN §5.5). */
@@ -129,15 +124,10 @@ class RedactionTest {
   void everySecretHoldingRecordOverridesToString() {
     // A secret component added later without a toString override would print in clear.
     List<String> missing = new ArrayList<>();
-    for (Class<?> record : recordsReachableFrom(KafkafimProperties.class)) {
+    for (Class<?> record : ConfigTestSupport.recordsReachableFrom(KafkafimProperties.class)) {
       boolean holdsSecret = false;
       for (RecordComponent component : record.getRecordComponents()) {
-        String name = component.getName().toLowerCase(Locale.ROOT);
-        holdsSecret |=
-            name.contains("password")
-                || name.contains("secret")
-                || name.contains("apikey")
-                || name.equals("properties");
+        holdsSecret |= ConfigTestSupport.holdsSecret(component);
       }
       if (holdsSecret && !declaresToString(record)) {
         missing.add(record.getName());
@@ -153,22 +143,5 @@ class RedactionTest {
     } catch (NoSuchMethodException e) {
       return false;
     }
-  }
-
-  private static Set<Class<?>> recordsReachableFrom(Class<?> root) {
-    Set<Class<?>> seen = new HashSet<>();
-    List<Type> pending = new ArrayList<>(List.of(root));
-    while (!pending.isEmpty()) {
-      Type type = pending.removeLast();
-      if (type instanceof ParameterizedType parameterized) {
-        pending.addAll(List.of(parameterized.getActualTypeArguments()));
-      } else if (type instanceof Class<?> cls && cls.isRecord() && seen.add(cls)) {
-        for (RecordComponent component : cls.getRecordComponents()) {
-          pending.add(component.getGenericType());
-        }
-      }
-    }
-    assertThat(seen).contains(KafkaCluster.Sasl.class, ElasticsearchCluster.Keystore.class);
-    return seen;
   }
 }

@@ -4,13 +4,19 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.lang.reflect.ParameterizedType;
+import java.lang.reflect.RecordComponent;
+import java.lang.reflect.Type;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import org.springframework.boot.context.properties.bind.validation.BindValidationException;
 import org.springframework.boot.env.ConfigTreePropertySource;
 import org.springframework.boot.env.YamlPropertySourceLoader;
@@ -180,5 +186,35 @@ final class ConfigTestSupport {
       return field.getField() + ": " + field.getDefaultMessage();
     }
     return error.getDefaultMessage();
+  }
+
+  /**
+   * Whether a record component holds a secret, or a map of passthrough keys that may (DESIGN §5.5).
+   * The redaction and Bean Validation guards share this rule.
+   */
+  static boolean holdsSecret(RecordComponent component) {
+    String name = component.getName().toLowerCase(Locale.ROOT);
+    return name.contains("password")
+        || name.contains("secret")
+        || name.contains("apikey")
+        || name.equals("properties");
+  }
+
+  /** Every record of the configuration model reachable from {@code root}. */
+  static Set<Class<?>> recordsReachableFrom(Class<?> root) {
+    Set<Class<?>> seen = new HashSet<>();
+    List<Type> pending = new ArrayList<>(List.of(root));
+    while (!pending.isEmpty()) {
+      Type type = pending.removeLast();
+      if (type instanceof ParameterizedType parameterized) {
+        pending.addAll(List.of(parameterized.getActualTypeArguments()));
+      } else if (type instanceof Class<?> cls && cls.isRecord() && seen.add(cls)) {
+        for (RecordComponent component : cls.getRecordComponents()) {
+          pending.add(component.getGenericType());
+        }
+      }
+    }
+    assertThat(seen).contains(KafkaCluster.Sasl.class, ElasticsearchCluster.Keystore.class);
+    return seen;
   }
 }
