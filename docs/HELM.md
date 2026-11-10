@@ -86,7 +86,8 @@ For each `groups.<g>`:
   `secrets[]` entry read-only at its `mountPath`, and sets
   `SPRING_PROFILES_ACTIVE=kafkafim` (required: `application-kafkafim.yaml` is a
   profile-specific file, and the active profile also disables the default `local`
-  profile that carries the development sample),
+  profile that carries the development sample; a pod with `local` active fails at
+  startup on Kubernetes),
   `SPRING_CONFIG_ADDITIONAL_LOCATION=/etc/kafkafim/config/` (deliberately **not**
   `optional:`, overriding the image default, so a missing mount fails the pod at
   startup rather than starting it without pipelines),
@@ -192,11 +193,13 @@ group names are DNS labels); the cross-field rules above are `fail` calls in
 `templates/_helpers.tpl`, each with its own unit test.
 
 `config.kafkafim` accepts exactly `kafka`, `elasticsearch` and `pipelines`; the
-schema rejects any other key (for example `allow-inline-secrets`, which is for local
-development outside Kubernetes only: the application refuses to start with it on
-Kubernetes (`config/LocalProfileGuard`, [DESIGN §5.4](DESIGN.md#54-helm-rendering)), so a chart install, including the Docker Desktop demo, mounts its secrets as
-files like production) instead of silently
-dropping it. Helm reads values numbers as float64, so integers above 2^53 in
+schema rejects any other key instead of silently dropping it. That includes
+`allow-inline-secrets`, which is for local development outside Kubernetes only. The
+application refuses it on Kubernetes however it is set (for example through
+`extraEnv`), and likewise refuses to start with the `local` profile active there
+(`config/LocalProfileGuard`, [DESIGN §5.4](DESIGN.md#54-helm-rendering)). So a chart
+install, including the Docker Desktop demo, mounts its secrets as files like
+production. Helm reads values numbers as float64, so integers above 2^53 in
 `config` lose precision: quote them. Application-wide settings that are not
 per-group belong in the image's `application.yaml` or in `extraEnv`.
 
