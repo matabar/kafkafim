@@ -165,10 +165,10 @@ keeps any error with the document, and the error becomes a part only for a docum
 routing sends to Elasticsearch. Every route indexes, so today that is every document,
 including one no route selected (it reports its id, version or timestamp error rather than
 `no_route`), and it stays one part per document, with `route="none"` (§10), however many
-copies `route-mode: all` would have made. The timestamp is therefore known before any
-`%{+...}` pattern is resolved. A part completes on
-`indexed` or `stale`, or when the broker acknowledged its DLQ record (a sink `dlq` outcome
-or a decode/route failure); a DLQ send failed by shutdown leaves the record uncommitted.
+copies `route-mode: all` would have made. The timestamp is still parsed before any
+`%{+...}` pattern is resolved. A part completes on `indexed` or `stale`, or when the
+broker acknowledged its DLQ record (a sink `dlq` outcome or a decode/route failure); a
+DLQ send failed by shutdown leaves the record uncommitted.
 Outcomes for a record whose partition was revoked are ignored and not dead-lettered (the
 next owner re-reads it). On revoke the supervisor seals the open batches and waits for
 nothing. Ingest time is the record's Kafka timestamp (the wall clock for a record
@@ -287,8 +287,8 @@ element, `kafkafim.doc-index`.
   element stands alone: a non-object element (including a nested array), or an id,
   version or timestamp problem, fails only that element (`doc-index` set), and the
   other elements are indexed. A non-object element fails at once; an id, version or
-  timestamp problem is held with the parsed object and applies after routing (§4.2). An empty array is zero documents, so its offset is
-  committable at once.
+  timestamp problem is held with the parsed object and applies after routing (§4.2).
+  An empty array is zero documents, so its offset is committable at once.
 - **Source bytes.** Each document is indexed from its own bytes in the value (the
   whole value for an object, the element's slice for an array), not from a
   re-serialised tree, so number spelling and key order survive. One leading UTF-8 BOM
