@@ -1052,9 +1052,10 @@ API; `HOSTNAME` in a plain container, `localhost` without either), so series and
 stay per pod; Prometheus-compatible OTLP backends derive `job` (`kafkafim/kafkafim`) and
 `instance` from them. OTLP metrics use seconds as the base time unit
 (`management.otlp.metrics.export.base-time-unit`; Micrometer's OTLP default is
-milliseconds), so timers export with unit `seconds` and seconds buckets: through OTLP the names
-below are the same as on `/actuator/prometheus` (`kafkafim_e2e_latency_seconds_*`). These
-attributes come from `application.yaml` and win over `OTEL_RESOURCE_ATTRIBUTES`.
+milliseconds), so timers export with unit `seconds` and seconds buckets: through OTLP
+the names below are the same as on `/actuator/prometheus`
+(`kafkafim_e2e_latency_seconds_*`). These attributes come from `application.yaml` and
+win over `OTEL_RESOURCE_ATTRIBUTES`.
 
 ### Metrics (all with `pipeline`, `kafka_cluster`; `topic`/`es_cluster`/`route` where it applies)
 

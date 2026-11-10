@@ -188,6 +188,10 @@ class OtlpExportIntegrationTest {
               // Not answering yet.
             }
             assertThat(paths()).contains("/v1/metrics", "/v1/traces");
+            // Exports before the pipeline meters were registered lack the e2e timer.
+            assertThat(e2eMetrics(parsedMetrics()))
+                .as("%s in the OTLP metrics", TelemetryNames.E2E_LATENCY)
+                .isNotEmpty();
           });
     } catch (ConditionTimeoutException | AssertionError e) {
       throw new AssertionError(
@@ -212,13 +216,11 @@ class OtlpExportIntegrationTest {
           });
     }
 
-    List<ExportMetricsServiceRequest> metrics = new ArrayList<>();
+    List<ExportMetricsServiceRequest> metrics = parsedMetrics();
     List<ExportTraceServiceRequest> traces = new ArrayList<>();
     for (Captured c : captured) {
-      switch (c.path()) {
-        case "/v1/metrics" -> metrics.add(ExportMetricsServiceRequest.parseFrom(c.body()));
-        case "/v1/traces" -> traces.add(ExportTraceServiceRequest.parseFrom(c.body()));
-        default -> {}
+      if (c.path().equals("/v1/traces")) {
+        traces.add(ExportTraceServiceRequest.parseFrom(c.body()));
       }
     }
     List<Resource> resources = new ArrayList<>();
@@ -238,14 +240,7 @@ class OtlpExportIntegrationTest {
                 .containsEntry("service.namespace", "kafkafim"));
 
     // The demo pipeline of the local profile registers its e2e timer at startup (DESIGN §10).
-    List<Metric> e2e =
-        metrics.stream()
-            .flatMap(r -> r.getResourceMetricsList().stream())
-            .flatMap(r -> r.getScopeMetricsList().stream())
-            .map(ScopeMetrics::getMetricsList)
-            .flatMap(List::stream)
-            .filter(m -> m.getName().equals(TelemetryNames.E2E_LATENCY))
-            .toList();
+    List<Metric> e2e = e2eMetrics(metrics);
     assertThat(e2e)
         .as("%s in the OTLP metrics", TelemetryNames.E2E_LATENCY)
         .isNotEmpty()
@@ -258,6 +253,26 @@ class OtlpExportIntegrationTest {
               .isNotEmpty()
               .allSatisfy(p -> assertThat(p.getExplicitBoundsList()).contains(0.05, 3600.0));
         });
+  }
+
+  private List<ExportMetricsServiceRequest> parsedMetrics() throws IOException {
+    List<ExportMetricsServiceRequest> metrics = new ArrayList<>();
+    for (Captured c : captured) {
+      if (c.path().equals("/v1/metrics")) {
+        metrics.add(ExportMetricsServiceRequest.parseFrom(c.body()));
+      }
+    }
+    return metrics;
+  }
+
+  private static List<Metric> e2eMetrics(List<ExportMetricsServiceRequest> metrics) {
+    return metrics.stream()
+        .flatMap(r -> r.getResourceMetricsList().stream())
+        .flatMap(r -> r.getScopeMetricsList().stream())
+        .map(ScopeMetrics::getMetricsList)
+        .flatMap(List::stream)
+        .filter(m -> m.getName().equals(TelemetryNames.E2E_LATENCY))
+        .toList();
   }
 
   private static Map<String, String> attributes(Resource resource) {
