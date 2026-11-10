@@ -715,7 +715,10 @@ missing secret file would otherwise become the password. A value with a placehol
 other text (for example a `sasl.jaas.config` string containing `password="${...}"`)
 counts as a literal, so such a value is mounted whole as one secret file. Secret provisioning stays outside the chart
 (`existingSecret` names): plain Secrets, Sealed Secrets, External Secrets or a Vault
-agent all work. A changed secret file is picked up by the same reload path.
+agent all work. A changed secret file is picked up by the same reload path. No Bean
+Validation constraint sits on a secret component (a reflection test enforces it): Boot's
+bind-failure report prints the raw `Value:` of a failed constraint, so secret rules live
+in `ConfigValidator`, whose messages never include values.
 
 ### 5.6 Validation and hot reload
 
@@ -879,7 +882,10 @@ are reported together:
   `%{+<DateTimeFormatter>}` must be terminated and parse; literal parts, and what each
   date pattern produces (so `%{+yyyy/MM}` or `%{+HH:mm}` fail), must not contain
   characters Elasticsearch rejects (`\ / * ? " < > | , # :` and space); a name must not
-  start with `-`, `_` or `+`, nor be `.` or `..`. Date patterns are checked, and resolved, with
+  start with `-`, `_` or `+`, nor be `.` or `..`. A name starting with `.` (a literal, or
+  a leading `%{+...}` whose output does) is a warning: Elasticsearch reserves those for
+  hidden and system indices and deprecates creating them; a leading `%{field}` cannot be
+  known at bind time and is not checked. Date patterns are checked, and resolved, with
   `Locale.ROOT`. An unquoted `Y` (week-based year) in a
   date pattern is a warning.
 - **Timestamps**: `timestamp-format` is `iso-8601`, `epoch-millis`, `epoch-seconds` or
@@ -893,8 +899,9 @@ are reported together:
 - **Document**: `op: create` takes no `version-field`; Elasticsearch accepts external
   versions only on `index` ("create operations only support internal versioning", §4.4).
 - **Warnings** (bind, log at `WARN`): no pipelines, `id-missing: auto`, an http route
-  without identity, week-based year, a timestamp `pattern:` without an offset or zone,
-  using `k` or failing its self-check, `allow-inline-secrets=true`.
+  without identity, an index name starting with `.`, week-based year, a timestamp
+  `pattern:` without an offset or zone, using `k` or failing its self-check,
+  `allow-inline-secrets=true`.
 
 ## 6. Scaling
 
