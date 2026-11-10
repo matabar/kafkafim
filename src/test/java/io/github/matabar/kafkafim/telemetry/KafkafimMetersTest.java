@@ -4,7 +4,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import io.github.resilience4j.circuitbreaker.CircuitBreaker;
 import io.micrometer.core.instrument.Meter;
-import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Tag;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.micrometer.prometheusmetrics.PrometheusConfig;
@@ -74,11 +73,7 @@ class KafkafimMetersTest {
   }
 
   private double gauge(String name, String... tags) {
-    return gauge(registry, name, tags);
-  }
-
-  private static double gauge(MeterRegistry on, String name, String... tags) {
-    return on.get(name).tags(tags).gauge().value();
+    return registry.get(name).tags(tags).gauge().value();
   }
 
   private Set<String> pipelinesOf(String name) {
