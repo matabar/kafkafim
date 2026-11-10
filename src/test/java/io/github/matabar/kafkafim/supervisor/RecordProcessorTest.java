@@ -363,7 +363,7 @@ class RecordProcessorTest {
   @ValueSource(strings = {"first", "all"})
   void extractionErrorsAreOneDeadLetterPerDocumentWhateverTheRoutes(String mode) {
     SimpleMeterRegistry registry = new SimpleMeterRegistry();
-    try (KafkafimMeters meters = new KafkafimMeters(registry, Duration.ofHours(1))) {
+    try (KafkafimMeters meters = new KafkafimMeters(registry)) {
       meters.sync(
           Map.of(
               "p",
