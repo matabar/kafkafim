@@ -99,8 +99,9 @@ Before you call an upgrade done:
 3. For a config-only change: `kafkafim_config_generation` went up by one on every
    pod of the group and `kafkafim_config_reload_total{result="failure"}` did not
    move ([§4.2](#42-reading-the-result)).
-4. `kafkafim_consumer_lag` is flat or falling and `rate(kafkafim_dlq_records_total[5m])`
-   did not jump.
+4. The pipelines' consumer-group lag, in the Kafka team's consumer-lag monitoring, is
+   flat or falling, `kafkafim_e2e_latency_seconds` p99 did not jump, and
+   `rate(kafkafim_dlq_records_total[5m])` did not jump.
 
 ### 2.3 Roll back
 
@@ -200,7 +201,7 @@ neither (`kafkafim_config_reload_total` has `result`) ([DESIGN §10](DESIGN.md#1
 |---|---|
 | Is every pipeline running? | `kafkafim_pipeline_state{state=...}` |
 | Did the last config change apply? | `kafkafim_config_generation`, `kafkafim_config_reload_total{result="failure"}` (no `pipeline` label) |
-| Are we keeping up? | `kafkafim_consumer_lag{topic}` (owned partitions on this pod, polled every 10s; sum over pods; as of `kafkafim_consumer_lag_timestamp_seconds`), `kafkafim_e2e_latency_seconds` |
+| Are we keeping up? | `kafkafim_e2e_latency_seconds` (p99 against the target), `rate(kafkafim_records_consumed_total[5m])` against the producers' rate; consumer lag is in the Kafka team's consumer-lag monitoring, per consumer group (`source.group-id`, default `kafkafim.<pipeline>`); kafkafim exports none ([ADR-0034](decisions/0034-consumer-lag-is-monitored-outside-kafkafim.md)) |
 | Is data flowing? | `rate(kafkafim_records_consumed_total[5m])`, `rate(kafkafim_docs_total{outcome="indexed"}[5m])` |
 | Is Elasticsearch healthy? | `kafkafim_breaker_state{es_cluster}` (0 closed, 1 half-open, 2 open), `kafkafim_bulk_requests_total{es_cluster,status}`, `kafkafim_bulk_latency_seconds`, `kafkafim_retries_total{scope}` |
 | Credentials rejected? | `kafkafim_auth_failures_total{es_cluster,identity}` |
@@ -319,10 +320,11 @@ rotating it, restart the pods.
 
 ## 5. Incidents
 
-Each entry: **symptom → check → action.** "Lag grows" means `kafkafim_consumer_lag`;
-to cross-check it, use the consumer group's lag from Kafka tooling
-(`kafka-consumer-groups.sh --describe --group kafkafim.<pipeline>`; the default group
-id is `kafkafim.<pipeline>`).
+Each entry: **symptom → check → action.** "Lag grows" means the pipeline's consumer
+group lag (`source.group-id`; the default group id is `kafkafim.<pipeline>`) in the
+Kafka team's consumer-lag monitoring, which also alerts on it; kafkafim exports no lag
+([ADR-0034](decisions/0034-consumer-lag-is-monitored-outside-kafkafim.md)). Kafka
+tooling shows it too (`kafka-consumer-groups.sh --describe --group kafkafim.<pipeline>`).
 
 ### 5.1 Elasticsearch outage, circuit breaker open
 
@@ -401,8 +403,8 @@ id is `kafkafim.<pipeline>`).
 - **After start**: kafka-clients reconnects with backoff on its own; state stays
   `running`. `kafkafim_kafka_connected == 0` for the pipeline, and
   readiness goes out of service on a pod where every started pipeline lost its brokers.
-  Lag cannot be read either: `kafkafim_consumer_lag` keeps its previous values and
-  `kafkafim_consumer_lag_timestamp_seconds` stops advancing, so its age shows the staleness.
+  `kafkafim_records_consumed_total` stops; the Kafka team's monitoring shows the group's
+  lag from the brokers' side.
 - **Check**: broker health, DNS, network policy/firewall from the pod's namespace to
   `bootstrap-servers`, TLS trust (an expired or rotated cluster CA shows up as an SSL
   handshake failure in the logs; a rotated truststore file needs a pod restart,
@@ -498,7 +500,7 @@ id is `kafkafim.<pipeline>`).
   `document.timestamp-field` uses the original record time
   (`kafkafim.source.timestamp`) for date-based index names
   ([ADR-0027](decisions/0027-dlq-record-timestamp-and-headers.md)). Remove it once its
-  lag is zero. Purge is retention; there is no DLQ tool.
+  consumer group's lag, in the Kafka team's consumer-lag monitoring, is zero. Purge is retention; there is no DLQ tool.
 
 **DLQ blocked** (the DLQ cannot be written):
 
@@ -548,10 +550,12 @@ id is `kafkafim.<pipeline>`).
 
 ### 5.8 Consumer lag growing
 
-**Alerts**: [`KafkafimConsumerLagGrowing`](../deploy/grafana/alerts/kafkafim-alerts.yaml), [`KafkafimE2eLatencyHigh`](../deploy/grafana/alerts/kafkafim-alerts.yaml), [`KafkafimBulkRejectRatioHigh`](../deploy/grafana/alerts/kafkafim-alerts.yaml).
+**Alerts**: the Kafka team's consumer-lag alert for the pipeline's consumer group,
+[`KafkafimE2eLatencyHigh`](../deploy/grafana/alerts/kafkafim-alerts.yaml), [`KafkafimBulkRejectRatioHigh`](../deploy/grafana/alerts/kafkafim-alerts.yaml).
 
-- **Symptom**: `sum by (pipeline, topic) (kafkafim_consumer_lag)` rising for 5+
-  minutes; `kafkafim_e2e_latency_seconds` p99 above target.
+- **Symptom**: the consumer group's lag (`source.group-id`) rising for 5+ minutes in
+  the Kafka team's consumer-lag monitoring; `kafkafim_e2e_latency_seconds` p99 above
+  target.
 - **Check**, in order:
   1. Is the pipeline `paused` on any pod? Then it is [§5.1](#51-elasticsearch-outage-circuit-breaker-open),
      [§5.2](#52-elasticsearch-authentication-failure-pipeline-paused) or

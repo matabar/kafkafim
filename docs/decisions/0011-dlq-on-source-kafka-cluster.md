@@ -1,6 +1,6 @@
 # ADR-0011: DLQ topic on the source Kafka cluster; original bytes preserved; poison messages bounded
 
-Status: accepted · Date: 2026-11-07
+Status: accepted; the replay pipeline's `kafkafim_consumer_lag` as the backlog number is superseded by [ADR-0034](0034-consumer-lag-is-monitored-outside-kafkafim.md) · Date: 2026-11-07
 
 ## Decision
 Every document that cannot be indexed goes to a DLQ topic on the **same Kafka
