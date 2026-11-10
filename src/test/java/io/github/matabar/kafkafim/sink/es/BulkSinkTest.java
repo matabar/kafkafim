@@ -29,6 +29,7 @@ import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
@@ -574,6 +575,62 @@ class BulkSinkTest {
     assertThat(breaker.getMetrics().getNumberOfFailedCalls()).isZero();
   }
 
+  @Test
+  void itemAuthFailuresOfOneResponseAreOneEventOnTheSenderThread() throws Exception {
+    FakeTransport transport =
+        new FakeTransport((request, call) ->
+            FakeTransport.items(
+                request,
+                sent ->
+                    call == 1 ? new String[] {"403", "security_exception"} : new String[] {"201"}));
+    // max-docs seals both the batch and the three retries, which share one backoff; no age timer.
+    // Ordering against outcomes is pinned by itemAuthFailureIsReportedBeforeTheResponsesOutcomes.
+    BulkSink<String> sink = sink(retrying(3, HOUR, 10, HOUR), transport);
+    events.authFailingProbe = sink::authFailing;
+
+    submitAll(sink, "a", "b", "c");
+
+    assertThat(sink.awaitIdle(WAIT)).isTrue();
+    assertThat(transport.requests().getFirst().ids()).containsExactly("a", "b", "c");
+    assertThat(events.authFailures).as("one event per response, not per item").hasValue(1);
+    assertThat(events.authFailingAtFailure).as("state set before the event").containsOnly(true);
+    assertThat(events.authThreads)
+        .singleElement()
+        .satisfies(t -> assertThat(t.isVirtual()).isTrue())
+        .satisfies(t -> assertThat(t.getName()).startsWith("kafkafim-bulk-orders-"));
+    await().until(() -> events.authRecovered.get() == 1);
+  }
+
+  @Test
+  void requestAuthFailureSurvivesServerErrorsAndRecoversBeforeTheOutcome() throws Exception {
+    CountDownLatch release = new CountDownLatch(1);
+    FakeTransport transport =
+        new FakeTransport((request, call) -> {
+          return switch (call) {
+            case 1 -> new Result(401, Fixtures.load("request-401.json"));
+            case 2 -> FakeTransport.status(503);
+            default -> {
+              block(release);
+              yield FakeTransport.allOk();
+            }
+          };
+        });
+    BulkSink<String> sink = sink(poison(1, Duration.ZERO), transport);
+    List<Integer> recoveredAtOutcome = new CopyOnWriteArrayList<>();
+    outcomes.beforeEach = handle -> recoveredAtOutcome.add(events.authRecovered.get());
+
+    submitAll(sink, "a");
+    await().until(() -> transport.requests().size() == 3);
+    assertThat(sink.authFailing()).as("a 503 says nothing about the identity").isTrue();
+    assertThat(events.authFailures).hasValue(1);
+    assertThat(events.authRecovered).hasValue(0);
+    release.countDown();
+
+    assertThat(sink.awaitIdle(WAIT)).isTrue();
+    assertThat(recoveredAtOutcome).containsExactly(1);
+    assertThat(sink.authFailing()).isFalse();
+  }
+
   // ---- batch reports (spans, DESIGN §10) ----
 
   @Test
@@ -1024,6 +1081,9 @@ class BulkSinkTest {
     final List<String> itemErrors = new CopyOnWriteArrayList<>();
     final List<BatchReport> reports = new CopyOnWriteArrayList<>();
     volatile String lastAuthReason = "";
+    final List<Thread> authThreads = new CopyOnWriteArrayList<>();
+    final List<Boolean> authFailingAtFailure = new CopyOnWriteArrayList<>();
+    volatile BooleanSupplier authFailingProbe = () -> true;
 
     @Override
     public void onItemError(SinkKey key, int status, String errorType) {
@@ -1058,6 +1118,8 @@ class BulkSinkTest {
     @Override
     public void onAuthFailure(SinkKey key, int status, String reason) {
       lastAuthReason = reason;
+      authThreads.add(Thread.currentThread());
+      authFailingAtFailure.add(authFailingProbe.getAsBoolean());
       authFailures.incrementAndGet();
     }
 
