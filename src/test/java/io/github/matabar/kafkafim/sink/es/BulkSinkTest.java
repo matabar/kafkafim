@@ -115,6 +115,30 @@ class BulkSinkTest {
     }
   }
 
+  /**
+   * Submits {@code ids} while the timer's one thread is held, so a short {@code max-age} cannot
+   * seal part of them however long this thread stalls between submits. The age seal and retries run
+   * on that timer as usual once the last action is in.
+   */
+  void submitWithTimerHeld(BulkSink<String> sink, String... ids) throws InterruptedException {
+    CountDownLatch held = new CountDownLatch(1);
+    CountDownLatch release = new CountDownLatch(1);
+    timer.execute(() -> {
+      held.countDown();
+      try {
+        release.await();
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+      }
+    });
+    held.await();
+    try {
+      submitAll(sink, ids);
+    } finally {
+      release.countDown();
+    }
+  }
+
   static String[] ids(int count) {
     return IntStream.range(0, count).mapToObj(i -> "d" + i).toArray(String[]::new);
   }
@@ -189,7 +213,7 @@ class BulkSinkTest {
     BulkSink<String> sink = sink(settings(100, 1 << 20, Duration.ofMillis(50), 4), transport);
 
     long start = System.nanoTime();
-    submitAll(sink, "a", "b");
+    submitWithTimerHeld(sink, "a", "b");
 
     assertThat(sink.awaitIdle(WAIT)).isTrue();
     assertThat(Duration.ofNanos(System.nanoTime() - start))
@@ -342,9 +366,10 @@ class BulkSinkTest {
                     call <= 2 && sent.id().equals("busy")
                         ? new String[] {"429", "es_rejected_execution_exception"}
                         : new String[] {"201"}));
+    // max-docs seals the first batch; the short max-age seals each lone retry of "busy".
     BulkSink<String> sink = sink(retrying(2, Duration.ofMillis(50), 10, HOUR), transport);
 
-    submitAll(sink, "ok", "busy");
+    submitWithTimerHeld(sink, "ok", "busy");
 
     assertThat(sink.awaitIdle(WAIT)).isTrue();
     assertThat(outcomes.all()).containsOnly(ActionOutcome.INDEXED);
@@ -433,13 +458,18 @@ class BulkSinkTest {
                     sent.id().equals("denied") && call == 1
                         ? new String[] {"403", "security_exception"}
                         : new String[] {"201"}));
+    // max-docs seals the first batch; the short max-age seals the lone retry of "denied".
     BulkSink<String> sink = sink(retrying(2, Duration.ofMillis(5), 10, HOUR), transport);
     Map<String, Integer> authFailuresAtOutcome = new ConcurrentHashMap<>();
     outcomes.beforeEach = handle -> authFailuresAtOutcome.put(handle, events.authFailures.get());
 
-    submitAll(sink, "ok", "denied");
+    submitWithTimerHeld(sink, "ok", "denied");
 
     assertThat(sink.awaitIdle(WAIT)).isTrue();
+    assertThat(transport.requests())
+        .extracting(FakeTransport.Request::ids)
+        .as("one response carries both")
+        .containsExactly(List.of("ok", "denied"), List.of("denied"));
     assertThat(authFailuresAtOutcome).containsOnly(Map.entry("ok", 1), Map.entry("denied", 1));
     assertThat(outcomes.get("denied")).isEqualTo(ActionOutcome.INDEXED);
   }
