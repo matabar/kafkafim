@@ -132,7 +132,8 @@ kubectl -n <ns> rollout restart deployment/kafkafim-<g>
 
 Needed for: a pipeline paused by a record-handler failure, an OTLP header Secret
 rotation, TLS certificate or keystore files rotated under the same path and password
-([§4.3](#43-rotating-a-secret); a new password reloads without a restart).
+([§4.3](#43-rotating-a-secret); a new keystore or truststore password reloads without
+a restart).
 A pipeline in `failed_preflight` does not need a restart: after fixing the cause, a
 no-op `POST /actuator/reload` retries it ([§5.5](#55-failed_preflight-pipelines)).
 Shutdown is graceful: each pipeline stops fetching, gives
