@@ -32,6 +32,9 @@
 		<!-- Libraries not managed by the Spring Boot BOM -->
 		<resilience4j.version>2.3.0</resilience4j.version>
 		<archunit.version>1.5.1</archunit.version>
+		<!-- Not in the Boot, OpenTelemetry or Micrometer BOMs: keep equal to the version
+		     micrometer-registry-otlp ${micrometer.version} depends on (runtime scope) -->
+		<opentelemetry-proto.version>1.10.0-alpha</opentelemetry-proto.version>
 		<!-- Google Java Style (ADR-0024) -->
 		<spotless.version>3.11.0</spotless.version>
 		<google-java-format.version>2.0.0</google-java-format.version>
@@ -115,6 +118,16 @@
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-testcontainers</artifactId>
 			<scope>test</scope>
+		</dependency>
+		<dependency>
+			<!-- Runtime, not test: a direct test-scoped declaration would win over the
+			     transitive runtime scope and drop the jar micrometer-registry-otlp needs.
+			     Declared so OtlpExportIntegrationTest, which decodes the captured OTLP
+			     request bodies with it, does not rely on a transitive dependency. -->
+			<groupId>io.opentelemetry.proto</groupId>
+			<artifactId>opentelemetry-proto</artifactId>
+			<version>${opentelemetry-proto.version}</version>
+			<scope>runtime</scope>
 		</dependency>
 		<dependency>
 			<groupId>org.testcontainers</groupId>
