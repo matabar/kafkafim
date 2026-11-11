@@ -30,6 +30,18 @@ image:
 # secrets always come from secrets[] below).
 # Every group's ConfigMap gets kafka + elasticsearch verbatim plus only its own
 # pipelines.
+# A route with drop: true discards the documents it selects, instead of a cluster and an
+# index (DESIGN §5.3, ADR-0037); they are counted as kafkafim_docs_total{outcome="dropped"}:
+#   pipelines:
+#     app-logs:
+#       source: { cluster: prod-a, topics: [app.logs] }
+#       routes:
+#         - name: debug
+#           when: [ { field: /level, equals: debug } ]
+#           drop: true                 # no cluster, identity, index or pipeline
+#         - default: true
+#           cluster: search-eu
+#           index: "logs-%{+yyyy.MM.dd}"
 config:
   kafkafim:
     kafka:

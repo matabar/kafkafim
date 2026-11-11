@@ -38,13 +38,15 @@ import org.slf4j.LoggerFactory;
  * number with {@link InboundRecord#expectParts}: one part per routed copy of a decoded document
  * (fan-out in {@code route-mode: all} makes several), one per document that fails decoding or
  * routing ({@code missing_id}, {@code bad_timestamp}, {@code decode}, {@code no_route}, {@code
- * unresolved_index}), and exactly one for a record that fails as a whole (oversize, undecodable).
- * Each document is routed before its id, version and timestamp problems apply ({@link
- * DocumentOutcome.Unindexable}); such a problem is still one part per document, whatever the
- * fan-out. An empty array has zero parts and completes at once. A part completes when Elasticsearch
- * acked the action ({@code indexed} or {@code stale}), or when the DLQ broker acknowledged its DLQ
- * record (the sink's {@code dlq} outcomes and every decode or route failure). A DLQ send that fails
- * at shutdown leaves the part, and so the record, incomplete: it is re-delivered.
+ * unresolved_index}), one per document a drop route selected, and exactly one for a record that
+ * fails as a whole (oversize, undecodable). Each document is routed before its id, version and
+ * timestamp problems apply ({@link DocumentOutcome.Unindexable}); such a problem is still one part
+ * per document, whatever the fan-out, and a dropped document is never checked for one. An empty
+ * array has zero parts and completes at once. A part completes when Elasticsearch acked the action
+ * ({@code indexed} or {@code stale}), when the DLQ broker acknowledged its DLQ record (the sink's
+ * {@code dlq} outcomes and every decode or route failure), or, for a dropped document, as soon as
+ * it is dispatched: a record whose documents all drop completes at once. A DLQ send that fails at
+ * shutdown leaves the part, and so the record, incomplete: it is re-delivered.
  *
  * <p>Thread-safety: {@link #process} runs on consumer threads, {@link #onOutcome} on sink sender
  * threads and DLQ completions on DLQ threads; the part counter lives in the source's record.
@@ -145,6 +147,10 @@ final class RecordProcessor {
         case IndexPart index ->
             sinks.apply(index.action().handle().target().stream()).submit(index.action());
         case DlqPart dlq -> deadLetter(inbound, dlq.request(), dlq.route());
+        case DroppedPart dropped -> {
+          meters.document(dropped.route(), DocOutcome.DROPPED);
+          inbound.complete();
+        }
       }
     }
   }
@@ -185,10 +191,16 @@ final class RecordProcessor {
           // Route first: whether an id, version or timestamp problem applies depends on where the
           // document goes (DESIGN §4.2).
           List<Route<RouteTarget>> routes = router.select(routable.node(), record.topic(), headers);
+          if (routes.size() == 1 && routes.getFirst().isDrop()) {
+            // Discarded (ADR-0037): no copy, no DLQ record, no id, version or timestamp check, no
+            // source bytes, so nothing of it counts toward max-in-flight-bytes beyond the record.
+            parts.add(new DroppedPart(routes.getFirst().target().label()));
+            continue;
+          }
           switch (routable) {
             case DocumentOutcome.Unindexable unindexable ->
-                // The error applies when the document is to be indexed, which today is always:
-                // every route indexes, and an empty selection reports the error, not no_route.
+                // The error applies because the document is to be indexed: an indexing route
+                // selected it, or none did (an empty selection reports the error, not no_route).
                 // It is one part per document (route "none"), not one per selected copy.
                 parts.add(documentFailure(inbound, unindexable.error(), docIndex));
             case DocumentOutcome.Decoded doc -> addCopies(inbound, doc, routes, docIndex, parts);
@@ -428,4 +440,7 @@ final class RecordProcessor {
 
   /** A failure to dead-letter; {@code route} is the route label, or none before routing. */
   private record DlqPart(DlqRequest request, String route) implements Part {}
+
+  /** A document a drop route selected; {@code route} is that route's label. */
+  private record DroppedPart(String route) implements Part {}
 }
