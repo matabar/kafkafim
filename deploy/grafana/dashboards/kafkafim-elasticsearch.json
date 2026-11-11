@@ -861,7 +861,7 @@
       "type": "timeseries",
       "id": 15,
       "title": "Auth failures (401/403)",
-      "description": "Every 401/403 response per cluster and identity (none for an unauthenticated cluster). The pipeline pauses until the credentials work (RUNBOOK \u00a75.2).",
+      "description": "Every 401/403 response per cluster and identity (none for an unauthenticated cluster). The pipeline pauses until the credentials work (RUNBOOK \u00a75.2). A series appears with its first failure; the second term counts that one, which increase() alone misses.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -911,7 +911,7 @@
             "uid": "${datasource}"
           },
           "refId": "A",
-          "expr": "sum by (es_cluster, identity, pipeline) (increase(kafkafim_auth_failures_total{pipeline=~\"$pipeline\",es_cluster=~\"$es_cluster\"}[$__rate_interval]))",
+          "expr": "sum by (es_cluster, identity, pipeline) ((increase(kafkafim_auth_failures_total{pipeline=~\"$pipeline\",es_cluster=~\"$es_cluster\"}[$__rate_interval]) or kafkafim_auth_failures_total{pipeline=~\"$pipeline\",es_cluster=~\"$es_cluster\"} * 0) + ((min_over_time(kafkafim_auth_failures_total{pipeline=~\"$pipeline\",es_cluster=~\"$es_cluster\"}[$__rate_interval]) unless kafkafim_auth_failures_total{pipeline=~\"$pipeline\",es_cluster=~\"$es_cluster\"} offset $__rate_interval) or kafkafim_auth_failures_total{pipeline=~\"$pipeline\",es_cluster=~\"$es_cluster\"} * 0))",
           "legendFormat": "{{es_cluster}} {{identity}} {{pipeline}}",
           "range": true,
           "instant": false
