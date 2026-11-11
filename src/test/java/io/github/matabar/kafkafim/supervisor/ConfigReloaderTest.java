@@ -202,7 +202,7 @@ class ConfigReloaderTest {
    * A change that no pipeline uses (here: cluster {@code es2}, which only {@code B} routes to, and
    * the startup-only watcher settings) is still a new tree in effect: {@code applied}, a new
    * generation, nothing restarted. The generation is how an operator sees a config-only change land
-   * (RUNBOOK §2), so it must move even when no pipeline does.
+   * (RUNBOOK §2.2), so it must move even when no pipeline does.
    */
   @Test
   void changeNoPipelineUsesIsAppliedAsNewGenerationWithoutRestarts() {
