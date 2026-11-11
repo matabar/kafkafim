@@ -708,7 +708,8 @@ or roll back. Until then the pods run the previous generation and new pods fail.
 - **Check**:
   1. Does the pipeline have drop routes? Look for `drop: true` in its `routes`
      (`/actuator/configprops`, or the chart values). The startup log warns
-     `every route has drop: true` for a pipeline that indexes nothing.
+     `every route has drop: true` for a pipeline that indexes nothing, and
+     `cancels every other route` for a `route-mode: all` drop route without `when`.
   2. `sum by (route) (rate(kafkafim_docs_total{pipeline="<p>",outcome="dropped"}[5m]))`.
      Every dropped document is counted once, under the label of the drop route that
      selected it (in `route-mode: all`, the first matching drop route). The dashboard's

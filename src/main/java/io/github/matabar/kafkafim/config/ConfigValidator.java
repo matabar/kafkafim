@@ -401,6 +401,7 @@ public final class ConfigValidator {
     boolean firstMode = pipeline.routeMode() == Pipeline.RouteMode.FIRST;
     int defaults = 0;
     int drops = 0;
+    List<String> unconditionalDrops = new ArrayList<>();
     Map<String, Integer> names = new HashMap<>();
     for (int i = 0; i < routes.size(); i++) {
       Route route = routes.get(i);
@@ -429,6 +430,9 @@ public final class ConfigValidator {
       }
       if (route.isDrop()) {
         drops++;
+        if (!firstMode && !route.isDefault() && route.when().isEmpty()) {
+          unconditionalDrops.add(routePath);
+        }
         checkDropRoute(routePath, route);
         continue;
       }
@@ -466,6 +470,17 @@ public final class ConfigValidator {
           path
               + ".routes: every route has drop: true; the pipeline consumes and commits its topics"
               + " without indexing anything");
+    } else {
+      // In all mode a selected drop route cancels every other copy (ADR-0037), so one without
+      // conditions cancels the other routes for every document. A drop default is not affected:
+      // it is taken only when nothing else matched (the allowlist).
+      for (String routePath : unconditionalDrops) {
+        warnings.add(
+            routePath
+                + ": a drop: true route without conditions in route-mode: all selects every"
+                + " document and cancels every other route; the pipeline consumes and commits its"
+                + " topics without indexing anything");
+      }
     }
   }
 

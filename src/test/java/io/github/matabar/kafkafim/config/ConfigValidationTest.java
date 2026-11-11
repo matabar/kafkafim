@@ -898,6 +898,59 @@ class ConfigValidationTest {
               """),
           P + ".routes[0].when: a route without conditions matches everything");
     }
+
+    @Test
+    void warnsOnUnconditionalDropRouteInAllMode() {
+      KafkafimProperties properties =
+          ConfigTestSupport.bind(
+              pipeline(
+                  """
+                  route-mode: all
+                  routes:
+                    - { cluster: es, index: a }
+                    - { name: everything, drop: true }
+                  """));
+
+      assertThat(ConfigValidator.validate(properties).warnings())
+          .contains(
+              P
+                  + ".routes[1]: a drop: true route without conditions in route-mode: all"
+                  + " selects every document and cancels every other route; the pipeline"
+                  + " consumes and commits its topics without indexing anything");
+    }
+
+    @Test
+    void doesNotWarnOnConditionalOrDefaultDropRoutesInAllMode() {
+      KafkafimProperties properties =
+          ConfigTestSupport.bind(
+              pipeline(
+                  """
+                  route-mode: all
+                  routes:
+                    - { cluster: es, index: a }
+                    - { when: [ { field: /level, equals: debug } ], drop: true }
+                    - { default: true, drop: true }
+                  """));
+
+      assertThat(ConfigValidator.validate(properties).warnings())
+          .noneMatch(w -> w.contains("cancels every other route"));
+    }
+
+    @Test
+    void warnsOnceWhenTheOnlyRouteIsAnUnconditionalDropInAllMode() {
+      KafkafimProperties properties =
+          ConfigTestSupport.bind(
+              pipeline(
+                  """
+                  route-mode: all
+                  routes:
+                    - { drop: true }
+                  """));
+
+      assertThat(ConfigValidator.validate(properties).warnings())
+          .anyMatch(w -> w.contains("every route has drop: true"))
+          .noneMatch(w -> w.contains("cancels every other route"));
+    }
   }
 
   @Nested

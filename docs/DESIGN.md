@@ -656,7 +656,10 @@ routes:
 - In `route-mode: first`, order decides: a drop route after an indexing route that
   also matches never sees the document.
 - In `route-mode: all`, a selected drop route **cancels every other copy**: the
-  document goes nowhere, and it is counted under the first matching drop route.
+  document goes nowhere, and it is counted under the first matching drop route. A drop
+  route without `when` therefore cancels every other route for every document; startup
+  warns about it (a drop default is taken only when nothing else matched, and does not
+  warn).
 - `default: true, drop: true` turns the routes into an allowlist: whatever no other
   route selected is dropped. A pipeline whose routes all drop is valid but logs a
   startup warning.
@@ -958,7 +961,8 @@ are reported together:
 - **Warnings** (bind, log at `WARN`): no pipelines, `id-missing: auto`, an http route
   without identity, an index name starting with `.`, week-based year, a timestamp
   `pattern:` without an offset or zone, using `k` or failing its self-check,
-  `allow-inline-secrets=true`, a pipeline whose routes all have `drop: true`.
+  `allow-inline-secrets=true`, a pipeline whose routes all have `drop: true`, a drop
+  route without `when` in `route-mode: all` (it cancels every other route).
 
 ## 6. Scaling
 
