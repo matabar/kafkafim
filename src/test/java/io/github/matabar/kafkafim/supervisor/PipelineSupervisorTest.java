@@ -268,8 +268,9 @@ class PipelineSupervisorTest {
       PipelineSupervisor slow = new PipelineSupervisor(unanswered, slowResources, List.of());
       try {
         slow.startPipeline("slow");
-        await().atMost(Duration.ofSeconds(10)).until(() -> !accepted.isEmpty());
-        Thread.sleep(300); // well into the check
+        PipelineRuntime runtime = slow.runtimes().iterator().next();
+        await().atMost(Duration.ofSeconds(10)).until(runtime::inPreflight);
+        Thread.sleep(300); // well into the DLQ describe
 
         long began = System.nanoTime();
         slow.stop();

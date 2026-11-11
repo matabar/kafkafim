@@ -1,7 +1,10 @@
 package io.github.matabar.kafkafim.supervisor;
 
+import co.elastic.clients.transport.rest5_client.low_level.Cancellable;
 import co.elastic.clients.transport.rest5_client.low_level.Request;
+import co.elastic.clients.transport.rest5_client.low_level.Response;
 import co.elastic.clients.transport.rest5_client.low_level.ResponseException;
+import co.elastic.clients.transport.rest5_client.low_level.ResponseListener;
 import co.elastic.clients.transport.rest5_client.low_level.Rest5Client;
 import io.github.matabar.kafkafim.config.ElasticsearchCluster;
 import io.github.matabar.kafkafim.sink.es.ClientSettings;
@@ -9,6 +12,8 @@ import io.github.matabar.kafkafim.sink.es.ElasticsearchClients;
 import java.io.IOException;
 import java.time.Duration;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
 import org.jspecify.annotations.Nullable;
 
 /**
@@ -44,27 +49,64 @@ final class ElasticsearchAuthCheck implements Preflight.AuthCheck {
       return Preflight.Status.rejected(e.getMessage());
     }
     try {
-      client.performRequest(new Request("GET", "/_security/_authenticate"));
-      return Preflight.Status.OK;
-    } catch (ResponseException e) {
-      return classify(e.getResponse().getStatusCode());
-    } catch (IOException | RuntimeException e) {
-      if (isTlsRejection(e)) {
-        // The cluster answered, but its certificate does not match the configured trust (or the
-        // client certificate was refused): configuration, retrying would never help.
-        return Preflight.Status.rejected("TLS handshake failed: " + e);
-      }
-      return Preflight.Status.unreachable(e.toString());
+      return authenticate(client);
+    } catch (RuntimeException e) {
+      return failure(e);
     } finally {
       close(client);
     }
   }
 
   /**
-   * Closes the client with the thread's interrupt flag cleared, then restores it. A stop interrupts
-   * a check in progress (the request then fails as unreachable at once); closing the client's I/O
-   * reactor from an interrupted thread would cut its shutdown short, and every I/O thread would log
-   * a {@code ClosedSelectorException} at ERROR.
+   * Sends the request and waits for its answer. A stop interrupts a check in progress (DESIGN
+   * §4.6): the request is then cancelled, so that closing the client finds no exchange open (a
+   * graceful close would wait for it, a forced one makes every I/O thread log a {@code
+   * ClosedSelectorException} at ERROR), and the check answers unreachable at once.
+   */
+  private static Preflight.Status authenticate(Rest5Client client) {
+    CompletableFuture<Response> answer = new CompletableFuture<>();
+    Cancellable request =
+        client.performRequestAsync(
+            new Request("GET", "/_security/_authenticate"),
+            new ResponseListener() {
+              @Override
+              public void onSuccess(Response response) {
+                answer.complete(response);
+              }
+
+              @Override
+              public void onFailure(Exception exception) {
+                answer.completeExceptionally(exception);
+              }
+            });
+    try {
+      answer.get();
+      return Preflight.Status.OK;
+    } catch (InterruptedException e) {
+      request.cancel();
+      Thread.currentThread().interrupt();
+      return Preflight.Status.unreachable("check interrupted");
+    } catch (ExecutionException e) {
+      return failure(e.getCause() == null ? e : e.getCause());
+    }
+  }
+
+  private static Preflight.Status failure(Throwable e) {
+    if (e instanceof ResponseException response) {
+      return classify(response.getResponse().getStatusCode());
+    }
+    if (isTlsRejection(e)) {
+      // The cluster answered, but its certificate does not match the configured trust (or the
+      // client certificate was refused): configuration, retrying would never help.
+      return Preflight.Status.rejected("TLS handshake failed: " + e);
+    }
+    return Preflight.Status.unreachable(e.toString());
+  }
+
+  /**
+   * Closes the client with the thread's interrupt flag cleared, then restores it: with the flag
+   * set, the I/O reactor's shutdown would be cut short and its threads would log a {@code
+   * ClosedSelectorException} at ERROR.
    */
   private static void close(Rest5Client client) {
     boolean interrupted = Thread.interrupted();

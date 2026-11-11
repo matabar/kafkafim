@@ -252,6 +252,13 @@ final class PipelineRuntime {
     }
   }
 
+  /** Whether the start in progress is running its preflight checks; for tests. */
+  boolean inPreflight() {
+    synchronized (lock) {
+      return preflighting != null;
+    }
+  }
+
   /** The running source, for tests and telemetry. */
   @Nullable KafkaPipelineSource source() {
     synchronized (lock) {
