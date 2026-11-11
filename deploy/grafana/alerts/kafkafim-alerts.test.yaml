@@ -211,6 +211,21 @@ tests:
         alertname: KafkafimEsAuthFailures
         exp_alerts: []
 
+  - name: auth failures, one failed scrape is not a new series (#134)
+    interval: 30s
+    input_series:
+      # An old non-zero total; the scrape at 10m30s failed and wrote a stale marker.
+      - series: 'kafkafim_auth_failures_total{instance="pod-a",pipeline="orders",kafka_cluster="main",es_cluster="logs",identity="writer"}'
+        values: '3x20 stale 3x20'
+    alert_rule_test:
+      # 'x offset 5m' at 15m30s hits the stale marker; a range lookback skips it.
+      - eval_time: 15m30s
+        alertname: KafkafimEsAuthFailures
+        exp_alerts: []
+      - eval_time: 12m
+        alertname: KafkafimEsAuthFailures
+        exp_alerts: []
+
   - name: reload failure
     interval: 1m
     input_series:
