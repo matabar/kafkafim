@@ -2,6 +2,8 @@ package io.github.matabar.kafkafim.config;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
+import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
 
 import io.github.matabar.kafkafim.decode.DecodeResult;
@@ -16,8 +18,10 @@ import io.github.matabar.kafkafim.decode.ErrorType;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
 import java.util.List;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import tools.jackson.databind.json.JsonMapper;
 
@@ -62,6 +66,9 @@ class TimestampPatternParityTest {
         "yyyy-MM-dd h B",
         "yyyy-MM-dd A B",
         "yyyy-MM-dd'B'",
+        "yyyy-MM-dd'it''s B'",
+        "yyyy-MM-dd[ h:mm B]",
+        "yyyy-MM-dd[ HH:mm][ B]",
         "yyyy-MM-dd HH:mm VV",
         "yyyy-MM-dd HH:mm O",
         "yyyy-DDD HH:mm",
@@ -105,6 +112,39 @@ class TimestampPatternParityTest {
       DocumentOutcome outcome = decode(decoder, text);
       assertThat(outcome).as("'%s' decoding '%s'", pattern, text).isInstanceOf(Unindexable.class);
       assertThat(((Unindexable) outcome).error().type()).isEqualTo(ErrorType.BAD_TIMESTAMP);
+    }
+  }
+
+  /**
+   * Values the formatter never writes for these instants: an optional time left out (read as
+   * midnight on both sides), and inputs strict resolution or the locale must refuse on both sides.
+   */
+  @ParameterizedTest
+  @CsvSource(
+      delimiter = '|',
+      value = {
+        "yyyy-MM-dd[ h:mm B]|2026-11-07|2026-11-07T00:00:00Z",
+        "yyyy-MM-dd[ HH:mm][ B]|2026-11-07|2026-11-07T00:00:00Z",
+        "yyyy-MM-dd[ hh:mm a]|2026-11-07|2026-11-07T00:00:00Z",
+        "yyyy-MM-dd|2026-02-30|",
+        "yyyy-MM-dd HH:mm|2026-11-07 24:00|",
+        "yyyy-MM-dd hh:mm a|2026-11-07 13:04 PM|",
+        "G yyyy-MM-dd|AD 2026-01-01|",
+        "dd MMM yyyy|07 nov. 2026|"
+      })
+  void handWrittenValueIsReadAlikeByBoth(String pattern, String text, String expected) {
+    assertThat(TimestampPatternSyntax.errors(pattern)).isEmpty();
+    DateTimeFormatter formatter = TimestampPatternSyntax.formatter(pattern);
+    DocumentOutcome outcome = decode(decoder(pattern), text);
+    if (expected == null) {
+      assertThatExceptionOfType(DateTimeParseException.class)
+          .isThrownBy(() -> formatter.parse(text));
+      assertThat(outcome).as("'%s' decoding '%s'", pattern, text).isInstanceOf(Unindexable.class);
+      assertThat(((Unindexable) outcome).error().type()).isEqualTo(ErrorType.BAD_TIMESTAMP);
+    } else {
+      assertThatCode(() -> formatter.parse(text)).doesNotThrowAnyException();
+      assertThat(outcome).as("'%s' decoding '%s'", pattern, text).isInstanceOf(Decoded.class);
+      assertThat(((Decoded) outcome).timestamp()).isEqualTo(Instant.parse(expected));
     }
   }
 
