@@ -332,6 +332,62 @@ class PipelineSupervisorIntegrationTest {
     assertThat(readAll("e.events.kafkafim-dlq", Duration.ofSeconds(1))).isEmpty();
   }
 
+  // ---- (f) ----
+
+  @Test
+  void consumerTheBrokerRejectsMovesThePipelineToFailedInStateGaugeAndReadiness() throws Exception {
+    // A real source failure, end to end (ADR-0036, #101): a broker that admits one member per
+    // consumer group, and a group that is already full. kafkafim's consumer is refused on join;
+    // poll throws GroupMaxSizeReachedException, an error the container does not retry (it is no
+    // authentication or authorization error), so the consumer stops and the source reports it.
+    // Its own broker, because the shared one runs groups of several consumers.
+    try (KafkaContainer oneMemberGroups =
+        KafkaTestContainers.kafka()
+            .withEnv("KAFKA_AUTO_CREATE_TOPICS_ENABLE", "false")
+            .withEnv("KAFKA_GROUP_MAX_SIZE", "1")) {
+      oneMemberGroups.start();
+      String bootstrap = oneMemberGroups.getBootstrapServers();
+      try (Admin ownAdmin = Admin.create(Map.of("bootstrap.servers", bootstrap));
+          KafkaConsumer<byte[], byte[]> member = consumer(bootstrap, "kafkafim.f")) {
+        ownAdmin
+            .createTopics(
+                List.of(
+                    new NewTopic("f.events", 1, (short) 1),
+                    new NewTopic("f.events.kafkafim-dlq", 1, (short) 1)))
+            .all()
+            .get();
+        member.subscribe(List.of("f.events"));
+        await()
+            .atMost(TIMEOUT)
+            .until(() -> {
+              member.poll(Duration.ofMillis(200));
+              return !member.assignment().isEmpty();
+            });
+
+        Map<String, Object> props =
+            new PipelineProps("f").topic("f.events").defaultRoute("f-docs").map();
+        props.put("kafkafim.kafka.clusters.local.bootstrap-servers[0]", bootstrap);
+        ConfigurableApplicationContext app = start(props);
+
+        awaitState(app, "f", PipelineState.FAILED);
+        PipelineSupervisor supervisor = supervisor(app);
+        // ABNORMAL: an exception from poll (ERROR is for a java.lang.Error from the listener).
+        assertThat(supervisor.failure("f")).isEqualTo("Kafka consumer stopped (ABNORMAL)");
+        // State, gauge and readiness agree: the pod's only pipeline failed, so it is out of
+        // service.
+        MeterRegistry meters = app.getBean(MeterRegistry.class);
+        assertThat(gauge(meters, "f", "failed")).isEqualTo(1);
+        assertThat(gauge(meters, "f", "running")).isZero();
+        assertThat(readiness(app)).isEqualTo(503);
+        // The failed source is stopped and closed, not left behind.
+        await()
+            .atMost(TIMEOUT)
+            .until(() -> supervisor.runtimes().stream().allMatch(r -> r.source() == null));
+        assertThat(supervisor.state("f")).isEqualTo(PipelineState.FAILED);
+      }
+    }
+  }
+
   // ---- application ----
 
   private ConfigurableApplicationContext start(Map<String, Object> pipelines) {
@@ -490,15 +546,20 @@ class PipelineSupervisorIntegrationTest {
         .untilAsserted(() -> assertThat(committedTotal(group, topic)).isEqualTo(endTotal(topic)));
   }
 
-  private static List<ConsumerRecord<byte[], byte[]>> readAll(String topic, Duration wait) {
+  private static KafkaConsumer<byte[], byte[]> consumer(String bootstrap, String group) {
     Properties config = new Properties();
-    config.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, KAFKA.getBootstrapServers());
-    config.put(ConsumerConfig.GROUP_ID_CONFIG, "it-reader-" + UUID.randomUUID());
+    config.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrap);
+    config.put(ConsumerConfig.GROUP_ID_CONFIG, group);
     config.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
     config.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, ByteArrayDeserializer.class);
     config.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, ByteArrayDeserializer.class);
+    return new KafkaConsumer<>(config);
+  }
+
+  private static List<ConsumerRecord<byte[], byte[]>> readAll(String topic, Duration wait) {
     List<ConsumerRecord<byte[], byte[]>> records = new ArrayList<>();
-    try (KafkaConsumer<byte[], byte[]> consumer = new KafkaConsumer<>(config)) {
+    try (KafkaConsumer<byte[], byte[]> consumer =
+        consumer(KAFKA.getBootstrapServers(), "it-reader-" + UUID.randomUUID())) {
       consumer.subscribe(List.of(topic));
       long deadline = System.nanoTime() + wait.toNanos();
       while (System.nanoTime() < deadline) {
