@@ -146,8 +146,9 @@ groups:
           runbook_url: https://github.com/matabar/kafkafim/blob/main/docs/RUNBOOK.md#58-consumer-lag-growing
 
       - alert: KafkafimEsAuthFailures
-        # A series born at a non-zero value (its first 401/403 before the first scrape) has
-        # no increase(); the second clause catches it. It looks back over a range, not at one
+        # Series exist from startup with 0 per cluster and identity, but one whose first
+        # scraped value is non-zero (a 401/403 before the pod's first scrape) has no
+        # increase(); the second clause catches it. It looks back over a range, not at one
         # instant: a failed scrape's stale marker must not make an old series look new.
         expr: >-
           sum by (pipeline, es_cluster, identity) (increase(kafkafim_auth_failures_total[5m])) > 0

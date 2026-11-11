@@ -209,6 +209,15 @@ class TelemetryIntegrationTest {
           assertThat(value(scrape, "kafkafim_kafka_connected", base)).isEqualTo(1);
           assertThat(value(scrape, "kafkafim_in_flight_bytes", base)).isZero();
           assertThat(value(scrape, "kafkafim_breaker_state", "es_cluster=\"local\"")).isZero();
+          // Registered from the configuration: the unauthenticated cluster's identity="none".
+          assertThat(
+                  value(
+                      scrape,
+                      "kafkafim_auth_failures_total",
+                      base,
+                      "es_cluster=\"local\"",
+                      "identity=\"none\""))
+              .isZero();
           assertThat(
                   value(scrape, "kafkafim_pipeline_state", "pipeline=\"tel\"", "state=\"running\""))
               .isEqualTo(1);

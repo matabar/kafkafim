@@ -56,10 +56,12 @@ Notes:
   tells dropped from lost.
 - `KafkafimNoAssignedPartitions` is expected on pods beyond a pipeline's partition
   count; silence it for such groups (severity `info`).
-- `kafkafim_auth_failures_total` and `kafkafim_dlq_records_total` appear with their
-  first event, so `increase()` alone misses the first increment; the auth alert has a
-  second clause for a series that is new in the window. The DLQ alert needs a sustained
-  rate and does not.
+- `kafkafim_auth_failures_total` exists from startup with 0 for every Elasticsearch
+  cluster and identity a pipeline's routes write with, so `increase()` sees a 401/403
+  once the pod has been scraped; the auth alert keeps a second clause for a series whose
+  first scraped value is already non-zero (a 401/403 before that first scrape).
+  `kafkafim_dlq_records_total` appears with its first event, so `increase()` alone
+  misses its first increment; the DLQ alert needs a sustained rate and does not mind.
 - Rules group by `job`/`instance` where a per-pod answer matters; relabel to your own
   pod label if your scrape config uses another one.
 - Each alert carries a `runbook_url` annotation to the matching RUNBOOK section.

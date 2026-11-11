@@ -249,6 +249,73 @@ class KafkafimMetersTest {
   }
 
   @Test
+  void authFailureSeriesExistFromTheStartPerClusterAndIdentity() {
+    Set<PipelineSpec.EsStream> streams =
+        Set.of(
+            new PipelineSpec.EsStream("search-eu", "writer"),
+            new PipelineSpec.EsStream("search-eu", "reader"),
+            new PipelineSpec.EsStream("plain", null));
+    sync(
+        Map.of(
+            "orders",
+            new PipelineSpec(
+                "prod-a",
+                List.of("t"),
+                List.of("0"),
+                Set.of("search-eu", "plain"),
+                streams,
+                new Probe())));
+    String[] base = {"pipeline", "orders", "kafka_cluster", "prod-a"};
+
+    assertThat(
+            registry.find(TelemetryNames.AUTH_FAILURES).counters().stream()
+                .map(c -> c.getId().getTag("es_cluster") + "/" + c.getId().getTag("identity"))
+                .toList())
+        .containsExactlyInAnyOrder("search-eu/writer", "search-eu/reader", "plain/none");
+    assertThat(
+            counter(
+                TelemetryNames.AUTH_FAILURES,
+                with(base, "es_cluster", "search-eu", "identity", "writer")))
+        .isZero();
+
+    meters.pipeline("orders").authFailure("search-eu", "writer");
+    meters.pipeline("orders").authFailure("plain", null);
+    assertThat(
+            counter(
+                TelemetryNames.AUTH_FAILURES,
+                with(base, "es_cluster", "search-eu", "identity", "writer")))
+        .isOne();
+    assertThat(
+            counter(
+                TelemetryNames.AUTH_FAILURES,
+                with(base, "es_cluster", "plain", "identity", "none")))
+        .isOne();
+    assertThat(registry.find(TelemetryNames.AUTH_FAILURES).counters()).hasSize(3);
+  }
+
+  @Test
+  void changedIdentityGetsFreshAuthFailureSeries() {
+    sync(Map.of("orders", withStream("writer")));
+    sync(Map.of("orders", withStream("writer-v2")));
+
+    assertThat(
+            registry.find(TelemetryNames.AUTH_FAILURES).counters().stream()
+                .map(c -> c.getId().getTag("identity"))
+                .toList())
+        .containsExactly("writer-v2");
+  }
+
+  private static PipelineSpec withStream(String identity) {
+    return new PipelineSpec(
+        "prod-a",
+        List.of("t"),
+        List.of("0"),
+        Set.of("search-eu"),
+        Set.of(new PipelineSpec.EsStream("search-eu", identity)),
+        new Probe());
+  }
+
+  @Test
   void gaugesReadTheProbe() {
     Probe probe = new Probe();
     sync(Map.of("orders", spec("prod-a", List.of("orders.v1", "orders.v2"), probe)));
