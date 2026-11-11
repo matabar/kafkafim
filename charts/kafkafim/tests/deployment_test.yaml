@@ -58,6 +58,11 @@ tests:
           content: { name: OTEL_EXPORTER_OTLP_ENDPOINT, value: "http://otel-collector.observability:4318" }
       - contains:
           path: spec.template.spec.containers[0].env
+          content:
+            name: POD_NAME
+            valueFrom: { fieldRef: { fieldPath: metadata.name } }
+      - contains:
+          path: spec.template.spec.containers[0].env
           content: { name: OTEL_EXPORTER_OTLP_HEADERS, value: "x-tenant=kafkafim" }
       - contains:
           path: spec.template.spec.containers[0].env

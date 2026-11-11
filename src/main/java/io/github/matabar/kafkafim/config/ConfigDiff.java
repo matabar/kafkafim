@@ -113,6 +113,9 @@ public record ConfigDiff(
     Set<String> esClusters = new LinkedHashSet<>();
     Set<List<String>> esIdentities = new LinkedHashSet<>();
     for (Pipeline.Route route : after.routes()) {
+      if (route.cluster() == null) {
+        continue; // a drop route uses no cluster
+      }
       esClusters.add(route.cluster());
       if (route.identity() != null) {
         esIdentities.add(List.of(route.cluster(), route.identity()));

@@ -24,7 +24,9 @@ into ~20 Elasticsearch 8.x clusters.
 - Never run more consumer workers than partitions. Big topics get dedicated pods;
   small topics share pods but are never served by a single pod.
 - DLQ topic for every event that cannot be indexed. A poison message never blocks a
-  partition indefinitely. Replay is configuration, not tooling (section 9).
+  partition indefinitely. Replay is configuration, not tooling (section 9). The only
+  documents that reach neither Elasticsearch nor the DLQ are those a `drop: true` route
+  selects, and each one is counted (§5.3, ADR-0037).
 - Named identities per cluster, for Kafka and Elasticsearch alike: each consumer
   group, DLQ producer and route references an identity (SASL, API key, basic or
   mTLS) by name, so Kafka ACLs and ES roles can be scoped per pipeline and
@@ -159,17 +161,21 @@ Kafka source. Per record it plans every part before dispatching any and declares
 number (`SourceRecord.expectParts`): one part per routed copy of a decoded document
 (`route-mode: all` fan-out makes several), one per document that fails decoding or
 routing (`missing_id`, `bad_timestamp`, `decode` with `doc-index`, `no_route`,
-`unresolved_index` with the route's `target.cluster`), and exactly one for a record that
-fails as a whole (oversize, never decoded; undecodable; tombstone). Each parsed object is
-routed before its id, version and timestamp problems apply: decoding extracts them and
-keeps any error with the document, and the error becomes a part only for a document that
-routing sends to Elasticsearch. Every route indexes, so today that is every document,
-including one no route selected (it reports its id, version or timestamp error rather than
-`no_route`), and it stays one part per document, with `route="none"` (§10), however many
-copies `route-mode: all` would have made. The timestamp is still parsed before any
-`%{+...}` pattern is resolved. A part completes on `indexed` or `stale`, or when the
-broker acknowledged its DLQ record (a sink `dlq` outcome or a decode/route failure); a
-DLQ send failed by shutdown leaves the record uncommitted.
+`unresolved_index` with the route's `target.cluster`), one per document a drop route
+selected (§5.3), and exactly one for a record that fails as a whole (oversize, never
+decoded; undecodable; tombstone). Each parsed object is routed before its id, version and
+timestamp problems apply: decoding extracts them and keeps any error with the document,
+and the error becomes a part only for a document that routing sends to Elasticsearch,
+that is, every document a drop route did not select, including one no route selected (it
+reports its id, version or timestamp error rather than `no_route`). It stays one part per
+document, with `route="none"` (§10), however many copies `route-mode: all` would have
+made. The timestamp is still parsed before any `%{+...}` pattern is resolved. A part
+completes on `indexed` or `stale`, when the broker acknowledged its DLQ record (a sink
+`dlq` outcome or a decode/route failure), or, for a dropped document, as soon as it is
+dispatched; a DLQ send failed by shutdown leaves the record uncommitted. A dropped
+document gets no source byte copy and no index resolution, so a record whose documents
+all drop commits at once, like an empty array, and holds its `max-in-flight-bytes` share
+only until then. Array elements drop one by one while the rest go ahead.
 Outcomes for a record whose partition was revoked are ignored and not dead-lettered (the
 next owner re-reads it). On revoke the supervisor seals the open batches and waits for
 nothing. Ingest time is the record's Kafka timestamp (the wall clock for a record
@@ -223,8 +229,8 @@ then the only ones that count. A pipeline that is stopping cannot be started unt
 ### 4.3 Offsets and delivery guarantee
 
 - Offsets are committed only after every document from that record has been acked by
-  ES or written to the DLQ. A record that explodes into 50 documents is committed
-  when all 50 are done.
+  ES, written to the DLQ, or dropped by a drop route (§5.3). A record that explodes
+  into 50 documents is committed when all 50 are done.
 - Per-partition tracker (`source/kafka/OffsetTracker`, ADR-0025): completed records are
   recorded as they ack (bulks complete out of order); the committed offset is the lowest
   incomplete offset of the partition, or one past the highest delivered offset when none
@@ -313,7 +319,9 @@ fraction passes through a `double`, which is exact to the millisecond, so send a
 string for more). `pattern:` parses with `Locale.ROOT` and strict resolution (the era
 defaults to CE, so `yyyy` works and `02-30` fails). A pattern without an offset or
 zone is read as **UTC**, one without any time field as midnight; a time that cannot
-resolve (`hh` without `a`) or a pattern that yields no date fails. Era text is
+resolve (`hh` without `a`, or a day period `B` in a pattern with no hour) or a
+pattern that yields no date fails. A pattern whose hour is in an optional section
+(`yyyy-MM-dd[ h:mm B]`) reads a date-only value as midnight. Era text is
 `CE`/`BCE` under `Locale.ROOT`. `k` is the clock hour 1 to 24, whose `24` is the first
 hour of the day (`24:30` is `00:30` of the same date), as java.time defines it; `HH`
 rejects ISO-8601's end-of-day `24:00`, so such a value is a bad timestamp rather than
@@ -361,9 +369,16 @@ restart. Elasticsearch answers 405 on that path when security is disabled; any s
 other than 401, 403 and 5xx passes. The consumer group's permission is not checked
 before the first join; a denied join is retried by the source every 10s and logged.
 
+After a successful start, a pipeline whose source cannot go on (the record handler
+threw, or a consumer of the listener container stopped on its own: any
+`ConsumerStoppedEvent` reason but `NORMAL`) goes to **`failed`** and is stopped like
+any other stop: drained, committed, out of the group, sinks closed (ADR-0036). Like
+`failed_preflight`, it stays stopped until the next accepted reload or a restart;
+nothing restarts it on its own.
+
 Readiness (`pipelines` health contributor in the readiness group, next to `kafka`,
 §10): up while at least one pipeline is `running` or `paused`; out of service while every pipeline is still
-`starting` or has failed, so a rollout of a broken configuration stops at the first
+`starting` or has failed (`failed_preflight` or `failed`), so a rollout of a broken configuration stops at the first
 pod; up with zero pipelines configured (valid, with a startup warning). A breaker or
 auth pause never affects readiness.
 
@@ -627,6 +642,38 @@ conditions hold, in order; the default route only when none did. No match and no
 default (possible only in `all`) sends the document to the DLQ with
 `error.type=no_route`.
 
+**Drop routes** (ADR-0037). A route with `drop: true` discards the documents it selects:
+they are neither indexed nor dead-lettered. `drop: true` takes the place of `cluster`,
+`identity`, `index` and `pipeline`, and validation rejects a drop route that sets any of
+them; `name`, `when` and `default` work as on any route.
+
+```yaml
+routes:
+  - name: debug-logs
+    when: [ { field: /level, equals: debug } ]
+    drop: true
+  - { default: true, cluster: logs-eu, index: "logs-%{+yyyy.MM.dd}" }
+```
+
+- In `route-mode: first`, order decides: a drop route after an indexing route that
+  also matches never sees the document.
+- In `route-mode: all`, a selected drop route **cancels every other copy**: the
+  document goes nowhere, and it is counted under the first matching drop route.
+- `default: true, drop: true` turns the routes into an allowlist: whatever no other
+  route selected is dropped. A pipeline whose routes all drop is valid but logs a
+  startup warning.
+- A dropped document skips the id, version and timestamp checks (§4.2), so a drop
+  route can discard documents that would otherwise be `missing_id` or
+  `bad_timestamp`. Decode failures (invalid JSON, a scalar, a non-object element, an
+  oversize record, a tombstone) are not documents a route can see, and still go to the
+  DLQ.
+- Each dropped document counts once in `kafkafim_docs_total{route,outcome="dropped"}`
+  (§10). Nothing is logged per document.
+- Preflight and the Elasticsearch auth check skip drop routes, which name no cluster;
+  a pipeline whose routes all drop opens no bulk sink.
+- Changing a drop route on reload restarts only its pipeline (§5.6) and applies to
+  records not yet committed. Documents already in Elasticsearch stay.
+
 A route's optional `name` is its `route` label in metrics (§10) and names it in log
 and error messages; an unnamed route is labelled by its zero-based position (`0`, `1`,
 …). So that no two labels of a pipeline collide, a name is not blank, is unique within
@@ -829,14 +876,14 @@ in `ConfigValidator`, whose messages never include values.
   - Not reloaded: the `KafkafimProperties` bean stays the startup tree (the supervisor
     holds the one in effect); OTLP export headers (§10) and everything outside
     `kafkafim.*` need a restart.
-  - **Retry of `failed_preflight`** (ADR-0032): every accepted reload (`applied` or
+  - **Retry of failed pipelines** (ADR-0032, ADR-0036): every accepted reload (`applied` or
     `unchanged`, watcher or endpoint) starts once more each pipeline it leaves unchanged
-    that is in `failed_preflight`, so after fixing a missing topic, ACL or credential a
+    that is in `failed_preflight` or `failed`, so after fixing a missing topic, ACL or credential a
     no-op `POST /actuator/reload` recovers it without a restart. They are listed under
     `retried` (not `unchanged`); `result`, `generation` and
     `kafkafim_config_reload_total` are unaffected, and the reload's INFO line names
     them. One ordinary start per reload, in the background: a pipeline that still fails
-    goes back to `failed_preflight` and waits for the next reload (no automatic retry,
+    goes back to a failed state and waits for the next reload (no automatic retry,
     no attempt while one is starting or stopping); the outcome shows in
     `kafkafim_pipeline_state`. A rejected reload retries nothing.
 
@@ -883,7 +930,8 @@ are reported together:
   reserved `route` labels, §5.3). A route's ingest `pipeline` is optional
   but, when set, not blank: `pipeline: ""`, whitespace, or a bare `pipeline:` (which binds
   as an empty string) would make Elasticsearch reject the whole bulk request; omit the key
-  instead.
+  instead. A route needs `cluster` and `index` unless it has `drop: true`, which takes
+  none of `cluster`, `identity`, `index` or `pipeline` (§5.3).
 - **Conditions**: exactly one subject (`field`, `header` or `topic`). A `field` takes
   exactly one of `equals`, `in` (non-empty), `exists`, `prefix`, `matches` (the regex
   must compile); a `header` takes `equals`; a `topic` takes nothing and must be one of
@@ -904,7 +952,7 @@ are reported together:
   (`Locale.ROOT`, strict, era CE) by formatting a sample and parsing it back: one that
   never yields a date (`yyyy-MM`, `HH:mm`, `YYYY-MM-dd`) or a complete time (`hh`
   without `a`, minutes without hours) is an error, since every document would fail, as
-  is a day period `B` without a time (it would read every value as midnight). A
+  is a day period `B` in a pattern with no hour (`yyyy-MM-dd B`). A
   pattern without an offset or zone (read as UTC; a quoted `'Z'` literal does not warn),
   one using `k`, or one that cannot format and parse back the sample is a warning.
 - **Document**: `op: create` takes no `version-field`; Elasticsearch accepts external
@@ -912,7 +960,7 @@ are reported together:
 - **Warnings** (bind, log at `WARN`): no pipelines, `id-missing: auto`, an http route
   without identity, an index name starting with `.`, week-based year, a timestamp
   `pattern:` without an offset or zone, using `k` or failing its self-check,
-  `allow-inline-secrets=true`.
+  `allow-inline-secrets=true`, a pipeline whose routes all have `drop: true`.
 
 ## 6. Scaling
 
@@ -943,8 +991,9 @@ are reported together:
 | Item 409 `version_conflict_engine_exception` | With an external version: `stale` (success) under `on-version-conflict: ignore`, DLQ `version_conflict` under `dlq`. For `op: create` without a version: an earlier attempt landed, so success. Otherwise `es_error`. |
 | Retryable **item** error (item 429 `es_rejected_execution_exception`, item 5xx, item 404 `index_not_found_exception`, any other unexpected item status) exceeding `max-attempts`/`max-elapsed` | The item goes back into the batcher after a backoff and travels in a later bulk; once it has failed `max-attempts` times, or `max-elapsed` after its first retryable failure, DLQ with `error.type=es_retries_exhausted`, partition continues. This is the poison-message bound. A missing index is a provisioning gap (ADR-0021) or a race with whoever creates the index, so it gets the bounded retry rather than an immediate DLQ or an unbounded stall. Request-level failures (connection errors, 5xx, request-level 429, breaker open, 401/403, unexpected statuses) are retried indefinitely and never count toward the bound; an ES outage produces lag, never DLQ records. |
 | Bulk request rejected with 413 | The request is split in halves and each half retried (recursively); a single-document bulk that still gets 413 sends that document to the DLQ with `error.type=too_large`. |
-| Undecodable record, non-object element, unusable version, missing `_id`, bad timestamp, no matching route, unresolved index pattern | DLQ with the matching `error.type` (`decode`, `missing_id`, `bad_timestamp`, `no_route`, `unresolved_index`). |
+| Undecodable record, non-object element, unusable version, missing `_id`, bad timestamp, no matching route, unresolved index pattern | DLQ with the matching `error.type` (`decode`, `missing_id`, `bad_timestamp`, `no_route`, `unresolved_index`). A document a drop route selected skips the version, `_id` and timestamp checks and is never dead-lettered for them (§5.3); undecodable records and non-object elements still are. |
 | Missing topic, DLQ topic, or failed authentication at pipeline start | Pipeline stays stopped (`failed_preflight`) until the next accepted reload or a restart (§5.6), clear log naming resource and identity, alert. Other pipelines unaffected. kafkafim never creates the resource. |
+| Record handler throws, or a consumer of the listener container stops on its own (an error the container does not retry, an `Error` from the listener) | The pipeline goes to `failed` and is stopped gracefully: the source drains, commits what completed and leaves the group, so the group's other pods take its partitions; records still incomplete are re-delivered. It stays stopped until the next accepted reload or a restart (§4.6, §5.6, ADR-0036); one ERROR line names the cause. Other pipelines unaffected. |
 | DLQ produce fails | Block the partition and alert. Losing data is worse than lag. The send is retried forever (100ms doubling to 30s, ±25% jitter) and never completes the source offset until the broker acknowledged it (`acks=all`), so the committed offset stays put. The writer is *blocked* from its first failure until every failed send was acknowledged; the supervisor pauses the pipeline on `onBlocked` and resumes on `onUnblocked`. A missing DLQ topic, failed authentication or authorization, an invalid topic or a record larger than the producer or topic allows is a **configuration** failure (logged at `ERROR`, alert); anything else is **transient**. Both kinds are retried; neither drops the record. A producer error that kafka-clients can make fatal even for an idempotent producer (cluster authorization, authentication, unsupported version, a fenced producer or an invalid producer ID mapping) replaces the shared producer, so fixing the cause unblocks the next attempt without a restart. A missing `Write` ACL is usually not fatal, though: in kafka-clients 4.2 a `CLUSTER_AUTHORIZATION_FAILED` answer to `InitProducerId` is *abortable*: the producer fails the pending batches, goes back to uninitialized and retries `InitProducerId` on its own. The producer becomes fatal only when the error reaches its error state through a failed batch (a produce response carrying it). kafkafim replaces the producer on `ClusterAuthorizationException` either way: replacing it is cheap and covers the fatal path. On the abortable path kafka-clients still logs `Aborting producer batches due to fatal error` at `ERROR`, and kafkafim logs that the producer *may be* in a fatal state and replaces it; both mean only that the pending sends failed and will be retried. A send that fails only because of the replacement (closing the producer aborts its batch, or it reached the producer after the close began) is reported by the failure that triggered the replacement, so a missing ACL never shows up as a transient `Producer is closed forcefully`. Each send attempt is reported once, although kafka-clients can both throw from `send` and later fail the batch it had already appended. |
 | Kafka unavailable | Reconnect with backoff (kafka-clients); `kafkafim_kafka_connected` gauge drops, alert. A Kafka authentication or authorization failure after start is retried every 10s instead of stopping the consumer. |
 | Pod SIGTERM | Spring graceful shutdown, higher phases first: the pipeline supervisor (phase MAX-100) stops all pipelines in parallel; each pipeline's Kafka source pauses fetching, gives in-flight records up to 30s to complete (its bulk sinks and the DLQ writer are still open, so outcomes keep arriving), then stops its container (10s), which commits what completed on revoke and leaves the group; records still incomplete are re-delivered to the next owner; then the pipeline's bulk sinks close (up to 10s; outcomes after the revoke are ignored); then the DLQ producers (phase MAX-1000, so they outlive the source drain; closed by `supervisor/PipelineResources`, which owns every configuration generation's producers) flush for up to 10s and close, failing any send still unacknowledged so that its record is not committed; then the web server drains (phase MAX-1024, instant for actuator-only traffic). `spring.lifecycle.timeout-per-shutdown-phase` (60s, `application.yaml`) bounds each phase; the consumer phase must fit the pod's `terminationGracePeriodSeconds` (90s, chart default). |
@@ -1064,6 +1113,17 @@ Boot), secret ones (the APM Server token) as `configtree` files the chart mounts
 exporters' `headers` property paths (`otel.secretHeaders`, [HELM.md](HELM.md)). Header
 secrets are read at startup; rotating one needs a pod restart.
 
+Both OTLP resources carry `service.name=kafkafim`, `service.namespace=kafkafim` and
+`service.instance.id` = the pod name (`POD_NAME`, which the chart sets from the downward
+API; `HOSTNAME` in a plain container, `localhost` without either), so series and spans
+stay per pod; Prometheus-compatible OTLP backends derive `job` (`kafkafim/kafkafim`) and
+`instance` from them. OTLP metrics use seconds as the base time unit
+(`management.otlp.metrics.export.base-time-unit`; Micrometer's OTLP default is
+milliseconds), so timers export with unit `seconds` and seconds buckets: through OTLP
+the names below are the same as on `/actuator/prometheus`
+(`kafkafim_e2e_latency_seconds_*`). These attributes come from `application.yaml` and
+win over `OTEL_RESOURCE_ATTRIBUTES`.
+
 ### Metrics (all with `pipeline`, `kafka_cluster`; `topic`/`es_cluster`/`route` where it applies)
 
 Exact label sets (`telemetry/TelemetryNames`, `telemetry/PipelineMeters`):
@@ -1071,7 +1131,7 @@ Exact label sets (`telemetry/TelemetryNames`, `telemetry/PipelineMeters`):
 | Series | Labels besides `pipeline`, `kafka_cluster` | Fed by |
 |---|---|---|
 | `kafkafim_records_consumed_total`, `kafkafim_bytes_consumed_total` (key + value) | `topic` | every record the source delivers |
-| `kafkafim_docs_total` | `route`, `outcome=indexed\|stale\|dlq` | one per routed copy or failed document, when it is done (ES ack, or DLQ record acknowledged) |
+| `kafkafim_docs_total` | `route`, `outcome=indexed\|stale\|dlq\|dropped` | one per routed copy or failed document, when it is done (ES ack, or DLQ record acknowledged), and one per document a drop route discarded (`dropped`, under the drop route's label; §5.3) |
 | `kafkafim_bulk_requests_total` | `es_cluster`, `status` (HTTP code, or `io_error` without a response) | every bulk request attempt |
 | `kafkafim_bulk_latency_seconds`, `kafkafim_bulk_docs`, `kafkafim_bulk_bytes` (histograms) | `es_cluster` | every answered bulk request |
 | `kafkafim_item_errors_total` | `es_cluster`, `error_type` (Elasticsearch error type, `status_<n>` without one), `retryable` | every failed item: retried, or dead-lettered as `es_error` / `version_conflict` |
@@ -1082,7 +1142,7 @@ Exact label sets (`telemetry/TelemetryNames`, `telemetry/PipelineMeters`):
 | `kafkafim_in_flight_bytes`, `kafkafim_assigned_partitions`, `kafkafim_kafka_connected` (1/0) | — | the pipeline's running source, read on scrape |
 | `kafkafim_dlq_records_total` | `error_type` | every DLQ record the broker acknowledged |
 | `kafkafim_breaker_state` | only `es_cluster`: 0 closed, 1 half-open, 2 open | the breakers the pipelines send through (the worst one while a reload leaves two generations alive) |
-| `kafkafim_pipeline_state` | only `pipeline`, `state=starting\|running\|paused\|failed_preflight\|stopped` | 1 for the current state, 0 for the others; `paused` means a supervisor reason: breaker open, identity rejected or DLQ blocked, not the byte-budget backpressure |
+| `kafkafim_pipeline_state` | only `pipeline`, `state=starting\|running\|paused\|failed_preflight\|failed\|stopped` | 1 for the current state, 0 for the others; `paused` means a supervisor reason: breaker open, identity rejected or DLQ blocked, not the byte-budget backpressure |
 | `kafkafim_config_reload_total{result=success\|failure}`, `kafkafim_config_generation` | none | §5.6 (1 at startup, +1 per applied reload) |
 
 Label discipline: `route` is the route's `name`, or its zero-based position, never the
@@ -1125,7 +1185,8 @@ always kept (`telemetry/BatchSampler`), retryable item errors such as a 429 incl
 trace volume rises while Elasticsearch pushes back. Spans are recorded when the batch ends, with
 their real timestamps, which is what lets the sampler see the failure (ADR-0029); a
 batch still retrying has no span yet. No per-document spans; no trace context is sent
-to Elasticsearch.
+to Elasticsearch. Dropped documents (§5.3) never join a batch, so they appear in no span;
+`kafkafim_docs_total{outcome="dropped"}` counts them (ADR-0037).
 
 ### Logs
 
@@ -1157,18 +1218,18 @@ logged by default.
 ### Shipped with the repo
 
 [`deploy/grafana/`](../deploy/grafana/README.md), written against the
-`/actuator/prometheus` names above:
+`/actuator/prometheus` names above (the same through OTLP):
 
-- `dashboards/kafkafim-overview.json`: per pipeline: state, throughput, e2e
-  latency, DLQ rate, in-flight bytes and heap, assigned partitions, Kafka
-  connectivity, config generation and reloads.
+- `dashboards/kafkafim-overview.json`: per pipeline: state, throughput, dropped
+  documents per drop route, e2e latency, DLQ rate, in-flight bytes and heap, assigned
+  partitions, Kafka connectivity, config generation and reloads.
 - `dashboards/kafkafim-elasticsearch.json`: per ES cluster: breaker, bulk requests by
   status and the 429 ratio, bulk latency, docs and bytes per request, flush reasons,
   retries, item errors, auth failures.
 - `alerts/kafkafim-alerts.yaml` (Prometheus rules, with `promtool test rules` tests):
   DLQ rate > 0 for 10m, bulk reject (429) ratio > 1%, e2e p99 above
   target (10s by default), breaker open, auth failures > 0, reload failed, pod with 0
-  assigned partitions for a pipeline it runs; plus `failed_preflight`, `paused` for
+  assigned partitions for a pipeline it runs; plus `failed_preflight`, `failed`, `paused` for
   5m, `starting` for 10m and Kafka disconnected for a running pipeline.
 
 The compose demo provisions both dashboards into its Grafana LGTM.

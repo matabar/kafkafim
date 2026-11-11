@@ -6,7 +6,7 @@ with the repo". Every query uses the metric names and labels of `/actuator/prome
 
 | File | What |
 |---|---|
-| [`dashboards/kafkafim-overview.json`](dashboards/kafkafim-overview.json) | Per pipeline: state, end-to-end latency, records/bytes/documents, DLQ, in-flight bytes and heap, assigned partitions, Kafka connectivity, config generation and reloads |
+| [`dashboards/kafkafim-overview.json`](dashboards/kafkafim-overview.json) | Per pipeline: state, end-to-end latency, records/bytes/documents, dropped documents per route, DLQ, in-flight bytes and heap, assigned partitions, Kafka connectivity, config generation and reloads |
 | [`dashboards/kafkafim-elasticsearch.json`](dashboards/kafkafim-elasticsearch.json) | Per Elasticsearch cluster: breaker state, bulk requests by status, 429 ratio, bulk latency, docs and bytes per request, flush reasons, retries, item errors, auth failures |
 | [`alerts/kafkafim-alerts.yaml`](alerts/kafkafim-alerts.yaml) | Prometheus alerting rules (below) |
 | [`alerts/kafkafim-alerts.test.yaml`](alerts/kafkafim-alerts.test.yaml) | `promtool test rules` unit tests for every alert |
@@ -30,6 +30,7 @@ to the real one (Prometheus default 1m, the OTLP export step is 15s).
 | Alert | Fires when | Severity | Runbook |
 |---|---|---|---|
 | `KafkafimPipelineFailedPreflight` | a pipeline is `failed_preflight` on any pod for 1m | critical | [§5.5](../../docs/RUNBOOK.md#55-failed_preflight-pipelines) |
+| `KafkafimPipelineFailed` | a pipeline is `failed` (stopped after failing while running) on a pod for 1m, per pod | critical | [§5.13](../../docs/RUNBOOK.md#513-failed-pipelines) |
 | `KafkafimPipelinePaused` | a pipeline is `paused` (breaker, identity, DLQ blocked) for 5m | warning | [§3.1](../../docs/RUNBOOK.md#31-pipeline-state) |
 | `KafkafimPipelineStuckStarting` | a pipeline is still `starting` (preflight retrying a transient failure) after 10m | warning | [§5.12](../../docs/RUNBOOK.md#512-pipeline-stuck-in-starting) |
 | `KafkafimE2eLatencyHigh` | end-to-end p99 over 5m above **10s** for 10m (tune) | warning | [§5.8](../../docs/RUNBOOK.md#58-consumer-lag-growing) |
@@ -47,6 +48,12 @@ Notes:
   ([ADR-0034](../../docs/decisions/0034-consumer-lag-is-monitored-outside-kafkafim.md)).
   Lag and its alerts come from the Kafka team's consumer-lag monitoring, per consumer
   group (`source.group-id`, default `kafkafim.<pipeline>`).
+- There is no alert on dropped documents: a `drop: true` route discards documents on
+  purpose ([ADR-0037](../../docs/decisions/0037-routes-can-drop-documents.md)). The
+  overview's "Dropped documents by route" panel shows
+  `kafkafim_docs_total{outcome="dropped"}` per drop route, and the DLQ ratio leaves
+  dropped documents out of its denominator. [RUNBOOK §5.14](../../docs/RUNBOOK.md#514-documents-missing-from-elasticsearch-dropped-or-lost)
+  tells dropped from lost.
 - `KafkafimNoAssignedPartitions` is expected on pods beyond a pipeline's partition
   count; silence it for such groups (severity `info`).
 - `kafkafim_auth_failures_total` and `kafkafim_dlq_records_total` appear with their
@@ -86,15 +93,12 @@ promtool check rules deploy/grafana/alerts/kafkafim-alerts.yaml
 Prometheus stores them under the names below. The alert rules are not loaded in the
 demo (otel-lgtm's Prometheus has no `rule_files`).
 
-Through OTLP, every name matches `/actuator/prometheus` except the two timers:
-Micrometer's OTLP registry exports times in milliseconds by default, so otel-lgtm
-stores `kafkafim_bulk_latency_milliseconds_*` and `kafkafim_e2e_latency_milliseconds_*`
-and the latency panels stay empty. Export seconds to fill them:
-
-```bash
-./mvnw spring-boot:run -Dspring-boot.run.arguments=--management.otlp.metrics.export.base-time-unit=seconds
-```
-
-The OTLP series also carry no `instance` label (otel-lgtm's Prometheus derives it from
-`service.instance.id`, which kafkafim does not set), so per-pod legends are blank with
-a single local app; `job` is `kafkafim/kafkafim`.
+Through OTLP every name matches `/actuator/prometheus`, the timers included: the app
+exports times in seconds (`management.otlp.metrics.export.base-time-unit: seconds`), so
+otel-lgtm stores `kafkafim_e2e_latency_seconds_*` and `kafkafim_bulk_latency_seconds_*`
+([DESIGN §10](../../docs/DESIGN.md#10-observability)). `job` is `kafkafim/kafkafim`
+(`service.namespace`/`service.name`), and `instance` comes from `service.instance.id`:
+the pod name on Kubernetes (`POD_NAME` from the chart), the container's `HOSTNAME` in a
+plain container, and `localhost` for `./mvnw spring-boot:run` without either.
+The one OTLP-only difference is the timers' max gauge, `kafkafim_e2e_latency_max_seconds`
+(`kafkafim_e2e_latency_seconds_max` on `/actuator/prometheus`); no query here uses it.
