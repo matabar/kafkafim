@@ -1,0 +1,78 @@
+# charts/kafkafim values for the local Kubernetes demo (deploy/local/README.md). Same shape
+# as a production values-<cluster>.yaml: no literal secret, every credential a ${...}
+# placeholder resolved from a mounted Secret through configtree:/etc/kafkafim/secrets/.
+
+image:
+  registry: ""                 # the locally built kafkafim:dev, loaded into the cluster
+  repository: kafkafim
+  tag: dev
+  pullPolicy: Never
+
+config:
+  kafkafim:
+    kafka:
+      clusters:
+        demo:
+          bootstrap-servers: [kafka:9092]
+          security-protocol: SASL_PLAINTEXT
+          identities:
+            kafkafim:
+              sasl:
+                mechanism: PLAIN
+                username: ${kafka.demo.kafkafim.username}
+                password: ${kafka.demo.kafkafim.password}
+          default-identity: kafkafim
+    elasticsearch:
+      clusters:
+        demo:
+          uris: [http://elasticsearch:9200]
+          identities:
+            kafkafim:
+              username: ${elasticsearch.demo.kafkafim.username}
+              password: ${elasticsearch.demo.kafkafim.password}
+          default-identity: kafkafim
+    pipelines:
+      demo:                    # the same pipeline as the compose demo (application-local.yaml)
+        source:
+          cluster: demo
+          topics: [demo.events]
+          offset-reset: earliest
+        document:
+          id-field: /id
+          timestamp-field: /@timestamp
+          timestamp-format: iso-8601
+          on-bad-timestamp: dlq
+        routes:
+          - when:
+              - { field: /region, equals: eu }
+            cluster: demo
+            index: "demo-eu-%{+yyyy.MM.dd}"
+          - default: true
+            cluster: demo
+            index: "demo-%{region}-%{+yyyy.MM}"
+        route-mode: first
+        dlq:
+          topic: demo.events.kafkafim-dlq
+
+# Created by demo.sh with random passwords; the broker and Elasticsearch read the same ones.
+secrets:
+  - name: kafka-demo-kafkafim
+    mountPath: /etc/kafkafim/secrets/kafka/demo.kafkafim
+  - name: es-demo-kafkafim
+    mountPath: /etc/kafkafim/secrets/elasticsearch/demo.kafkafim
+
+groups:
+  demo:
+    pipelines: [demo]
+    replicas: 1
+    allowSingleReplica: true   # a laptop; production groups run >= 2
+
+resources:
+  requests: { cpu: 250m, memory: 768Mi }
+  limits: { memory: 768Mi }
+
+# No APM Server in the demo cluster: switch OTLP export off instead of logging failed
+# exports. Metrics stay on /actuator/prometheus.
+extraEnv:
+  - { name: MANAGEMENT_OTLP_METRICS_EXPORT_ENABLED, value: "false" }
+  - { name: MANAGEMENT_TRACING_EXPORT_ENABLED, value: "false" }
