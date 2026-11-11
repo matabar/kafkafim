@@ -241,6 +241,53 @@ class KafkaPipelineSourceIntegrationTest {
   }
 
   @Test
+  void handlerFailurePausesTheSourceAndReportsIt() throws Exception {
+    String topic = createTopic(1);
+    produce(topic, 0, 3, 10);
+    Recorder recorder =
+        new Recorder(record -> {
+          throw new IllegalStateException("boom");
+        });
+    KafkaPipelineSource source = start(source(topic, 500, DataSize.ofMegabytes(1)), recorder, 1);
+
+    await().atMost(TIMEOUT).until(() -> !recorder.failures.isEmpty());
+    assertThat(recorder.failures.getFirst()).contains("record handler failed").contains("boom");
+    assertThat(source.pauseReasons()).contains(KafkaPipelineSource.HANDLER_FAILURE_REASON);
+    assertThat(committed(groupOf(topic), topic, 0)).as("nothing completed").isLessThan(1);
+  }
+
+  @Test
+  void consumerStoppingOnItsOwnIsReported() throws Exception {
+    String topic = createTopic(1);
+    produce(topic, 0, 1, 10);
+    // An Error is not caught by the source's listener: the container stops the consumer.
+    Recorder recorder =
+        new Recorder(record -> {
+          throw new LinkageError("fatal");
+        });
+    KafkaPipelineSource source = start(source(topic, 500, DataSize.ofMegabytes(1)), recorder, 1);
+
+    await().atMost(TIMEOUT).until(() -> !recorder.failures.isEmpty());
+    assertThat(recorder.failures.getFirst()).startsWith("Kafka consumer stopped (");
+    await().atMost(TIMEOUT).until(() -> source.assignedPartitions().isEmpty());
+
+    // A normal stop reports nothing.
+    int reported = recorder.failures.size();
+    source.stop();
+    assertThat(recorder.failures).hasSize(reported);
+  }
+
+  @Test
+  void normalStopReportsNoFailure() throws Exception {
+    String topic = createTopic(1);
+    Recorder recorder = new Recorder(SourceRecord::complete);
+    KafkaPipelineSource source = start(source(topic, 500, DataSize.ofMegabytes(1)), recorder, 1);
+    await().atMost(TIMEOUT).until(() -> !source.assignedPartitions().isEmpty());
+    source.stop();
+    assertThat(recorder.failures).isEmpty();
+  }
+
+  @Test
   void missingTopicKeepsThePipelineStopped() throws Exception {
     String topic = "missing-" + UUID.randomUUID();
     KafkaPipelineSource source =
@@ -408,6 +455,7 @@ class KafkaPipelineSourceIntegrationTest {
     final List<List<SourceRecord>> batches = new CopyOnWriteArrayList<>();
     final List<SourceRecord> records = new CopyOnWriteArrayList<>();
     final List<TopicPartition> revoked = new CopyOnWriteArrayList<>();
+    final List<String> failures = new CopyOnWriteArrayList<>();
     volatile Consumer<SourceRecord> onRecord;
 
     Recorder(Consumer<SourceRecord> onRecord) {
@@ -424,6 +472,11 @@ class KafkaPipelineSourceIntegrationTest {
     @Override
     public void onPartitionsRevoked(Collection<TopicPartition> partitions) {
       revoked.addAll(partitions);
+    }
+
+    @Override
+    public void onSourceFailed(String cause) {
+      failures.add(cause);
     }
   }
 }

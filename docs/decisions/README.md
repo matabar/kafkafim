@@ -39,3 +39,4 @@ One file per decision, MADR-style. Supersede with a new ADR rather than editing 
 | [0033](0033-consumer-lag-read-per-pipeline-in-parallel-staleness-as-timestamp.md) | Consumer lag is read per pipeline in parallel under a 5s deadline; stale lag shows as an old `kafkafim_consumer_lag_timestamp_seconds` (refines 0029) — **superseded by 0034** |
 | [0034](0034-consumer-lag-is-monitored-outside-kafkafim.md) | Consumer lag is monitored outside kafkafim; kafkafim reads and exports none (supersedes 0033 and the lag parts of 0014 and 0011) |
 | [0035](0035-dlq-writer-evicted-when-its-pipeline-leaves-the-instance.md) | A DLQ writer is evicted when its pipeline leaves its `DlqProducers` instance (refines 0028) |
+| [0036](0036-pipeline-that-fails-while-running-is-stopped-as-failed.md) | A pipeline that fails while running (handler threw, consumer stopped on its own) is stopped in a new `failed` state; an accepted reload retries it (refines 0032) |
