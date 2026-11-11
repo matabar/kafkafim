@@ -230,24 +230,26 @@ public final class ConfigValidator {
       return; // reported as an error
     }
     double seconds = (double) maxBytes.toBytes() / SLOW_BULK_BYTES_PER_SECOND.toBytes();
-    if (seconds * 1000 > timeout.toMillis()) {
+    // In doubles throughout: no Duration.toMillis() overflow, no sub-millisecond truncation.
+    double timeoutSeconds = timeout.getSeconds() + timeout.getNano() / 1e9;
+    if (seconds > timeoutSeconds) {
       warnings.add(
           path
               + ".bulk.max-bytes: "
-              + yaml(maxBytes)
+              + spelled(maxBytes)
               + " takes about "
               + (long) Math.ceil(seconds)
               + "s at "
-              + yaml(SLOW_BULK_BYTES_PER_SECOND)
+              + spelled(SLOW_BULK_BYTES_PER_SECOND)
               + "/s, longer than client.response-timeout ("
-              + yaml(timeout)
+              + spelled(timeout)
               + "); a slow cluster may time out every full bulk request and retry it forever."
               + " Lower bulk.max-bytes or raise client.response-timeout");
     }
   }
 
   /** {@code size} as the configuration would spell it: whole MB, KB or bytes. */
-  private static String yaml(DataSize size) {
+  private static String spelled(DataSize size) {
     long bytes = size.toBytes();
     if (bytes % DataSize.ofMegabytes(1).toBytes() == 0) {
       return size.toMegabytes() + "MB";
@@ -258,10 +260,18 @@ public final class ConfigValidator {
     return bytes + "B";
   }
 
-  /** {@code duration} as the configuration would spell it: whole seconds or milliseconds. */
-  private static String yaml(Duration duration) {
-    long millis = duration.toMillis();
-    return millis % 1000 == 0 ? (millis / 1000) + "s" : millis + "ms";
+  /**
+   * {@code duration} as the configuration would spell it: whole seconds or milliseconds, else the
+   * ISO-8601 form.
+   */
+  private static String spelled(Duration duration) {
+    if (duration.getNano() == 0) {
+      return duration.getSeconds() + "s";
+    }
+    if (duration.getNano() % 1_000_000 == 0 && duration.getSeconds() < Long.MAX_VALUE / 1000) {
+      return duration.toMillis() + "ms";
+    }
+    return duration.toString();
   }
 
   private void checkElasticsearchIdentity(

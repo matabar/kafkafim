@@ -360,6 +360,37 @@ class ConfigValidationTest {
       assertThat(ConfigValidator.validate(boundary).warnings())
           .noneMatch(w -> w.contains(".bulk.max-bytes"));
     }
+
+    @Test
+    void warnsJustAboveTheBoundary() {
+      KafkafimProperties properties =
+          ConfigTestSupport.bind(
+              MINIMAL, ES + ".bulk.max-bytes=61MB", ES + ".client.response-timeout=60s");
+
+      assertThat(ConfigValidator.validate(properties).warnings())
+          .anyMatch(w -> w.startsWith(ES + ".bulk.max-bytes: 61MB takes about 61s at 1MB/s,"));
+    }
+
+    @ParameterizedTest
+    @ValueSource(
+        strings = {
+          "1500KB|1200ms|1500KB takes about 2s at 1MB/s, longer than client.response-timeout"
+              + " (1200ms)",
+          "1048577B|1s|1048577B takes about 2s at 1MB/s, longer than client.response-timeout (1s)",
+          "1MB|500us|1MB takes about 1s at 1MB/s, longer than client.response-timeout"
+              + " (PT0.0005S)"
+        })
+    void spellsSizesAndTimeoutsInTheWarningAsConfigured(String row) {
+      String[] parts = row.split("\\|");
+      KafkafimProperties properties =
+          ConfigTestSupport.bind(
+              MINIMAL,
+              ES + ".bulk.max-bytes=" + parts[0],
+              ES + ".client.response-timeout=" + parts[1]);
+
+      assertThat(ConfigValidator.validate(properties).warnings())
+          .anyMatch(w -> w.startsWith(ES + ".bulk.max-bytes: " + parts[2] + ";"));
+    }
   }
 
   @Nested
@@ -943,6 +974,22 @@ class ConfigValidationTest {
                   + ".routes[1]: a drop: true route without conditions in route-mode: all"
                   + " selects every document and cancels every other route; the pipeline"
                   + " consumes and commits its topics without indexing anything");
+    }
+
+    @Test
+    void warnsOnUnconditionalDropRouteBeforeAnIndexingDefaultInAllMode() {
+      KafkafimProperties properties =
+          ConfigTestSupport.bind(
+              pipeline(
+                  """
+                  route-mode: all
+                  routes:
+                    - { drop: true }
+                    - { default: true, cluster: es, index: a }
+                  """));
+
+      assertThat(ConfigValidator.validate(properties).warnings())
+          .anyMatch(w -> w.startsWith(P + ".routes[0]: a drop: true route without conditions"));
     }
 
     @Test
