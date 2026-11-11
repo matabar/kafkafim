@@ -11,8 +11,8 @@ import org.apache.kafka.common.TopicPartition;
  *
  * <p>All methods run on a consumer thread: return quickly (hand bulk work to other threads) and do
  * not throw. If {@link #onBatch} throws, the source pauses the pipeline with reason {@value
- * KafkaPipelineSource#HANDLER_FAILURE_REASON} and the batch's incomplete records stay uncommitted
- * until the pipeline is restarted.
+ * KafkaPipelineSource#HANDLER_FAILURE_REASON}, the batch's incomplete records stay uncommitted
+ * until the pipeline is restarted, and {@link #onSourceFailed} is called.
  */
 public interface SourceRecordHandler {
 
@@ -44,4 +44,16 @@ public interface SourceRecordHandler {
    * @param partitions the lost partitions that delivered records to this source
    */
   default void onPartitionsLost(Collection<TopicPartition> partitions) {}
+
+  /**
+   * The source stopped making progress on its own and will not recover by itself: {@link #onBatch}
+   * threw (the source is paused with reason {@value KafkaPipelineSource#HANDLER_FAILURE_REASON}),
+   * or a consumer of its listener container stopped for any reason but a normal stop (a fatal
+   * consumer error, or an {@link Error} escaping the handler). The owner should stop the source.
+   * May be called more than once for one failure (once per consumer); runs on a consumer thread, so
+   * return quickly (stop the source on another thread) and do not throw.
+   *
+   * @param cause what happened, for logs and the pipeline's state
+   */
+  default void onSourceFailed(String cause) {}
 }

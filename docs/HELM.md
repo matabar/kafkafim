@@ -92,7 +92,9 @@ For each `groups.<g>`:
   `optional:`, overriding the image default, so a missing mount fails the pod at
   startup rather than starting it without pipelines),
   `SPRING_CONFIG_IMPORT=configtree:/etc/kafkafim/secrets/`,
-  `OTEL_EXPORTER_OTLP_ENDPOINT`, `JAVA_TOOL_OPTIONS`.
+  `OTEL_EXPORTER_OTLP_ENDPOINT`, `POD_NAME` (downward API `metadata.name`; the
+  image's `application.yaml` makes it the OTLP `service.instance.id`, DESIGN §10),
+  `JAVA_TOOL_OPTIONS`.
 - **No checksum annotation** on the pod template for the ConfigMap: pipeline edits
   hot-reload. Image, env, resources or mount changes roll the pods.
 - Probes: startup `/actuator/health/liveness` (failureThreshold 30 × 2s), liveness
@@ -180,7 +182,7 @@ For each `groups.<g>`:
   `otel.secretHeaders` does not name one header twice (header names compare
   case-insensitively). Header names are letters, digits and `-` (schema).
 - `extraEnv` does not redefine a variable the chart sets (the `SPRING_*` triple,
-  `OTEL_EXPORTER_OTLP_ENDPOINT`, `JAVA_TOOL_OPTIONS`,
+  `OTEL_EXPORTER_OTLP_ENDPOINT`, `POD_NAME`, `JAVA_TOOL_OPTIONS`,
   and `OTEL_EXPORTER_OTLP_HEADERS` / `_METRICS_HEADERS` / `_TRACES_HEADERS` when
   `otel.headers` or `otel.secretHeaders` is set: Boot maps those variables into a
   property source that wins over configtree, so they would silently replace the
@@ -194,7 +196,10 @@ group names are DNS labels); the cross-field rules above are `fail` calls in
 
 `config.kafkafim` accepts exactly `kafka`, `elasticsearch` and `pipelines`; the
 schema rejects any other key instead of silently dropping it. That includes
-`allow-inline-secrets`, which is for local development outside Kubernetes only. The
+`allow-inline-secrets`, which is for local development outside Kubernetes only. Inside
+a pipeline the schema checks only the routes: a route with `drop: true` must not set
+`cluster`, `identity`, `index` or `pipeline` (ADR-0037), and any other route needs
+`cluster` and `index`. The application validates the rest at startup. The
 application refuses `kafkafim.allow-inline-secrets=true` on Kubernetes however it is set (for example through
 `extraEnv`), and likewise refuses to start with the `local` profile active there
 (`config/LocalProfileGuard`, [DESIGN §5.4](DESIGN.md#54-helm-rendering)). So a chart
@@ -256,7 +261,7 @@ read once at startup: after rotating the Secret, restart the pods
 put a token in `otel.headers`, which renders into the Deployment, and prefer
 `otel.secretHeaders` over an `extraEnv` `OTEL_EXPORTER_OTLP_HEADERS` from a
 `secretKeyRef` (DESIGN §11: secrets arrive as mounted files, not environment
-variables). `OtlpExportHeadersIntegrationTest` proves the contract
+variables). `OtlpExportIntegrationTest` proves the contract
 against the real application.
 
 ## Chart testing

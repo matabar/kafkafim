@@ -45,7 +45,9 @@ final class TelemetryBinder {
           for (int i = 0; i < configured.size(); i++) {
             Pipeline.Route route = configured.get(i);
             routes.add(route.name() != null ? route.name() : Integer.toString(i));
-            clusters.add(route.cluster());
+            if (route.cluster() != null) {
+              clusters.add(route.cluster()); // a drop route writes to none
+            }
           }
           esClusters.addAll(clusters);
           specs.put(

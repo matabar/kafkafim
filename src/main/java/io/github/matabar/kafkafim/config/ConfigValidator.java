@@ -400,6 +400,7 @@ public final class ConfigValidator {
     List<Route> routes = pipeline.routes();
     boolean firstMode = pipeline.routeMode() == Pipeline.RouteMode.FIRST;
     int defaults = 0;
+    int drops = 0;
     Map<String, Integer> names = new HashMap<>();
     for (int i = 0; i < routes.size(); i++) {
       Route route = routes.get(i);
@@ -426,6 +427,17 @@ public final class ConfigValidator {
       for (int c = 0; c < route.when().size(); c++) {
         checkCondition(routePath + ".when[" + c + "]", route.when().get(c), pipeline);
       }
+      if (route.isDrop()) {
+        drops++;
+        checkDropRoute(routePath, route);
+        continue;
+      }
+      if (isBlank(route.cluster())) {
+        error(routePath + ".cluster", "must not be blank");
+      }
+      if (isBlank(route.index())) {
+        error(routePath + ".index", "must not be blank");
+      }
       checkRouteTarget(routePath, route, properties);
       if (route.pipeline() != null && route.pipeline().isBlank()) {
         // Elasticsearch rejects the whole bulk request for an empty ingest pipeline name.
@@ -433,7 +445,7 @@ public final class ConfigValidator {
             routePath + ".pipeline",
             "must not be blank; omit it to index without an ingest pipeline");
       }
-      if (route.index() != null) {
+      if (!isBlank(route.index())) {
         for (String problem : IndexPatternSyntax.errors(route.index())) {
           error(routePath + ".index", problem);
         }
@@ -448,6 +460,35 @@ public final class ConfigValidator {
           "route-mode first needs exactly one default: true route, found " + defaults);
     } else if (!firstMode && defaults > 1) {
       error(path + ".routes", "at most one default: true route is allowed, found " + defaults);
+    }
+    if (drops > 0 && drops == routes.size()) {
+      warnings.add(
+          path
+              + ".routes: every route has drop: true; the pipeline consumes and commits its topics"
+              + " without indexing anything");
+    }
+  }
+
+  /**
+   * {@code drop: true} takes the place of the route's target (ADR-0037): it names no cluster,
+   * identity, index or ingest pipeline.
+   */
+  private void checkDropRoute(String path, Route route) {
+    rejectOnDropRoute(path, "cluster", route.cluster());
+    rejectOnDropRoute(path, "identity", route.identity());
+    rejectOnDropRoute(path, "index", route.index());
+    rejectOnDropRoute(path, "pipeline", route.pipeline());
+  }
+
+  private void rejectOnDropRoute(String path, String key, String value) {
+    if (value != null) {
+      error(
+          path + "." + key,
+          "a drop: true route discards its documents and takes no "
+              + key
+              + "; remove "
+              + key
+              + " or drop: true");
     }
   }
 

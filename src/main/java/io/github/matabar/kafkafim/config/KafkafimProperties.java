@@ -94,7 +94,7 @@ public record KafkafimProperties(
   }
 
   private static Pipeline.Route resolve(Pipeline.Route route, Elasticsearch elasticsearch) {
-    if (route == null || route.identity() != null || route.cluster() == null) {
+    if (route == null || route.isDrop() || route.identity() != null || route.cluster() == null) {
       return route;
     }
     ElasticsearchCluster cluster = elasticsearch.clusters().get(route.cluster());

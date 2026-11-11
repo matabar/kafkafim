@@ -194,14 +194,14 @@ class PipelineSupervisorReloadTest {
   void retriesOnlyFailedPipelinesAndOnlyWhileRunning() {
     start(TestConfigs.withPipelines(A + C));
     // Only candidates are retried, in configuration order; unknown names are ignored.
-    assertThat(supervisor.retryFailedPreflight(List.of("c", "gone"))).containsExactly("c");
+    assertThat(supervisor.retryFailedPipelines(List.of("c", "gone"))).containsExactly("c");
     awaitSettled();
-    assertThat(supervisor.retryFailedPreflight(List.of("c", "a"))).containsExactly("a", "c");
+    assertThat(supervisor.retryFailedPipelines(List.of("c", "a"))).containsExactly("a", "c");
     awaitSettled();
     assertThat(supervisor.states().values()).containsOnly(PipelineState.FAILED_PREFLIGHT);
 
     supervisor.stop();
-    assertThat(supervisor.retryFailedPreflight(List.of("a"))).isEmpty();
+    assertThat(supervisor.retryFailedPipelines(List.of("a"))).isEmpty();
     assertThat(supervisor.state("a")).isEqualTo(PipelineState.FAILED_PREFLIGHT);
   }
 
