@@ -253,7 +253,9 @@ cannot express.
   {{- $reserved = concat $reserved (list "OTEL_EXPORTER_OTLP_HEADERS" "OTEL_EXPORTER_OTLP_METRICS_HEADERS" "OTEL_EXPORTER_OTLP_TRACES_HEADERS") -}}
 {{- end -}}
 {{- range $e := .Values.extraEnv -}}
-  {{- if has $e.name $reserved -}}
+  {{- if eq $e.name "POD_NAME" -}}
+    {{- fail "extraEnv must not set POD_NAME; the chart sets it from the downward API (metadata.name), and it becomes the OTLP service.instance.id" -}}
+  {{- else if has $e.name $reserved -}}
     {{- fail (printf "extraEnv must not set %s; the chart already sets it from values" $e.name) -}}
   {{- end -}}
 {{- end -}}
