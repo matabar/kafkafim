@@ -22,6 +22,7 @@ import java.util.Map;
 import java.util.Properties;
 import java.util.UUID;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Future;
 import java.util.stream.Collectors;
 import org.apache.kafka.clients.admin.Admin;
 import org.apache.kafka.clients.admin.NewTopic;
@@ -33,6 +34,7 @@ import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
+import org.apache.kafka.clients.producer.RecordMetadata;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.header.Header;
 import org.apache.kafka.common.header.internals.RecordHeader;
@@ -295,15 +297,24 @@ class PipelineSupervisorIntegrationTest {
     props.put("kafkafim.elasticsearch.clusters.local.bulk.in-flight", 1);
     int records = 2000;
     int perRecord = 10;
+    // Sent in batches, not one round trip per record: one slow acknowledgement under shared Docker
+    // load then delays the whole seeding by its own time only, not 2000 times over (#68).
+    List<Future<RecordMetadata>> sent = new ArrayList<>();
     for (int r = 0; r < records; r++) {
       StringBuilder value = new StringBuilder("[");
       for (int d = 0; d < perRecord; d++) {
         value.append(d == 0 ? "" : ",").append("{\"id\":\"e-").append(r * perRecord + d);
         value.append("\",\"payload\":\"").append("x".repeat(200)).append("\"}");
       }
-      send("e.events", "k" + r, value.append(']').toString());
+      sent.add(
+          producer.send(
+              new ProducerRecord<>(
+                  "e.events", bytes("k" + r), bytes(value.append(']').toString()))));
     }
     producer.flush();
+    for (Future<RecordMetadata> future : sent) {
+      future.get(); // every record acknowledged, or the test fails here with the cause
+    }
     final int total = records * perRecord;
 
     ConfigurableApplicationContext first = start(props);
@@ -413,6 +424,23 @@ class PipelineSupervisorIntegrationTest {
       newTopics.add(new NewTopic(topic, partitions, (short) 1));
     }
     admin.createTopics(newTopics).all().get();
+    awaitLeaders(List.of(topics));
+  }
+
+  /**
+   * Waits until every partition of the topics has a leader. Creation returns once the controller
+   * accepted it; the broker can learn of the leaders later, and a send before that waits for
+   * metadata, which under shared Docker load can take long enough to time out (#68).
+   */
+  private static void awaitLeaders(List<String> topics) {
+    await()
+        .atMost(TIMEOUT)
+        .ignoreExceptions()
+        .until(() ->
+            admin.describeTopics(topics).allTopicNames().get().values().stream()
+                .flatMap(topic -> topic.partitions().stream())
+                .allMatch(
+                    partition -> partition.leader() != null && !partition.leader().isEmpty()));
   }
 
   private static long send(String topic, String key, String value, Header... headers)
