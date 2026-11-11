@@ -18,7 +18,27 @@ tests:
         values: '1x30'
       - series: 'kafkafim_pipeline_state{job="kafkafim",instance="pod-a",pipeline="quick",state="starting"}'
         values: '1x4 0x26'   # 2m in starting: normal
+      # failed on pod-a only; pod-b keeps running it.
+      - series: 'kafkafim_pipeline_state{job="kafkafim",instance="pod-a",pipeline="events",state="failed"}'
+        values: '0 1x10'
+      - series: 'kafkafim_pipeline_state{job="kafkafim",instance="pod-b",pipeline="events",state="failed"}'
+        values: '0x11'
+      # failed at 30s and 1m, then a reload retried it: pending at 1m, never 1m long.
+      - series: 'kafkafim_pipeline_state{job="kafkafim",instance="pod-a",pipeline="retried",state="failed"}'
+        values: '0 1 1 0x8'
     alert_rule_test:
+      # failed is its own alert: failed_preflight fires only for orders.
+      - eval_time: 1m
+        alertname: KafkafimPipelineFailed
+        exp_alerts: []
+      - eval_time: 3m
+        alertname: KafkafimPipelineFailed
+        exp_alerts:
+          - exp_labels: { severity: critical, job: kafkafim, instance: pod-a, pipeline: events }
+            exp_annotations:
+              summary: "Pipeline events failed while running on pod-a"
+              description: "The record handler threw or a Kafka consumer stopped on its own. The pipeline is stopped on this pod until an accepted reload retries it or the pod restarts; the ERROR \"Pipeline '<name>': failed while running\" line names the cause."
+              runbook_url: https://github.com/matabar/kafkafim/blob/main/docs/RUNBOOK.md#513-failed-pipelines
       - eval_time: 3m
         alertname: KafkafimPipelineFailedPreflight
         exp_alerts:

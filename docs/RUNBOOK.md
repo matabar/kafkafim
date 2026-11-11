@@ -170,6 +170,9 @@ Where to read it:
   max by (pipeline) (kafkafim_pipeline_state{state=~"failed_preflight|failed"}) == 1
   ```
 
+  The shipped `KafkafimPipelineFailed` keeps `job` and `instance` instead, since a
+  `failed` pipeline is retried pod by pod ([§5.13](#513-failed-pipelines)).
+
   From a port-forwarded pod:
 
   ```bash
@@ -668,8 +671,8 @@ or roll back. Until then the pods run the previous generation and new pods fail.
 
 ### 5.13 `failed` pipelines
 
-**Alerts**: none shipped yet ([Known gaps](#known-gaps)); alert on
-`kafkafim_pipeline_state{state="failed"} == 1`.
+**Alerts**: [`KafkafimPipelineFailed`](../deploy/grafana/alerts/kafkafim-alerts.yaml)
+(per pod, after 1m: the reload that fixes it is per pod).
 
 - **Symptom**: `kafkafim_pipeline_state{state="failed"} == 1`; ERROR
   `Pipeline '<p>': failed while running; stopping it until the next accepted reload or
@@ -743,9 +746,6 @@ Logs never contain document bodies or secret values; they are safe to attach.
 
 Current behaviour that this runbook works around; each is a follow-up, not a feature:
 
-- **No shipped alert on `failed` yet.** The rules in `deploy/grafana/alerts/` alert on
-  `failed_preflight` but not on `failed` ([§5.13](#513-failed-pipelines)); add the
-  query of [§3.1](#31-pipeline-state) to your own rules meanwhile.
 - **A missing topic `Read` ACL shows `running`.** The start check fetches metadata
   only (`Describe`); fetches then fail and are retried every 10s.
 - **A denied consumer-group join shows `running`.** The group permission is not part

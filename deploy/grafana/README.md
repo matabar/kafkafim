@@ -30,6 +30,7 @@ to the real one (Prometheus default 1m, the OTLP export step is 15s).
 | Alert | Fires when | Severity | Runbook |
 |---|---|---|---|
 | `KafkafimPipelineFailedPreflight` | a pipeline is `failed_preflight` on any pod for 1m | critical | [§5.5](../../docs/RUNBOOK.md#55-failed_preflight-pipelines) |
+| `KafkafimPipelineFailed` | a pipeline is `failed` (stopped after failing while running) on a pod for 1m, per pod | critical | [§5.13](../../docs/RUNBOOK.md#513-failed-pipelines) |
 | `KafkafimPipelinePaused` | a pipeline is `paused` (breaker, identity, DLQ blocked) for 5m | warning | [§3.1](../../docs/RUNBOOK.md#31-pipeline-state) |
 | `KafkafimPipelineStuckStarting` | a pipeline is still `starting` (preflight retrying a transient failure) after 10m | warning | [§5.12](../../docs/RUNBOOK.md#512-pipeline-stuck-in-starting) |
 | `KafkafimE2eLatencyHigh` | end-to-end p99 over 5m above **10s** for 10m (tune) | warning | [§5.8](../../docs/RUNBOOK.md#58-consumer-lag-growing) |

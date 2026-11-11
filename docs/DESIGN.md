@@ -1227,7 +1227,7 @@ logged by default.
 - `alerts/kafkafim-alerts.yaml` (Prometheus rules, with `promtool test rules` tests):
   DLQ rate > 0 for 10m, bulk reject (429) ratio > 1%, e2e p99 above
   target (10s by default), breaker open, auth failures > 0, reload failed, pod with 0
-  assigned partitions for a pipeline it runs; plus `failed_preflight`, `paused` for
+  assigned partitions for a pipeline it runs; plus `failed_preflight`, `failed`, `paused` for
   5m, `starting` for 10m and Kafka disconnected for a running pipeline.
 
 The compose demo provisions both dashboards into its Grafana LGTM.
