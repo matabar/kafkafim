@@ -187,7 +187,8 @@ abstract sealed class TimestampFormat {
 
     Custom(String pattern) {
       // config.TimestampPatternSyntax builds the same formatter to validate the pattern; keep the
-      // two identical so a pattern that passes validation behaves the same here.
+      // two identical so a pattern that passes validation behaves the same here
+      // (config.TimestampPatternParityTest checks it).
       this.pattern = pattern;
       this.formatter =
           new DateTimeFormatterBuilder()

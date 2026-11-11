@@ -18,7 +18,7 @@ import java.util.Locale;
  * formatter the {@code decode} package parses with ({@code Locale.ROOT}, strict resolution, era
  * defaulting to CE) and resolves a parsed sample the same way, so a pattern that passes here
  * behaves the same at runtime. ADR-0003 keeps {@code config} and {@code decode} apart, so the two
- * must be kept in step by hand.
+ * must be kept in step by hand; {@code TimestampPatternParityTest} checks that they agree.
  */
 final class TimestampPatternSyntax {
 
