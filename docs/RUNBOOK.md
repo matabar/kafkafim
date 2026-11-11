@@ -131,7 +131,8 @@ kubectl -n <ns> rollout restart deployment/kafkafim-<g>
 ```
 
 Needed for: a pipeline paused by a record-handler failure, an OTLP header Secret
-rotation, rotated TLS certificate or keystore files ([§4.3](#43-rotating-a-secret)).
+rotation, TLS certificate or keystore files rotated under the same path and password
+([§4.3](#43-rotating-a-secret); a new password reloads without a restart).
 A pipeline in `failed_preflight` does not need a restart: after fixing the cause, a
 no-op `POST /actuator/reload` retries it ([§5.5](#55-failed_preflight-pipelines)).
 Shutdown is graceful: each pipeline stops fetching, gives
@@ -685,7 +686,8 @@ Current behaviour that this runbook works around; each is a follow-up, not a fea
 - **A denied consumer-group join shows `running`.** The group permission is not part
   of preflight; the source retries the join every 10s.
 - **Rotated TLS files are not reloaded.** Certificate and keystore files are bound
-  by path, so a content change is `unchanged` to the reload; restart the pods.
+  by path, so a content change with an unchanged path and password is `unchanged` to
+  the reload; restart the pods ([§4.3](#43-rotating-a-secret)).
 - **Pause reasons are only in logs.** The metric and the health endpoint say `paused`
   without the reason; health details are hidden by `show-details: when-authorized`.
 - **No `validate` profile yet** ([DESIGN §5.6](DESIGN.md#56-validation-and-hot-reload),
