@@ -201,6 +201,36 @@ class DlqWriterTest {
   }
 
   @Test
+  void timeoutOfSendFailedByReplacementChecksTheTopicAgain() throws Exception {
+    DlqWriter writer = ordersWriter();
+    writer.send(request());
+    FakeClient client = clients.get(0);
+    client.next().ack(0);
+    CompletableFuture<RecordMetadata> second = writer.send(request());
+    client
+        .next()
+        .fail(
+            new ProducerReplacedException(
+                new SaslAuthenticationException("bad secret"),
+                new TimeoutException("Topic not present in metadata after 10000 ms.")));
+    client.next().ack(1);
+
+    second.get(10, TimeUnit.SECONDS);
+    assertThat(client.describes.get()).as("the send's own timeout counts").isEqualTo(2);
+  }
+
+  @Test
+  void timeoutsAreFoundInsideReplacement() {
+    TimeoutException timeout = new TimeoutException("t");
+    NetworkException other = new NetworkException("n");
+    assertThat(DlqFailure.isTimeout(new ExecutionException(timeout))).isTrue();
+    assertThat(DlqFailure.isTimeout(new ProducerReplacedException(other, timeout))).isTrue();
+    assertThat(DlqFailure.isTimeout(new ProducerReplacedException(timeout, other))).isTrue();
+    assertThat(DlqFailure.isTimeout(new ProducerReplacedException(other, other))).isFalse();
+    assertThat(DlqFailure.isTimeout(other)).isFalse();
+  }
+
+  @Test
   void failingTopicCheckIsRetried() throws Exception {
     DlqWriter writer = ordersWriter();
     FakeClient client = clients.get(0);
@@ -268,6 +298,52 @@ class DlqWriterTest {
     assertThatThrownBy(() -> producers.writer("orders")).isInstanceOf(IllegalStateException.class);
     assertThat(client.closed).isTrue();
     assertThat(events.log).noneMatch(e -> e.startsWith("written"));
+  }
+
+  @Test
+  void evictAbandonsTheWritersSendsAndKeepsTheOthers() throws Exception {
+    producers(
+        Map.of(
+            "orders", pipeline("orders.v2", "reader", null),
+            "payments", pipeline("payments", "reader", null)));
+    DlqWriter orders = producers.writer("orders");
+    DlqWriter payments = producers.writer("payments");
+    FakeClient client = clients.get(0);
+    final CompletableFuture<RecordMetadata> inFlight = orders.send(request());
+    final PendingSend sent = client.next();
+    final CompletableFuture<RecordMetadata> retrying = orders.send(request());
+    client.next().fail(new NetworkException("broker gone"));
+    await().atMost(TIMEOUT).until(() -> events.log.contains("blocked orders TRANSIENT"));
+    final CompletableFuture<RecordMetadata> other = payments.send(request());
+
+    producers.evict("orders");
+
+    for (CompletableFuture<RecordMetadata> abandoned : List.of(inFlight, retrying)) {
+      assertThatThrownBy(() -> abandoned.get(10, TimeUnit.SECONDS))
+          .isInstanceOf(ExecutionException.class)
+          .hasCauseInstanceOf(DlqClosedException.class);
+    }
+    assertThat(orders.send(request())).isCompletedExceptionally();
+    sent.ack(3); // a late acknowledgement of an abandoned send changes nothing
+    Thread.sleep(100); // past several retry delays
+    assertThat(events.log).noneMatch(e -> e.startsWith("written orders"));
+    assertThat(events.log).noneMatch(e -> e.startsWith("unblocked"));
+    assertThat(producers.writer("orders")).isNotSameAs(orders);
+    assertThat(producers.writer("payments")).isSameAs(payments);
+    assertThat(client.closed).as("the shared producer stays").isFalse();
+    // The retrying send may have reached the producer before the eviction: acknowledge them all.
+    await()
+        .atMost(TIMEOUT)
+        .until(() -> {
+          PendingSend next = client.sends.poll();
+          if (next != null) {
+            next.ack(8);
+          }
+          return other.isDone();
+        });
+    assertThat(other.get(10, TimeUnit.SECONDS).offset()).isEqualTo(8);
+    assertThat(events.log).noneMatch(e -> e.startsWith("written orders"));
+    producers.evict("unknown"); // no-op
   }
 
   @Test

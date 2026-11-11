@@ -835,9 +835,11 @@ in `ConfigValidator`, whose messages never include values.
     Meanwhile old and new instances coexist: briefly two producers or clients for the
     same `(cluster, identity)`, and a breaker per instance; each pipeline follows only
     the breaker and DLQ writer it uses, and `dlq-blocked` is dropped when a restart
-    gives the pipeline a new writer. A DLQ writer left behind keeps retrying its
-    failed sends until its instance closes; their records are re-delivered to the new
-    run anyway, so this costs memory and duplicate DLQ records, not data.
+    gives the pipeline a new writer. When a pipeline leaves an instance that other
+    pipelines still use (it moved to a new one, or was removed), its DLQ writer there is
+    evicted (ADR-0035): its unacknowledged sends complete with `DlqClosedException` and
+    stop retrying, and their offsets stay uncommitted (re-delivered if the pipeline runs
+    again).
   - **One reload at a time**: watcher and endpoint share one lock; a second caller
     waits. The watcher reloads once the content hash has been stable for the debounce
     (2s), so a kubelet update of several files is read once, and it does not retry a

@@ -44,7 +44,8 @@ import org.springframework.context.SmartLifecycle;
  *       whose DLQ settings changed, or a pipeline the current instance does not know, also makes a
  *       new instance current. A restarted pipeline whose DLQ settings and cluster are unchanged
  *       keeps its writer (and with it a {@code dlq-blocked} state) while its instance is still the
- *       current one.
+ *       current one. A pipeline that leaves an instance (it moved to a new one or was removed) has
+ *       its writer there evicted (ADR-0035).
  * </ul>
  *
  * <p>Every instance counts its pipelines and is closed when its last pipeline releases it (an
@@ -96,6 +97,8 @@ final class PipelineResources implements SmartLifecycle, AutoCloseable {
   private final Map<String, KafkaHandle> currentKafka = new HashMap<>(); // guarded by this
   private final Map<String, EsHandle> currentEs = new HashMap<>(); // guarded by this
   private final Map<Object, Handle> handles = new IdentityHashMap<>(); // guarded by this
+  private final Map<PipelineRuntime.Context, String> pipelineOf =
+      new IdentityHashMap<>(); // guarded by this
   private boolean closed; // guarded by this
   private volatile boolean running;
 
@@ -137,6 +140,7 @@ final class PipelineResources implements SmartLifecycle, AutoCloseable {
         }
       }
       kafka.users++;
+      kafka.pipelines.merge(pipeline, 1, Integer::sum);
       es.forEach(handle -> handle.users++);
       context =
           new PipelineRuntime.Context(
@@ -148,18 +152,42 @@ final class PipelineResources implements SmartLifecycle, AutoCloseable {
               settings.sourceOptions(),
               settings.sinkCloseTimeout(),
               settings.clock());
+      pipelineOf.put(context, pipeline);
     }
     closeAll(retired);
     return context;
   }
 
-  /** Returns the uses {@link #acquire} took; closes instances no pipeline uses any more. */
+  /**
+   * Returns the uses {@link #acquire} took; closes instances no pipeline uses any more. When the
+   * pipeline's last use of a {@code DlqProducers} that stays open goes, its writer there is evicted
+   * (ADR-0035), so a writer left behind by a reload stops retrying.
+   */
   void release(PipelineRuntime.Context context) {
     List<Handle> toClose = new ArrayList<>();
+    @Nullable String evict = null;
+    DlqProducers evictFrom = context.dlqProducers();
     synchronized (this) {
-      unuse(handles.get(context.dlqProducers()), toClose);
+      String pipeline = pipelineOf.remove(context);
+      Handle dlq = handles.get(evictFrom);
+      if (pipeline != null
+          && dlq instanceof KafkaHandle kafka
+          && kafka.pipelines.merge(pipeline, -1, Integer::sum) <= 0) {
+        kafka.pipelines.remove(pipeline);
+        evict = pipeline;
+      }
+      unuse(dlq, toClose);
       for (ElasticsearchSinks sinks : context.sinks().values()) {
         unuse(handles.get(sinks), toClose);
+      }
+    }
+    // Outside the monitor, like closeAll: safe because PipelineSupervisor makes every acquire and
+    // release under its lifecycle lock, so the pipeline cannot re-acquire this instance meanwhile.
+    if (evict != null && toClose.stream().noneMatch(handle -> handle.instance() == evictFrom)) {
+      try {
+        evictFrom.evict(evict);
+      } catch (RuntimeException e) {
+        LOG.warn("Dropping the DLQ writer of pipeline '{}' failed", evict, e);
       }
     }
     closeAll(toClose);
@@ -315,6 +343,7 @@ final class PipelineResources implements SmartLifecycle, AutoCloseable {
       closed = true;
       all = new ArrayList<>(handles.values());
       handles.clear();
+      pipelineOf.clear();
       currentKafka.clear();
       currentEs.clear();
     }
@@ -342,6 +371,8 @@ final class PipelineResources implements SmartLifecycle, AutoCloseable {
     final KafkafimProperties properties;
     final ConsumerFactories consumerFactories;
     final DlqProducers dlq;
+    final Map<String, Integer> pipelines =
+        new HashMap<>(); // uses per pipeline, guarded by the pool
 
     KafkaHandle(String cluster, KafkaCluster definition, KafkafimProperties properties) {
       super(cluster);
