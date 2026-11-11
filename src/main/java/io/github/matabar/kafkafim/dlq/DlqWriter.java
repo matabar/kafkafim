@@ -259,8 +259,9 @@ public final class DlqWriter {
           request.targetCluster() == null ? "-" : request.targetCluster(),
           request.targetIndex() == null ? "-" : request.targetIndex());
       owner.notify(listener -> listener.onWritten(pipeline, request, metadata));
-      // An eviction during onWritten makes it the last event (ADR-0035): an evicted writer's
-      // blocked state is not reported.
+      // Once the writer is evicted (during onWritten, or after the acknowledgement unregistered
+      // this send, so evict did not abandon it), onWritten is the last event (ADR-0035): an
+      // evicted writer's blocked state is not reported.
       if (failedBefore && !evicted) {
         recovered();
       }
@@ -288,7 +289,8 @@ public final class DlqWriter {
           exception);
       owner.notify(listener -> listener.onSendFailed(pipeline, request, failure));
       if (stopped()) {
-        // Evicted or closed during onSendFailed: it was the last event (ADR-0035), no retry.
+        // Evicted or closed during onSendFailed: it was the last event (ADR-0035). The return
+        // skips onBlocked and the retry; evict and close have already abandoned the send.
         abandon();
         return;
       }
@@ -305,6 +307,8 @@ public final class DlqWriter {
 
     /** Keeps the scheduled retry, so {@link #abandon} can cancel it. */
     void retryWith(ScheduledFuture<?> scheduled) {
+      // Write retry, then read done; abandon() sets done, then reads retry. Either side sees the
+      // other, so a racing abandon never leaves the retry on the timer. Keep this order.
       retry = scheduled;
       if (done.get()) {
         // Abandoned while the retry was being scheduled; abandon() may not have seen it.

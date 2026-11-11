@@ -12,7 +12,6 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
-import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
@@ -55,7 +54,7 @@ public final class DlqProducers implements SmartLifecycle, AutoCloseable {
   private final Set<DlqWriter.Send> pending = ConcurrentHashMap.newKeySet();
   private final ExecutorService executor =
       Executors.newThreadPerTaskExecutor(Thread.ofVirtual().name("kafkafim-dlq-", 0).factory());
-  private final ScheduledExecutorService scheduler;
+  private final ScheduledThreadPoolExecutor scheduler;
   private final Object closeLock = new Object();
   private volatile boolean closed;
   private volatile boolean running;
@@ -90,11 +89,10 @@ public final class DlqProducers implements SmartLifecycle, AutoCloseable {
     this.listener = listener;
     this.options = options;
     this.clients = clients;
-    ScheduledThreadPoolExecutor timer =
+    this.scheduler =
         new ScheduledThreadPoolExecutor(
             1, Thread.ofPlatform().name("kafkafim-dlq-retry").daemon().factory());
-    timer.setRemoveOnCancelPolicy(true);
-    this.scheduler = timer;
+    scheduler.setRemoveOnCancelPolicy(true);
   }
 
   /**
@@ -271,7 +269,7 @@ public final class DlqProducers implements SmartLifecycle, AutoCloseable {
 
   /** Number of retries waiting on the timer, for tests. */
   int scheduledRetries() {
-    return ((ScheduledThreadPoolExecutor) scheduler).getQueue().size();
+    return scheduler.getQueue().size();
   }
 
   /** Calls the listener, logging and swallowing what it throws. */
