@@ -319,7 +319,9 @@ fraction passes through a `double`, which is exact to the millisecond, so send a
 string for more). `pattern:` parses with `Locale.ROOT` and strict resolution (the era
 defaults to CE, so `yyyy` works and `02-30` fails). A pattern without an offset or
 zone is read as **UTC**, one without any time field as midnight; a time that cannot
-resolve (`hh` without `a`) or a pattern that yields no date fails. Era text is
+resolve (`hh` without `a`, or a day period `B` in a pattern with no hour) or a
+pattern that yields no date fails. A pattern whose hour is in an optional section
+(`yyyy-MM-dd[ h:mm B]`) reads a date-only value as midnight. Era text is
 `CE`/`BCE` under `Locale.ROOT`. `k` is the clock hour 1 to 24, whose `24` is the first
 hour of the day (`24:30` is `00:30` of the same date), as java.time defines it; `HH`
 rejects ISO-8601's end-of-day `24:00`, so such a value is a bad timestamp rather than
@@ -963,7 +965,7 @@ are reported together:
   (`Locale.ROOT`, strict, era CE) by formatting a sample and parsing it back: one that
   never yields a date (`yyyy-MM`, `HH:mm`, `YYYY-MM-dd`) or a complete time (`hh`
   without `a`, minutes without hours) is an error, since every document would fail, as
-  is a day period `B` without a time (it would read every value as midnight). A
+  is a day period `B` in a pattern with no hour (`yyyy-MM-dd B`). A
   pattern without an offset or zone (read as UTC; a quoted `'Z'` literal does not warn),
   one using `k`, or one that cannot format and parse back the sample is a warning.
 - **Document**: `op: create` takes no `version-field`; Elasticsearch accepts external
