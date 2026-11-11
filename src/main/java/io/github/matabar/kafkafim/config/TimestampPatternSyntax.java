@@ -63,8 +63,9 @@ final class TimestampPatternSyntax {
               + " hours), so every timestamp would fail");
     } else if (parsed.query(TemporalQueries.localTime()) == null
         && unquoted(pattern).indexOf('B') >= 0) {
-      // 'B' is not a ChronoField, so hasTimeField cannot see it; decode checks the pattern text
-      // for it the same way and fails such a timestamp rather than reading it as midnight.
+      // 'B' is not a ChronoField, so hasTimeField cannot see it. Decode fails such a timestamp
+      // rather than reading it as midnight; it decides from the pattern text ('B' and no hour
+      // letter), which gives the same answer as this sample check.
       errors.add(
           "pattern '"
               + pattern

@@ -147,6 +147,10 @@ class TimestampFormatTest {
         "pattern:yyyy-MM-dd hh:mm a|\"2026-11-07 03:04 PM\"|2026-11-07T15:04:00Z",
         "pattern:yyyy-MM-dd h B|\"2026-11-07 1 PM\"|2026-11-07T13:00:00Z",
         "pattern:yyyy-MM-dd'B'|\"2026-11-07B\"|2026-11-07T00:00:00Z",
+        // An hour in an optional section: a date-only value is midnight, with 'B' as with 'a'.
+        "pattern:yyyy-MM-dd[ h:mm B]|\"2026-11-07\"|2026-11-07T00:00:00Z",
+        "pattern:yyyy-MM-dd[ h:mm B]|\"2026-11-07 1:15 PM\"|2026-11-07T13:15:00Z",
+        "pattern:yyyy-MM-dd[ hh:mm a]|\"2026-11-07\"|2026-11-07T00:00:00Z",
         "pattern:G yyyy-MM-dd|\"CE 2026-01-01\"|2026-01-01T00:00:00Z",
         // 'k' is the clock hour 1-24: 24 is the first hour of the same day, not end of day.
         "pattern:yyyy-MM-dd kk:mm|\"2026-11-07 24:30\"|2026-11-07T00:30:00Z",
