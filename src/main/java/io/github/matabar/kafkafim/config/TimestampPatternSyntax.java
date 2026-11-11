@@ -63,12 +63,12 @@ final class TimestampPatternSyntax {
               + " hours), so every timestamp would fail");
     } else if (parsed.query(TemporalQueries.localTime()) == null
         && unquoted(pattern).indexOf('B') >= 0) {
-      // 'B' is not a ChronoField, so decode does not see it as a time field: the parsed period is
-      // dropped and every timestamp lands at midnight.
+      // 'B' is not a ChronoField, so hasTimeField cannot see it; decode checks the pattern text
+      // for it the same way and fails such a timestamp rather than reading it as midnight.
       errors.add(
           "pattern '"
               + pattern
-              + "' has a day period 'B' but no time, so every timestamp would be read as midnight");
+              + "' has a day period 'B' but no time, so every timestamp would fail");
     }
     return errors;
   }

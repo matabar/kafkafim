@@ -35,10 +35,11 @@ import tools.jackson.databind.JsonNode;
  *       DateTimeFormatter} pattern {@code p}, {@code Locale.ROOT} and strict resolution ({@code
  *       yyyy} works because the era defaults to CE). Without an offset or zone in the pattern the
  *       time is UTC; without any time field it is midnight; a time that cannot resolve (e.g. {@code
- *       hh} without {@code a}) or a pattern that yields no date fails. Era text under {@code
- *       Locale.ROOT} is {@code CE}/{@code BCE}, not {@code AD}/{@code BC}. {@code k} is the clock
- *       hour 1 to 24, whose {@code 24} is the first hour of the day ({@code 24:30} is {@code 00:30}
- *       of the same date); {@code HH} rejects ISO-8601's {@code 24:00}.
+ *       hh} without {@code a}, or a day period {@code B} without an hour) or a pattern that yields
+ *       no date fails. Era text under {@code Locale.ROOT} is {@code CE}/{@code BCE}, not {@code
+ *       AD}/{@code BC}. {@code k} is the clock hour 1 to 24, whose {@code 24} is the first hour of
+ *       the day ({@code 24:30} is {@code 00:30} of the same date); {@code HH} rejects ISO-8601's
+ *       {@code 24:00}.
  * </ul>
  *
  * <p>Every format rejects instants outside years 1 to 9999, which no {@code %{+yyyy...}} index name
@@ -182,6 +183,7 @@ abstract sealed class TimestampFormat {
   private static final class Custom extends TimestampFormat {
     private final String pattern;
     private final DateTimeFormatter formatter;
+    private final boolean dayPeriod;
 
     Custom(String pattern) {
       // config.TimestampPatternSyntax builds the same formatter to validate the pattern; keep the
@@ -193,6 +195,8 @@ abstract sealed class TimestampFormat {
               .parseDefaulting(ChronoField.ERA, 1)
               .toFormatter(Locale.ROOT)
               .withResolverStyle(ResolverStyle.STRICT);
+      // A day period 'B' is not a ChronoField, so hasTimeField cannot see it once parsed.
+      this.dayPeriod = pattern.replaceAll("'[^']*'", "").indexOf('B') >= 0;
     }
 
     @Override
@@ -215,9 +219,9 @@ abstract sealed class TimestampFormat {
           return Parse.failed("pattern '" + pattern + "' yields no date from " + describe(value));
         }
         LocalTime time = parsed.query(TemporalQueries.localTime());
-        if (time == null && hasTimeField(parsed)) {
-          // e.g. "hh:mm" without "a": the time is parsed but cannot resolve, and defaulting to
-          // midnight would misdate the document.
+        if (time == null && (hasTimeField(parsed) || dayPeriod)) {
+          // e.g. "hh:mm" without "a", or "B" without an hour: the time is parsed but cannot
+          // resolve, and defaulting to midnight would misdate the document.
           return Parse.failed(
               "pattern '" + pattern + "' yields an incomplete time from " + describe(value));
         }

@@ -145,6 +145,8 @@ class TimestampFormatTest {
         "pattern:uuuu-MM-dd|\"2026-11-07\"|2026-11-07T00:00:00Z",
         "pattern:dd/MMM/yyyy:HH:mm:ss Z|\"07/Nov/2026:10:15:30 +0000\"|2026-11-07T10:15:30Z",
         "pattern:yyyy-MM-dd hh:mm a|\"2026-11-07 03:04 PM\"|2026-11-07T15:04:00Z",
+        "pattern:yyyy-MM-dd h B|\"2026-11-07 1 PM\"|2026-11-07T13:00:00Z",
+        "pattern:yyyy-MM-dd'B'|\"2026-11-07B\"|2026-11-07T00:00:00Z",
         "pattern:G yyyy-MM-dd|\"CE 2026-01-01\"|2026-01-01T00:00:00Z",
         // 'k' is the clock hour 1-24: 24 is the first hour of the same day, not end of day.
         "pattern:yyyy-MM-dd kk:mm|\"2026-11-07 24:30\"|2026-11-07T00:30:00Z",
@@ -170,6 +172,9 @@ class TimestampFormatTest {
         "pattern:yyyy-MM-dd hh:mm XXX|\"2026-11-07 11:30 +01:00\"",
         "pattern:G yyyy-MM-dd|\"AD 2026-01-01\"",
         "pattern:yyyy-MM-dd a|\"2026-11-07 PM\"",
+        // A day period without an hour cannot resolve to a time; midnight would misdate it.
+        "pattern:yyyy-MM-dd B|\"2026-11-07 PM\"",
+        "pattern:yyyy-MM-dd[ B]|\"2026-11-07 PM\"",
         "pattern:yyyy-MM-dd kk:mm|\"2026-11-07 00:30\"",
         "pattern:yyyy-MM-dd HH:mm|\"2026-11-07 24:00\""
       })
