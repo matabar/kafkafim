@@ -868,6 +868,37 @@ class ConfigValidationTest {
       assertInvalid(index("orders-%{+HH:mm}"), "produces '23:59'");
     }
 
+    @ParameterizedTest
+    @ValueSource(strings = {".orders", ".ds-logs-%{+yyyy.MM}", "%{+'.'yyyy.MM}", ".%{region}"})
+    void warnsOnDotPrefixedIndexNames(String pattern) {
+      ConfigValidator.Result result =
+          ConfigValidator.validate(ConfigTestSupport.bind(index(pattern)));
+
+      assertThat(result.isValid()).isTrue();
+      assertThat(result.warnings())
+          .contains(
+              P
+                  + ".routes[0].index: index names starting with '.' are reserved for hidden and"
+                  + " system indices; Elasticsearch deprecates creating them (DESIGN §5.7)");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"orders.v2", "orders-%{+yyyy.MM}", "%{region}-orders", "%{+yyyy}.x"})
+    void doesNotWarnOnIndexNamesWithoutLeadingDot(String pattern) {
+      ConfigValidator.Result result =
+          ConfigValidator.validate(ConfigTestSupport.bind(index(pattern)));
+
+      assertThat(result.warnings()).noneMatch(w -> w.contains("starting with '.'"));
+    }
+
+    @Test
+    void reportsDotAndDotDotOnlyAsErrors() {
+      // A tree with these does not bind, so check the syntax helper directly.
+      assertThat(IndexPatternSyntax.warnings(".")).isEmpty();
+      assertThat(IndexPatternSyntax.warnings("..")).isEmpty();
+      assertThat(IndexPatternSyntax.errors("..")).contains("index names must not be '.' or '..'");
+    }
+
     @Test
     void doesNotWarnOnQuotedLiteralY() {
       ConfigValidator.Result result =
@@ -1183,9 +1214,9 @@ class ConfigValidationTest {
     return pipeline("routes:\n  - { default: true, " + fields + " }\n");
   }
 
-  /** Pipeline {@code p} whose only route uses index {@code pattern}. */
+  /** Pipeline {@code p} whose only route uses index {@code pattern} (YAML-quoted here). */
   private static String index(String pattern) {
-    return defaultRoute("cluster: es, index: '" + pattern + "'");
+    return defaultRoute("cluster: es, index: '" + pattern.replace("'", "''") + "'");
   }
 
   /** Basic auth for {@code identity}; several properties joined with newlines. */

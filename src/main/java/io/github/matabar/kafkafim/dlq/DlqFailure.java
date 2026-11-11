@@ -12,6 +12,7 @@ import org.apache.kafka.common.errors.InvalidTopicException;
 import org.apache.kafka.common.errors.ProducerFencedException;
 import org.apache.kafka.common.errors.RecordBatchTooLargeException;
 import org.apache.kafka.common.errors.RecordTooLargeException;
+import org.apache.kafka.common.errors.TimeoutException;
 import org.apache.kafka.common.errors.UnknownTopicOrPartitionException;
 import org.apache.kafka.common.errors.UnsupportedVersionException;
 import org.jspecify.annotations.Nullable;
@@ -95,6 +96,27 @@ public record DlqFailure(Kind kind, Throwable cause, int attempt, Duration retry
           || cause instanceof InvalidPidMappingException) {
         return true;
       }
+    }
+    return false;
+  }
+
+  /**
+   * Whether a send failed with a Kafka {@link TimeoutException} (possibly "not present in
+   * metadata", so the topic may be gone). A {@link ProducerReplacedException} counts when the
+   * send's own failure (suppressed) or the replacement's trigger (cause) is one.
+   */
+  static boolean isTimeout(Throwable failure) {
+    Throwable cause = unwrap(failure);
+    if (cause instanceof TimeoutException) {
+      return true;
+    }
+    if (cause instanceof ProducerReplacedException replaced) {
+      for (Throwable own : replaced.getSuppressed()) {
+        if (unwrap(own) instanceof TimeoutException) {
+          return true;
+        }
+      }
+      return replaced.getCause() != null && unwrap(replaced.getCause()) instanceof TimeoutException;
     }
     return false;
   }

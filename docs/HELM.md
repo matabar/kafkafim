@@ -198,7 +198,8 @@ schema rejects any other key instead of silently dropping it. That includes
 application refuses `kafkafim.allow-inline-secrets=true` on Kubernetes however it is set (for example through
 `extraEnv`), and likewise refuses to start with the `local` profile active there
 (`config/LocalProfileGuard`, [DESIGN §5.4](DESIGN.md#54-helm-rendering)). So a chart
-install, including the Docker Desktop demo, mounts its secrets as files like
+install, including the local Kubernetes demo
+([deploy/local](../deploy/local/README.md)), mounts its secrets as files like
 production. Helm reads values numbers as float64, so integers above 2^53 in
 `config` lose precision: quote them. Application-wide settings that are not
 per-group belong in the image's `application.yaml` or in `extraEnv`.

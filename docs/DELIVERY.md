@@ -221,6 +221,10 @@ docker build -t kafkafim:dev .               # same Dockerfile as CI, from targe
 helm template charts/kafkafim -f charts/kafkafim/ci/two-groups-values.yaml
 ```
 
+```bash
+deploy/local/demo.sh up                      # the chart on a local kind cluster (deploy/local/README.md)
+```
+
 ## Base image
 
 `eclipse-temurin:27-jre` (Ubuntu). Distroless does not ship a Java 27 runtime yet;
