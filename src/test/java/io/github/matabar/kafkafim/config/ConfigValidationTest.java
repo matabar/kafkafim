@@ -800,6 +800,30 @@ class ConfigValidationTest {
     }
 
     @Test
+    void reportsOnlyWhatTheDropRouteSetsNotTheInheritedDefaultIdentity() {
+      List<String> errors =
+          ConfigTestSupport.errors(
+              pipeline(
+                  KAFKA_CLUSTERS,
+                  """
+                  es:
+                    uris: [http://es:9200]
+                    identities: { writer: { api-key: k } }
+                    default-identity: writer
+                  """,
+                  """
+                  source: { cluster: k, topics: [t] }
+                  routes:
+                    - { when: [ { field: /a, exists: true } ], drop: true, cluster: es }
+                    - { default: true, cluster: es, index: idx }
+                  """),
+              "kafkafim.allow-inline-secrets=true");
+
+      assertThat(errors).anyMatch(e -> e.startsWith(P + ".routes[0].cluster: "));
+      assertThat(errors).noneMatch(e -> e.startsWith(P + ".routes[0].identity"));
+    }
+
+    @Test
     void stillRequiresClusterAndIndexOnAnIndexingRoute() {
       List<String> errors =
           ConfigTestSupport.errors(

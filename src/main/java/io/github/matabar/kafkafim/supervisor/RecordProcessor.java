@@ -41,11 +41,11 @@ import org.slf4j.LoggerFactory;
  * unresolved_index}), one per document a drop route selected, and exactly one for a record that
  * fails as a whole (oversize, undecodable). Each document is routed before its id, version and
  * timestamp problems apply ({@link DocumentOutcome.Unindexable}); such a problem is still one part
- * per document, whatever the fan-out, and a dropped document has none. An empty array has zero
- * parts and completes at once. A part completes when Elasticsearch acked the action ({@code
- * indexed} or {@code stale}), when the DLQ broker acknowledged its DLQ record (the sink's {@code
- * dlq} outcomes and every decode or route failure), or, for a dropped document, as soon as it is
- * dispatched: a record whose documents all drop completes at once. A DLQ send that fails at
+ * per document, whatever the fan-out, and a dropped document is never checked for one. An empty
+ * array has zero parts and completes at once. A part completes when Elasticsearch acked the action
+ * ({@code indexed} or {@code stale}), when the DLQ broker acknowledged its DLQ record (the sink's
+ * {@code dlq} outcomes and every decode or route failure), or, for a dropped document, as soon as
+ * it is dispatched: a record whose documents all drop completes at once. A DLQ send that fails at
  * shutdown leaves the part, and so the record, incomplete: it is re-delivered.
  *
  * <p>Thread-safety: {@link #process} runs on consumer threads, {@link #onOutcome} on sink sender
