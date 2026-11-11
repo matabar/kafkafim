@@ -357,7 +357,10 @@ material, and a Kafka authentication or authorization error are **configuration*
 failures (`failed_preflight` until the next accepted reload or a restart, §5.6). An unreachable broker or cluster
 (timeout, connection error, 5xx) is **transient**: the pipeline stays `starting` and
 retries (1s doubling to 30s), so a pod that starts during a short outage needs no
-restart. Elasticsearch answers 405 on that path when security is disabled; any status
+restart. A stop (shutdown, or a reload that restarts or removes the pipeline)
+cancels a start in progress: it interrupts any check still waiting for an answer and
+discards the verdict, and the pipeline ends `stopped`. A stop therefore never waits out
+the checks' timeouts (10s for the DLQ describe, up to 15s per Elasticsearch identity). Elasticsearch answers 405 on that path when security is disabled; any status
 other than 401, 403 and 5xx passes. The consumer group's permission is not checked
 before the first join; a denied join is retried by the source every 10s and logged.
 

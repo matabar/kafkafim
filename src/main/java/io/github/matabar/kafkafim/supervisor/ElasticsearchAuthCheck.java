@@ -56,10 +56,25 @@ final class ElasticsearchAuthCheck implements Preflight.AuthCheck {
       }
       return Preflight.Status.unreachable(e.toString());
     } finally {
-      try {
-        client.close();
-      } catch (IOException e) {
-        // Nothing to do; the client held one connection at most.
+      close(client);
+    }
+  }
+
+  /**
+   * Closes the client with the thread's interrupt flag cleared, then restores it. A stop interrupts
+   * a check in progress (the request then fails as unreachable at once); closing the client's I/O
+   * reactor from an interrupted thread would cut its shutdown short, and every I/O thread would log
+   * a {@code ClosedSelectorException} at ERROR.
+   */
+  private static void close(Rest5Client client) {
+    boolean interrupted = Thread.interrupted();
+    try {
+      client.close();
+    } catch (IOException e) {
+      // Nothing to do; the client held one connection at most.
+    } finally {
+      if (interrupted) {
+        Thread.currentThread().interrupt();
       }
     }
   }
