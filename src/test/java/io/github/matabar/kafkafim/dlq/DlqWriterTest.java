@@ -14,6 +14,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
@@ -56,6 +57,7 @@ class DlqWriterTest {
 
   @AfterEach
   void close() {
+    events.release();
     if (producers != null) {
       producers.close();
     }
@@ -317,7 +319,8 @@ class DlqWriterTest {
     producers(
         Map.of(
             "orders", pipeline("orders.v2", "reader", null),
-            "payments", pipeline("payments", "reader", null)));
+            "payments", pipeline("payments", "reader", null)),
+        SLOW_RETRY);
     DlqWriter orders = producers.writer("orders");
     DlqWriter payments = producers.writer("payments");
     FakeClient client = clients.get(0);
@@ -325,37 +328,73 @@ class DlqWriterTest {
     final PendingSend sent = client.next();
     final CompletableFuture<RecordMetadata> retrying = orders.send(request());
     client.next().fail(new NetworkException("broker gone"));
-    await().atMost(TIMEOUT).until(() -> events.log.contains("blocked orders TRANSIENT"));
+    await().atMost(TIMEOUT).until(() -> producers.scheduledRetries() == 1);
     final CompletableFuture<RecordMetadata> other = payments.send(request());
+    final PendingSend otherSent = client.next();
 
     producers.evict("orders");
 
     for (CompletableFuture<RecordMetadata> abandoned : List.of(inFlight, retrying)) {
-      assertThatThrownBy(() -> abandoned.get(10, TimeUnit.SECONDS))
-          .isInstanceOf(ExecutionException.class)
-          .hasCauseInstanceOf(DlqClosedException.class);
+      assertThat(abandoned).isCompletedExceptionally();
+      assertThatThrownBy(abandoned::get).hasCauseInstanceOf(DlqClosedException.class);
     }
     assertThat(orders.send(request())).isCompletedExceptionally();
-    sent.ack(3); // a late acknowledgement of an abandoned send changes nothing
-    Thread.sleep(100); // past several retry delays
-    assertThat(events.log).noneMatch(e -> e.startsWith("written orders"));
-    assertThat(events.log).noneMatch(e -> e.startsWith("unblocked"));
+    // A late callback of an abandoned send returns without dispatching anything, so these checks
+    // need no waiting.
+    sent.ack(3);
+    sent.fail(new NetworkException("late"));
+    assertThat(producers.scheduledRetries()).as("the orders retry is cancelled").isZero();
+    assertThat(events.log).containsExactly("failed orders TRANSIENT 1", "blocked orders TRANSIENT");
     assertThat(producers.writer("orders")).isNotSameAs(orders);
     assertThat(producers.writer("payments")).isSameAs(payments);
     assertThat(client.closed).as("the shared producer stays").isFalse();
-    // The retrying send may have reached the producer before the eviction: acknowledge them all.
-    await()
-        .atMost(TIMEOUT)
-        .until(() -> {
-          PendingSend next = client.sends.poll();
-          if (next != null) {
-            next.ack(8);
-          }
-          return other.isDone();
-        });
+    otherSent.ack(8);
     assertThat(other.get(10, TimeUnit.SECONDS).offset()).isEqualTo(8);
-    assertThat(events.log).noneMatch(e -> e.startsWith("written orders"));
+    assertThat(client.sends).as("nothing more reached the producer").isEmpty();
     producers.evict("unknown"); // no-op
+  }
+
+  @Test
+  void failureReportUnderWayAtEvictIsTheWritersLastEvent() throws Exception {
+    DlqWriter writer =
+        producers(Map.of("orders", pipeline("orders.v2", "reader", null)), SLOW_RETRY)
+            .writer("orders");
+    events.holdOn("failed orders");
+    final CompletableFuture<RecordMetadata> result = writer.send(request());
+    clients.get(0).next().fail(new NetworkException("broker gone"));
+    Thread callback = events.awaitHeld();
+
+    producers.evict("orders");
+    events.release();
+
+    assertThat(callback.join(TIMEOUT)).as("the callback finished").isTrue();
+    assertThatThrownBy(() -> result.get(10, TimeUnit.SECONDS))
+        .hasCauseInstanceOf(DlqClosedException.class);
+    assertThat(events.log).containsExactly("failed orders TRANSIENT 1");
+    assertThat(producers.scheduledRetries()).as("no retry after the eviction").isZero();
+    assertThat(writer.isBlocked()).isFalse();
+  }
+
+  @Test
+  void acknowledgementUnderWayAtEvictCompletesAndIsTheWritersLastEvent() throws Exception {
+    DlqWriter writer = ordersWriter();
+    events.holdOn("written orders");
+    final CompletableFuture<RecordMetadata> result = writer.send(request());
+    FakeClient client = clients.get(0);
+    client.next().fail(new NetworkException("broker gone"));
+    client.next().ack(4); // the retry
+    Thread callback = events.awaitHeld();
+
+    producers.evict("orders");
+    events.release();
+
+    assertThat(callback.join(TIMEOUT)).as("the callback finished").isTrue();
+    assertThat(result.get(10, TimeUnit.SECONDS).offset())
+        .as("acknowledged before the eviction, so it completes")
+        .isEqualTo(4);
+    assertThat(events.log)
+        .containsExactly(
+            "failed orders TRANSIENT 1", "blocked orders TRANSIENT", "written orders 4");
   }
 
   @Test
@@ -516,30 +555,63 @@ class DlqWriterTest {
         .isInstanceOf(IllegalArgumentException.class);
   }
 
-  /** Records listener calls in order. */
+  /** Records listener calls in order; can hold the first call of one kind until released. */
   private static final class Events implements DlqListener {
     final List<String> log = new CopyOnWriteArrayList<>();
     final List<DlqFailure> failures = new CopyOnWriteArrayList<>();
+    private final CountDownLatch held = new CountDownLatch(1);
+    private final CountDownLatch released = new CountDownLatch(1);
+    private volatile String holdOn;
+    private volatile Thread holder;
+
+    /** Holds the first call whose event starts with {@code prefix}. */
+    void holdOn(String prefix) {
+      holdOn = prefix;
+    }
+
+    /** Waits for the held call; returns its thread, to join once released. */
+    Thread awaitHeld() throws InterruptedException {
+      assertThat(held.await(10, TimeUnit.SECONDS)).as("the listener call was held").isTrue();
+      return holder;
+    }
+
+    void release() {
+      released.countDown();
+    }
+
+    private void record(String event) {
+      log.add(event);
+      String prefix = holdOn;
+      if (prefix != null && event.startsWith(prefix) && held.getCount() > 0) {
+        holder = Thread.currentThread();
+        held.countDown();
+        try {
+          released.await(10, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+          Thread.currentThread().interrupt();
+        }
+      }
+    }
 
     @Override
     public void onWritten(String pipeline, DlqRequest request, RecordMetadata metadata) {
-      log.add("written " + pipeline + " " + metadata.offset());
+      record("written " + pipeline + " " + metadata.offset());
     }
 
     @Override
     public void onSendFailed(String pipeline, DlqRequest request, DlqFailure failure) {
       failures.add(failure);
-      log.add("failed " + pipeline + " " + failure.kind() + " " + failure.attempt());
+      record("failed " + pipeline + " " + failure.kind() + " " + failure.attempt());
     }
 
     @Override
     public void onBlocked(String pipeline, DlqFailure failure) {
-      log.add("blocked " + pipeline + " " + failure.kind());
+      record("blocked " + pipeline + " " + failure.kind());
     }
 
     @Override
     public void onUnblocked(String pipeline) {
-      log.add("unblocked " + pipeline);
+      record("unblocked " + pipeline);
     }
   }
 

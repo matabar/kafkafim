@@ -215,6 +215,9 @@ public final class DlqWriter {
             .send(
                 record,
                 (metadata, exception) -> {
+                  if (done.get()) {
+                    return; // abandoned: a late callback changes nothing
+                  }
                   if (exception == null) {
                     // Synchronously, so a close that follows sees this send as acknowledged.
                     owner.unregister(this);
@@ -256,7 +259,9 @@ public final class DlqWriter {
           request.targetCluster() == null ? "-" : request.targetCluster(),
           request.targetIndex() == null ? "-" : request.targetIndex());
       owner.notify(listener -> listener.onWritten(pipeline, request, metadata));
-      if (failedBefore) {
+      // An eviction during onWritten makes it the last event (ADR-0035): an evicted writer's
+      // blocked state is not reported.
+      if (failedBefore && !evicted) {
         recovered();
       }
       result.complete(metadata);
@@ -282,6 +287,11 @@ public final class DlqWriter {
           retryIn,
           exception);
       owner.notify(listener -> listener.onSendFailed(pipeline, request, failure));
+      if (stopped()) {
+        // Evicted or closed during onSendFailed: it was the last event (ADR-0035), no retry.
+        abandon();
+        return;
+      }
       if (!failedBefore) {
         failedBefore = true;
         blocked(failure);
