@@ -85,6 +85,11 @@ Branch protection on `main` (a classic branch protection rule, in force since
 The rule requires no approving review; reviews are a process rule (CONTRIBUTING.md).
 
 Dependabot (weekly, grouped) for Maven, GitHub Actions and the Docker base image.
+Dependabot ignores `io.opentelemetry.proto:opentelemetry-proto`. No BOM manages it, and
+`pom.xml` declares it at the version `micrometer-registry-otlp` depends on. A
+`maven-enforcer-plugin` `dependencyConvergence` rule fails `validate` when the two
+differ. A Boot or Micrometer upgrade that moves Micrometer's proto version therefore fails
+the build until `opentelemetry-proto.version` is bumped to match.
 
 ## CD (`.github/workflows/release.yml`) on tag `v*`
 

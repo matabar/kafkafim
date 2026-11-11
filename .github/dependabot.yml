@@ -6,6 +6,11 @@ updates:
     groups:
       spring: { patterns: ["org.springframework*"] }
       all-others: { patterns: ["*"] }
+    ignore:
+      # Must equal the version micrometer-registry-otlp depends on; the pom's enforcer
+      # rule fails otherwise, which would block the whole all-others group. Bump it by
+      # hand in the Boot/Micrometer upgrade that trips the rule.
+      - dependency-name: "io.opentelemetry.proto:opentelemetry-proto"
   - package-ecosystem: github-actions
     directory: /
     schedule: { interval: weekly }
