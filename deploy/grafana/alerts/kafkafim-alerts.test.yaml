@@ -240,11 +240,11 @@ tests:
       - series: 'kafkafim_auth_failures_total{instance="pod-a",pipeline="orders",kafka_cluster="main",es_cluster="logs",identity="writer"}'
         values: '3x20 stale 3x20'
     alert_rule_test:
-      # 'x offset 5m' at 15m30s hits the stale marker; a range lookback skips it.
-      - eval_time: 15m30s
+      - eval_time: 12m
         alertname: KafkafimEsAuthFailures
         exp_alerts: []
-      - eval_time: 12m
+      # 'x offset 5m' at 15m30s hits the stale marker; a range lookback skips it.
+      - eval_time: 15m30s
         alertname: KafkafimEsAuthFailures
         exp_alerts: []
 
