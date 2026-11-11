@@ -246,13 +246,18 @@ public final class KafkaPipelineSource implements SmartLifecycle {
    * Waits for the consumer threads. {@code stop()} of a container that stopped itself (a consumer
    * hit an {@link Error} or a fatal error, ADR-0036) returns at once, while its other consumers may
    * still be revoking (flushing the sinks, committing): the sinks must not close under them.
+   *
+   * <p>The signal is the parent's {@link ConcurrentContainerStoppedEvent}. It can come early if a
+   * consumer stops itself within microseconds of the start, before a sibling has registered with
+   * the parent; it never comes if a consumer's wrap-up throws before it reports, and the stop then
+   * waits the full shutdown timeout. Both are rare, and the stop stays bounded.
    */
   private void awaitConsumers(long deadline) {
     try {
       if (!consumersStopped.await(
           Math.max(0, deadline - System.nanoTime()), TimeUnit.NANOSECONDS)) {
         LOG.warn(
-            "Pipeline '{}': Kafka consumer threads still running after {}",
+            "Pipeline '{}': Kafka consumer threads did not report stopped within {}",
             pipeline,
             options.shutdownTimeout());
       }
