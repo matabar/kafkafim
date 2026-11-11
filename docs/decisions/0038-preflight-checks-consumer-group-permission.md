@@ -31,7 +31,7 @@ with `includeAuthorizedOperations(true)` reports, by the identity's group ACLs:
   Elasticsearch checks, so one ERROR line still names every problem.
 - **Configuration** (`failed_preflight`): a group or other authorization error, an
   authentication error, an existing group whose authorized operations lack `READ`
-  (and `ALL`), or a group id another protocol already uses (Connect, a share group).
+  (and `ALL`), or a group id another protocol already uses (such as Connect).
 - **Passes**: `READ` or `ALL` listed; no operations listed (a broker that cannot say);
   a group that does not exist yet; a broker that does not support the request.
 - **Transient** (stays `starting`, retried with backoff): a timeout or connection error.

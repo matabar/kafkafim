@@ -412,9 +412,7 @@ final class PipelineRuntime {
             new KafkaPipelineSource(
                 name,
                 config.source(),
-                context
-                    .consumerFactories()
-                    .get(config.source().cluster(), config.source().identity()),
+                consumers,
                 new Handler(
                     processor[0],
                     actionSinks.values(),

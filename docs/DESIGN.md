@@ -374,14 +374,14 @@ The group check exists because a denied join is otherwise invisible: the listene
 container retries it every 10s and never stops, so the pipeline would show `running`.
 One `DescribeGroups` with `includeAuthorizedOperations` answers it. It goes through a
 short-lived admin client built from the source identity's consumer settings (all except
-the consumer-only keys) and is bounded by the source's metadata timeout. An authorization or authentication error (no group ACL,
-or one on another group name: `FindCoordinator` needs `Describe`) is a configuration
-failure. So is an existing group whose authorized operations lack `READ`, and a group id
-another protocol already uses. `READ` or
-`ALL` listed, no operations listed, or a broker that does not support the request
-passes. So does a group that has never been joined: the broker answers
-`GroupIdNotFoundException` and cannot tell `Read` from `Describe`, so the first join stays
-the check for `Describe` without `Read` on a new group (ADR-0038).
+the consumer-only keys) and is bounded by the source's metadata timeout. An
+authorization or authentication error (no group ACL, or one on another group name:
+`FindCoordinator` needs `Describe`) is a configuration failure. So is an existing group
+whose authorized operations lack `READ`, and a group id another protocol already uses.
+`READ` or `ALL` listed, no operations listed, or a broker that does not support the
+request passes. So does a group that has never been joined: the broker answers
+`GroupIdNotFoundException` and cannot tell `Read` from `Describe`, so the first join
+stays the check for `Describe` without `Read` on a new group (ADR-0038).
 
 After a successful start, a pipeline whose source cannot go on (the record handler
 threw, or a consumer of the listener container stopped on its own: any
