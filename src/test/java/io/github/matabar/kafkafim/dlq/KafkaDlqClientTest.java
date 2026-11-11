@@ -188,7 +188,7 @@ class KafkaDlqClientTest {
 
   @Test
   void failingCloseOfTheOldProducerStillReplacesIt() {
-    MockProducer<byte[], byte[]>[] holder = new MockProducer[1];
+    AtomicReference<MockProducer<byte[], byte[]>> first = new AtomicReference<>();
     KafkaDlqClient client =
         new KafkaDlqClient(
             Map.of("client.id", "c"),
@@ -198,24 +198,22 @@ class KafkaDlqClientTest {
                       false, null, new ByteArraySerializer(), new ByteArraySerializer()) {
                     @Override
                     public void close(Duration timeout) {
-                      if (holder[0] == this) {
+                      if (first.get() == this) {
                         throw new KafkaException("close failed");
                       }
                       super.close(timeout);
                     }
                   };
-              if (holder[0] == null) {
-                holder[0] = producer;
-              }
+              first.compareAndSet(null, producer);
               created.add(producer);
               return producer;
             });
-    holder[0].sendException = fatalWrapper();
+    first.get().sendException = fatalWrapper();
 
     assertThatThrownBy(() -> client.send(record(), (m, e) -> {}))
         .isInstanceOf(KafkaException.class);
 
-    assertThat(client.producer()).isNotSameAs(holder[0]);
+    assertThat(client.producer()).isNotSameAs(first.get());
     assertThat(created).hasSize(2);
   }
 
