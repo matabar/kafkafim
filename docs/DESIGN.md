@@ -1149,8 +1149,8 @@ documents that failed before a route was selected (`decode`, `missing_id`,
 `bad_timestamp`, `no_route`). Validation reserves `none` and digits-only names and
 rejects duplicate names (§5.3), so each `route` value means exactly one route or the
 pre-routing failures. There are no partition labels. Series known from the
-configuration (per topic, per route and outcome, the bulk histograms per cluster, the
-gauges) exist from startup with 0; status and error-type series appear with their first
+configuration (per topic, per route and outcome, `route="none"` with `outcome="dlq"`, the
+bulk histograms per cluster, the gauges) exist from startup with 0; status and error-type series appear with their first
 event. On a reload (§5.6, ADR-0028) a removed pipeline loses every series, an added one
 gains them, a pipeline whose labels changed (source cluster, topics, routes, clusters)
 gets fresh series, and an unchanged one keeps its counters across a restart.

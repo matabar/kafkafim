@@ -27,10 +27,11 @@ import org.jspecify.annotations.Nullable;
  * partition labels.
  *
  * <p>Series that are known from the configuration (consumption per topic, documents per route and
- * outcome, bulk histograms per Elasticsearch cluster, the gauges) exist from the start with 0, so
- * {@code rate()} works from the first event; the others (statuses, error types) appear with their
- * first event. {@link #close()} removes every series of the pipeline, which is what a reload does
- * for a removed pipeline (ADR-0028); events after that are ignored.
+ * outcome plus {@code route="none", outcome="dlq"}, bulk histograms per Elasticsearch cluster, the
+ * gauges) exist from the start with 0, so {@code rate()} works from the first event; the others
+ * (statuses, error types) appear with their first event. {@link #close()} removes every series of
+ * the pipeline, which is what a reload does for a removed pipeline (ADR-0028); events after that
+ * are ignored.
  *
  * <p>Thread-safe; the recording methods are called from consumer, sender and DLQ threads.
  */
@@ -94,6 +95,10 @@ public final class PipelineMeters {
         counter(TelemetryNames.DOCS, Tags.of("route", route, "outcome", outcome.label()));
       }
     }
+    // Documents that fail before a route is selected only ever end in the DLQ.
+    counter(
+        TelemetryNames.DOCS,
+        Tags.of("route", TelemetryNames.NO_ROUTE, "outcome", DocOutcome.DLQ.label()));
     for (String cluster : spec.esClusters()) {
       bulkLatency(cluster);
       bulkDocs(cluster);
