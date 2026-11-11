@@ -160,9 +160,16 @@ number (`SourceRecord.expectParts`): one part per routed copy of a decoded docum
 (`route-mode: all` fan-out makes several), one per document that fails decoding or
 routing (`missing_id`, `bad_timestamp`, `decode` with `doc-index`, `no_route`,
 `unresolved_index` with the route's `target.cluster`), and exactly one for a record that
-fails as a whole (oversize, never decoded; undecodable; tombstone). A part completes on
-`indexed` or `stale`, or when the broker acknowledged its DLQ record (a sink `dlq` outcome
-or a decode/route failure); a DLQ send failed by shutdown leaves the record uncommitted.
+fails as a whole (oversize, never decoded; undecodable; tombstone). Each parsed object is
+routed before its id, version and timestamp problems apply: decoding extracts them and
+keeps any error with the document, and the error becomes a part only for a document that
+routing sends to Elasticsearch. Every route indexes, so today that is every document,
+including one no route selected (it reports its id, version or timestamp error rather than
+`no_route`), and it stays one part per document, with `route="none"` (§10), however many
+copies `route-mode: all` would have made. The timestamp is still parsed before any
+`%{+...}` pattern is resolved. A part completes on `indexed` or `stale`, or when the
+broker acknowledged its DLQ record (a sink `dlq` outcome or a decode/route failure); a
+DLQ send failed by shutdown leaves the record uncommitted.
 Outcomes for a record whose partition was revoked are ignored and not dead-lettered (the
 next owner re-reads it). On revoke the supervisor seals the open batches and waits for
 nothing. Ingest time is the record's Kafka timestamp (the wall clock for a record
@@ -280,8 +287,9 @@ element, `kafkafim.doc-index`.
   would otherwise read whichever duplicate the parser kept. Inside a valid array each
   element stands alone: a non-object element (including a nested array), or an id,
   version or timestamp problem, fails only that element (`doc-index` set), and the
-  other elements are indexed. An empty array is zero documents, so its offset is
-  committable at once.
+  other elements are indexed. A non-object element fails at once; an id, version or
+  timestamp problem is held with the parsed object and applies after routing (§4.2).
+  An empty array is zero documents, so its offset is committable at once.
 - **Source bytes.** Each document is indexed from its own bytes in the value (the
   whole value for an object, the element's slice for an array), not from a
   re-serialised tree, so number spelling and key order survive. One leading UTF-8 BOM
@@ -716,7 +724,10 @@ missing secret file would otherwise become the password. A value with a placehol
 other text (for example a `sasl.jaas.config` string containing `password="${...}"`)
 counts as a literal, so such a value is mounted whole as one secret file. Secret provisioning stays outside the chart
 (`existingSecret` names): plain Secrets, Sealed Secrets, External Secrets or a Vault
-agent all work. A changed secret file is picked up by the same reload path.
+agent all work. A changed secret file is picked up by the same reload path. No Bean
+Validation constraint sits on a secret component (a reflection test enforces it): Boot's
+bind-failure report prints the raw `Value:` of a failed constraint, so secret rules live
+in `ConfigValidator`, whose messages never include values.
 
 ### 5.6 Validation and hot reload
 
@@ -880,7 +891,10 @@ are reported together:
   `%{+<DateTimeFormatter>}` must be terminated and parse; literal parts, and what each
   date pattern produces (so `%{+yyyy/MM}` or `%{+HH:mm}` fail), must not contain
   characters Elasticsearch rejects (`\ / * ? " < > | , # :` and space); a name must not
-  start with `-`, `_` or `+`, nor be `.` or `..`. Date patterns are checked, and resolved, with
+  start with `-`, `_` or `+`, nor be `.` or `..`. A name starting with `.` (a literal, or
+  a leading `%{+...}` whose output does) is a warning: Elasticsearch reserves those for
+  hidden and system indices and deprecates creating them; a leading `%{field}` cannot be
+  known at bind time and is not checked. Date patterns are checked, and resolved, with
   `Locale.ROOT`. An unquoted `Y` (week-based year) in a
   date pattern is a warning.
 - **Timestamps**: `timestamp-format` is `iso-8601`, `epoch-millis`, `epoch-seconds` or
@@ -894,8 +908,9 @@ are reported together:
 - **Document**: `op: create` takes no `version-field`; Elasticsearch accepts external
   versions only on `index` ("create operations only support internal versioning", §4.4).
 - **Warnings** (bind, log at `WARN`): no pipelines, `id-missing: auto`, an http route
-  without identity, week-based year, a timestamp `pattern:` without an offset or zone,
-  using `k` or failing its self-check, `allow-inline-secrets=true`.
+  without identity, an index name starting with `.`, week-based year, a timestamp
+  `pattern:` without an offset or zone, using `k` or failing its self-check,
+  `allow-inline-secrets=true`.
 
 ## 6. Scaling
 
