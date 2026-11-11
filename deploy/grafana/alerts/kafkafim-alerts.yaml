@@ -18,6 +18,22 @@ groups:
             keeps the pipeline stopped until a reload changes it or the pod restarts.
           runbook_url: https://github.com/matabar/kafkafim/blob/main/docs/RUNBOOK.md#55-failed_preflight-pipelines
 
+      - alert: KafkafimPipelineFailed
+        # Per pod: the fix (a no-op POST /actuator/reload) is per pod, and other pods may still
+        # run the pipeline. The state is latched until a reload or restart, so 1m only rides out
+        # a reload's retry (failed -> starting within seconds), not a flapping signal.
+        expr: max by (job, instance, pipeline) (kafkafim_pipeline_state{state="failed"}) == 1
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Pipeline {{ $labels.pipeline }} failed while running on {{ $labels.instance }}"
+          description: >-
+            The record handler threw or a Kafka consumer stopped on its own. The pipeline is
+            stopped on this pod until an accepted reload retries it or the pod restarts; the ERROR
+            "Pipeline '<name>': failed while running" line names the cause.
+          runbook_url: https://github.com/matabar/kafkafim/blob/main/docs/RUNBOOK.md#513-failed-pipelines
+
       - alert: KafkafimPipelinePaused
         expr: max by (pipeline) (kafkafim_pipeline_state{state="paused"}) == 1
         for: 5m
