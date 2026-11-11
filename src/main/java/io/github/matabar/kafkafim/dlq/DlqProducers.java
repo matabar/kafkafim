@@ -26,7 +26,9 @@ import org.springframework.context.SmartLifecycle;
  * The DLQ producers of one bound configuration: one shared, thread-safe Kafka producer per {@code
  * (source cluster, DLQ identity)} (DESIGN §5.2.1), and one {@link DlqWriter} per pipeline on top of
  * it. Producers are created on a pipeline's first {@link #writer} call. A reload builds a new
- * instance from the new configuration and closes the old one once its pipelines have stopped.
+ * instance from the new configuration and closes the old one once its pipelines have stopped; a
+ * pipeline that leaves an instance others still use has its writer there {@linkplain #evict
+ * evicted}.
  *
  * <p><b>Lifecycle.</b> As a Spring bean this is a {@link SmartLifecycle} in phase {@link #PHASE},
  * below the Kafka sources ({@code KafkaPipelineSource.PHASE}, {@code MAX_VALUE - 100}) and above
@@ -124,6 +126,38 @@ public final class DlqProducers implements SmartLifecycle, AutoCloseable {
   public TopicStatus checkTopic(String pipelineName) {
     DlqWriter writer = writer(pipelineName);
     return producerFor(pipeline(pipelineName)).check(writer.topic(), options.topicCheckTimeout());
+  }
+
+  /**
+   * Drops a pipeline's writer, for a pipeline that moved to other DLQ producers or was removed
+   * (ADR-0035). Its unacknowledged sends, including those waiting to retry, complete with {@link
+   * DlqClosedException} (their source records stay uncommitted, re-delivered if the pipeline runs
+   * again), later sends through it fail the same way, and it stops retrying; a callback already
+   * under way may still report one last event to the listener. The shared producer stays until
+   * {@link #close()}. A later {@link #writer} call creates a new writer. No-op if the pipeline has
+   * no writer.
+   *
+   * @param pipelineName a {@code kafkafim.pipelines} entry
+   */
+  public void evict(String pipelineName) {
+    DlqWriter writer = writers.remove(pipelineName);
+    if (writer == null) {
+      return;
+    }
+    writer.evict();
+    List<DlqWriter.Send> unacknowledged = new ArrayList<>();
+    for (DlqWriter.Send send : pending) {
+      if (send.writer() == writer) {
+        unacknowledged.add(send);
+      }
+    }
+    log.info(
+        "Dropped the DLQ writer of pipeline '{}' to topic '{}'; {} unacknowledged DLQ record(s)"
+            + " stay uncommitted (re-delivered if the pipeline runs again)",
+        pipelineName,
+        writer.topic(),
+        unacknowledged.size());
+    unacknowledged.forEach(DlqWriter.Send::abandon);
   }
 
   /** Number of distinct producers created so far. */

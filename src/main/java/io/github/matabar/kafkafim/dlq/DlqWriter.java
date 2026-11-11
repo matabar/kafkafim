@@ -6,7 +6,6 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.clients.producer.RecordMetadata;
-import org.apache.kafka.common.errors.TimeoutException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -21,8 +20,9 @@ import org.slf4j.LoggerFactory;
  * that completion and only there. A failed attempt is never reported as an exceptional completion:
  * it is retried with backoff (100ms doubling to 30s) until it succeeds, and reported to the {@link
  * DlqListener} with its {@link DlqFailure.Kind kind}. The future completes exceptionally only with
- * {@link DlqClosedException}, when the writers are closed before the record was acknowledged; the
- * caller must then leave the offset uncommitted, so the record is re-delivered.
+ * {@link DlqClosedException}, when the writers are closed (or this writer is {@linkplain
+ * DlqProducers#evict evicted}) before the record was acknowledged; the caller must then leave the
+ * offset uncommitted, so the record is re-delivered.
  *
  * <p><b>Blocked state</b> (DESIGN §7, "DLQ produce fails"): from the first failure of a send until
  * every send that failed has been acknowledged, the writer is {@linkplain #isBlocked() blocked} and
@@ -47,6 +47,7 @@ public final class DlqWriter {
   private final Object stateLock = new Object();
   private int failing;
   private boolean configurationReported;
+  private volatile boolean evicted;
 
   DlqWriter(String pipeline, String topic, SharedProducer producer, DlqProducers owner) {
     this.pipeline = pipeline;
@@ -81,6 +82,9 @@ public final class DlqWriter {
    */
   public CompletableFuture<RecordMetadata> send(DlqRequest request) {
     Objects.requireNonNull(request, "request");
+    if (evicted) {
+      return CompletableFuture.failedFuture(closedException());
+    }
     Send send = new Send(request, DlqRecordFormat.toProducerRecord(topic, pipeline, request));
     if (!owner.register(send)) {
       return CompletableFuture.failedFuture(closedException());
@@ -90,9 +94,18 @@ public final class DlqWriter {
     return send.result.copy();
   }
 
+  /** Stops this writer for good; {@link DlqProducers#evict} abandons its pending sends. */
+  void evict() {
+    evicted = true;
+  }
+
+  private boolean stopped() {
+    return evicted || owner.isClosed();
+  }
+
   private DlqClosedException closedException() {
     return new DlqClosedException(
-        "DLQ writers closed before the record to '"
+        "DLQ writer closed before the record to '"
             + topic
             + "' of pipeline '"
             + pipeline
@@ -176,9 +189,14 @@ public final class DlqWriter {
       this.record = record;
     }
 
+    /** The writer this send belongs to. */
+    DlqWriter writer() {
+      return DlqWriter.this;
+    }
+
     /** One attempt, on a DLQ thread: check the topic, then hand the record to the producer. */
     void attempt() {
-      if (owner.isClosed()) {
+      if (stopped()) {
         abandon();
         return;
       }
@@ -242,11 +260,11 @@ public final class DlqWriter {
     }
 
     private void failed(Throwable exception) {
-      if (owner.isClosed()) {
+      if (stopped()) {
         abandon();
         return;
       }
-      if (DlqFailure.unwrap(exception) instanceof TimeoutException) {
+      if (DlqFailure.isTimeout(exception)) {
         // Possibly "not present in metadata": the topic may be gone, so check it again.
         producer.forget(topic);
       }
@@ -272,7 +290,7 @@ public final class DlqWriter {
       owner.schedule(this, retryIn);
     }
 
-    /** Completes exceptionally: the writers closed before an acknowledgement. */
+    /** Completes exceptionally: the writer closed or was evicted before an acknowledgement. */
     void abandon() {
       if (!done.compareAndSet(false, true)) {
         return;

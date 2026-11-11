@@ -36,8 +36,9 @@ into ~20 Elasticsearch 8.x clusters.
 - First-class OpenTelemetry (metrics, traces, logs) exported over OTLP to Elastic
   APM Server, Prometheus endpoint for free, Grafana dashboards and alert rules in
   the repo.
-- Local demo stack (Kafka + ES + kafkafim) on Docker Compose and Docker Desktop
-  Kubernetes; the production Helm chart deploys only kafkafim.
+- Local demo stack (Kafka + ES + kafkafim) on Docker Compose and on a local Kubernetes
+  cluster (kind or Docker Desktop, `deploy/local/`); the production Helm chart deploys
+  only kafkafim.
 - kafkafim **never provisions resources**. Topics, consumer groups, credentials,
   indices, index templates, ingest pipelines, users and roles are created by the
   team's external provisioning systems before a pipeline is deployed. kafkafim
@@ -159,9 +160,16 @@ number (`SourceRecord.expectParts`): one part per routed copy of a decoded docum
 (`route-mode: all` fan-out makes several), one per document that fails decoding or
 routing (`missing_id`, `bad_timestamp`, `decode` with `doc-index`, `no_route`,
 `unresolved_index` with the route's `target.cluster`), and exactly one for a record that
-fails as a whole (oversize, never decoded; undecodable; tombstone). A part completes on
-`indexed` or `stale`, or when the broker acknowledged its DLQ record (a sink `dlq` outcome
-or a decode/route failure); a DLQ send failed by shutdown leaves the record uncommitted.
+fails as a whole (oversize, never decoded; undecodable; tombstone). Each parsed object is
+routed before its id, version and timestamp problems apply: decoding extracts them and
+keeps any error with the document, and the error becomes a part only for a document that
+routing sends to Elasticsearch. Every route indexes, so today that is every document,
+including one no route selected (it reports its id, version or timestamp error rather than
+`no_route`), and it stays one part per document, with `route="none"` (§10), however many
+copies `route-mode: all` would have made. The timestamp is still parsed before any
+`%{+...}` pattern is resolved. A part completes on `indexed` or `stale`, or when the
+broker acknowledged its DLQ record (a sink `dlq` outcome or a decode/route failure); a
+DLQ send failed by shutdown leaves the record uncommitted.
 Outcomes for a record whose partition was revoked are ignored and not dead-lettered (the
 next owner re-reads it). On revoke the supervisor seals the open batches and waits for
 nothing. Ingest time is the record's Kafka timestamp (the wall clock for a record
@@ -279,8 +287,9 @@ element, `kafkafim.doc-index`.
   would otherwise read whichever duplicate the parser kept. Inside a valid array each
   element stands alone: a non-object element (including a nested array), or an id,
   version or timestamp problem, fails only that element (`doc-index` set), and the
-  other elements are indexed. An empty array is zero documents, so its offset is
-  committable at once.
+  other elements are indexed. A non-object element fails at once; an id, version or
+  timestamp problem is held with the parsed object and applies after routing (§4.2).
+  An empty array is zero documents, so its offset is committable at once.
 - **Source bytes.** Each document is indexed from its own bytes in the value (the
   whole value for an object, the element's slice for an array), not from a
   re-serialised tree, so number spelling and key order survive. One leading UTF-8 BOM
@@ -352,9 +361,16 @@ restart. Elasticsearch answers 405 on that path when security is disabled; any s
 other than 401, 403 and 5xx passes. The consumer group's permission is not checked
 before the first join; a denied join is retried by the source every 10s and logged.
 
+After a successful start, a pipeline whose source cannot go on (the record handler
+threw, or a consumer of the listener container stopped on its own: any
+`ConsumerStoppedEvent` reason but `NORMAL`) goes to **`failed`** and is stopped like
+any other stop: drained, committed, out of the group, sinks closed (ADR-0036). Like
+`failed_preflight`, it stays stopped until the next accepted reload or a restart;
+nothing restarts it on its own.
+
 Readiness (`pipelines` health contributor in the readiness group, next to `kafka`,
 §10): up while at least one pipeline is `running` or `paused`; out of service while every pipeline is still
-`starting` or has failed, so a rollout of a broken configuration stops at the first
+`starting` or has failed (`failed_preflight` or `failed`), so a rollout of a broken configuration stops at the first
 pod; up with zero pipelines configured (valid, with a startup warning). A breaker or
 auth pause never affects readiness.
 
@@ -698,8 +714,8 @@ ConfigMap never contains a secret. Startup validation refuses literal values in 
 `password`, containing `secret`, `sasl.jaas.config`, `ssl.keystore.key` or
 `user.info`) unless `kafkafim.allow-inline-secrets=true`. That switch is for local
 development outside Kubernetes (`./mvnw spring-boot:run` with Compose): on
-`CloudPlatform.KUBERNETES` the flag itself stops startup (§5.4), so the planned Docker Desktop
-Kubernetes demo (`deploy/local/`, §13) will mount its secrets as files, like production. A
+`CloudPlatform.KUBERNETES` the flag itself stops startup (§5.4), so the local Kubernetes
+demo (`deploy/local/`, §13) mounts its secrets as files, like production. A
 secret is accepted when it is read straight from a `configtree` file, or when its raw,
 unresolved text is exactly one `${name}` placeholder (no `:default`, which would be an
 inline fallback) whose chain of references ends in a `configtree` file. The check looks
@@ -788,9 +804,11 @@ in `ConfigValidator`, whose messages never include values.
     Meanwhile old and new instances coexist: briefly two producers or clients for the
     same `(cluster, identity)`, and a breaker per instance; each pipeline follows only
     the breaker and DLQ writer it uses, and `dlq-blocked` is dropped when a restart
-    gives the pipeline a new writer. A DLQ writer left behind keeps retrying its
-    failed sends until its instance closes; their records are re-delivered to the new
-    run anyway, so this costs memory and duplicate DLQ records, not data.
+    gives the pipeline a new writer. When a pipeline leaves an instance that other
+    pipelines still use (it moved to a new one, or was removed), its DLQ writer there is
+    evicted (ADR-0035): its unacknowledged sends complete with `DlqClosedException` and
+    stop retrying, and their offsets stay uncommitted (re-delivered if the pipeline runs
+    again).
   - **One reload at a time**: watcher and endpoint share one lock; a second caller
     waits. The watcher reloads once the content hash has been stable for the debounce
     (2s), so a kubelet update of several files is read once, and it does not retry a
@@ -818,14 +836,14 @@ in `ConfigValidator`, whose messages never include values.
   - Not reloaded: the `KafkafimProperties` bean stays the startup tree (the supervisor
     holds the one in effect); OTLP export headers (§10) and everything outside
     `kafkafim.*` need a restart.
-  - **Retry of `failed_preflight`** (ADR-0032): every accepted reload (`applied` or
+  - **Retry of failed pipelines** (ADR-0032, ADR-0036): every accepted reload (`applied` or
     `unchanged`, watcher or endpoint) starts once more each pipeline it leaves unchanged
-    that is in `failed_preflight`, so after fixing a missing topic, ACL or credential a
+    that is in `failed_preflight` or `failed`, so after fixing a missing topic, ACL or credential a
     no-op `POST /actuator/reload` recovers it without a restart. They are listed under
     `retried` (not `unchanged`); `result`, `generation` and
     `kafkafim_config_reload_total` are unaffected, and the reload's INFO line names
     them. One ordinary start per reload, in the background: a pipeline that still fails
-    goes back to `failed_preflight` and waits for the next reload (no automatic retry,
+    goes back to a failed state and waits for the next reload (no automatic retry,
     no attempt while one is starting or stopping); the outcome shows in
     `kafkafim_pipeline_state`. A rejected reload retries nothing.
 
@@ -934,6 +952,7 @@ are reported together:
 | Bulk request rejected with 413 | The request is split in halves and each half retried (recursively); a single-document bulk that still gets 413 sends that document to the DLQ with `error.type=too_large`. |
 | Undecodable record, non-object element, unusable version, missing `_id`, bad timestamp, no matching route, unresolved index pattern | DLQ with the matching `error.type` (`decode`, `missing_id`, `bad_timestamp`, `no_route`, `unresolved_index`). |
 | Missing topic, DLQ topic, or failed authentication at pipeline start | Pipeline stays stopped (`failed_preflight`) until the next accepted reload or a restart (§5.6), clear log naming resource and identity, alert. Other pipelines unaffected. kafkafim never creates the resource. |
+| Record handler throws, or a consumer of the listener container stops on its own (an error the container does not retry, an `Error` from the listener) | The pipeline goes to `failed` and is stopped gracefully: the source drains, commits what completed and leaves the group, so the group's other pods take its partitions; records still incomplete are re-delivered. It stays stopped until the next accepted reload or a restart (§4.6, §5.6, ADR-0036); one ERROR line names the cause. Other pipelines unaffected. |
 | DLQ produce fails | Block the partition and alert. Losing data is worse than lag. The send is retried forever (100ms doubling to 30s, ±25% jitter) and never completes the source offset until the broker acknowledged it (`acks=all`), so the committed offset stays put. The writer is *blocked* from its first failure until every failed send was acknowledged; the supervisor pauses the pipeline on `onBlocked` and resumes on `onUnblocked`. A missing DLQ topic, failed authentication or authorization, an invalid topic or a record larger than the producer or topic allows is a **configuration** failure (logged at `ERROR`, alert); anything else is **transient**. Both kinds are retried; neither drops the record. A producer error that kafka-clients can make fatal even for an idempotent producer (cluster authorization, authentication, unsupported version, a fenced producer or an invalid producer ID mapping) replaces the shared producer, so fixing the cause unblocks the next attempt without a restart. A missing `Write` ACL is usually not fatal, though: in kafka-clients 4.2 a `CLUSTER_AUTHORIZATION_FAILED` answer to `InitProducerId` is *abortable*: the producer fails the pending batches, goes back to uninitialized and retries `InitProducerId` on its own. The producer becomes fatal only when the error reaches its error state through a failed batch (a produce response carrying it). kafkafim replaces the producer on `ClusterAuthorizationException` either way: replacing it is cheap and covers the fatal path. On the abortable path kafka-clients still logs `Aborting producer batches due to fatal error` at `ERROR`, and kafkafim logs that the producer *may be* in a fatal state and replaces it; both mean only that the pending sends failed and will be retried. A send that fails only because of the replacement (closing the producer aborts its batch, or it reached the producer after the close began) is reported by the failure that triggered the replacement, so a missing ACL never shows up as a transient `Producer is closed forcefully`. Each send attempt is reported once, although kafka-clients can both throw from `send` and later fail the batch it had already appended. |
 | Kafka unavailable | Reconnect with backoff (kafka-clients); `kafkafim_kafka_connected` gauge drops, alert. A Kafka authentication or authorization failure after start is retried every 10s instead of stopping the consumer. |
 | Pod SIGTERM | Spring graceful shutdown, higher phases first: the pipeline supervisor (phase MAX-100) stops all pipelines in parallel; each pipeline's Kafka source pauses fetching, gives in-flight records up to 30s to complete (its bulk sinks and the DLQ writer are still open, so outcomes keep arriving), then stops its container (10s), which commits what completed on revoke and leaves the group; records still incomplete are re-delivered to the next owner; then the pipeline's bulk sinks close (up to 10s; outcomes after the revoke are ignored); then the DLQ producers (phase MAX-1000, so they outlive the source drain; closed by `supervisor/PipelineResources`, which owns every configuration generation's producers) flush for up to 10s and close, failing any send still unacknowledged so that its record is not committed; then the web server drains (phase MAX-1024, instant for actuator-only traffic). `spring.lifecycle.timeout-per-shutdown-phase` (60s, `application.yaml`) bounds each phase; the consumer phase must fit the pod's `terminationGracePeriodSeconds` (90s, chart default). |
@@ -1082,7 +1101,7 @@ Exact label sets (`telemetry/TelemetryNames`, `telemetry/PipelineMeters`):
 | `kafkafim_in_flight_bytes`, `kafkafim_assigned_partitions`, `kafkafim_kafka_connected` (1/0) | — | the pipeline's running source, read on scrape |
 | `kafkafim_dlq_records_total` | `error_type` | every DLQ record the broker acknowledged |
 | `kafkafim_breaker_state` | only `es_cluster`: 0 closed, 1 half-open, 2 open | the breakers the pipelines send through (the worst one while a reload leaves two generations alive) |
-| `kafkafim_pipeline_state` | only `pipeline`, `state=starting\|running\|paused\|failed_preflight\|stopped` | 1 for the current state, 0 for the others; `paused` means a supervisor reason: breaker open, identity rejected or DLQ blocked, not the byte-budget backpressure |
+| `kafkafim_pipeline_state` | only `pipeline`, `state=starting\|running\|paused\|failed_preflight\|failed\|stopped` | 1 for the current state, 0 for the others; `paused` means a supervisor reason: breaker open, identity rejected or DLQ blocked, not the byte-budget backpressure |
 | `kafkafim_config_reload_total{result=success\|failure}`, `kafkafim_config_generation` | none | §5.6 (1 at startup, +1 per applied reload) |
 
 Label discipline: `route` is the route's `name`, or its zero-based position, never the
@@ -1221,7 +1240,7 @@ src/main/resources/application.yaml   profile-independent defaults (default prof
 src/main/resources/application-local.yaml   local-dev sample config: clusters + demo pipeline
 src/test/java/...                     unit + Testcontainers integration tests
 charts/kafkafim/                      production Helm chart
-deploy/local/                         planned (chore/local-k8s-demo): Kubernetes demo stack (Kafka + ES operators, local only)
+deploy/local/                         local Kubernetes demo (kind or Docker Desktop): plain Kafka + ES manifests, demo chart values, demo.sh up/smoke/down
 deploy/grafana/                       Grafana dashboards, Prometheus alert rules + promtool tests, compose provisioning
 docs/                                 DESIGN.md, TECH_STACK.md, decisions/, runbook
 ```

@@ -48,6 +48,14 @@ docker compose down -v                             # reset the stack and its dat
 (The native broker image ships no Kafka CLI scripts, hence the JVM `apache/kafka` image of the
 `kafka-init` service for topic and producer commands.)
 
+To run the real Helm chart instead, on a local kind or Docker Desktop cluster with
+in-cluster Kafka and Elasticsearch and secrets mounted as files like production, see
+[deploy/local](deploy/local/README.md):
+
+```bash
+deploy/local/demo.sh up && deploy/local/demo.sh smoke
+```
+
 ```bash
 ./mvnw verify               # unit + integration tests (Testcontainers)
 ```

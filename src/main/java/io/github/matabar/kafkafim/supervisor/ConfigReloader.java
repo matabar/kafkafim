@@ -32,8 +32,8 @@ import org.springframework.core.env.Environment;
  * kafkafim_config_reload_total{result="failure"}} increments and one {@code ERROR} record lists
  * every violation. A valid tree increments {@code result="success"}; if it changed anything, {@code
  * kafkafim_config_generation} (1 at startup) increments too. A valid tree, changed or not, also
- * starts once more every pipeline it leaves unchanged that is in {@code failed_preflight} ({@link
- * PipelineSupervisor#retryFailedPreflight}); a rejected tree retries nothing.
+ * starts once more every pipeline it leaves unchanged that is in {@code failed_preflight} or {@code
+ * failed} ({@link PipelineSupervisor#retryFailedPipelines}); a rejected tree retries nothing.
  *
  * <p>As a {@link SmartLifecycle} one phase above the supervisor ({@link #PHASE}), it starts the
  * {@link ConfigWatcher} after the pipelines started and stops it before they stop.
@@ -158,7 +158,7 @@ final class ConfigReloader implements SmartLifecycle {
       KafkafimProperties next = loaded.properties();
       if (next.equals(running)) {
         ConfigDiff diff = ConfigDiff.between(running, next);
-        List<String> retried = supervisor.retryFailedPreflight(diff.unchanged());
+        List<String> retried = supervisor.retryFailedPipelines(diff.unchanged());
         successes.increment();
         LOG.info(
             "Configuration reload ({}): no change, generation {} stays{}",
@@ -208,7 +208,7 @@ final class ConfigReloader implements SmartLifecycle {
   }
 
   private static String retriedSuffix(List<String> retried) {
-    return retried.isEmpty() ? "" : "; retrying failed_preflight pipeline(s) " + retried;
+    return retried.isEmpty() ? "" : "; retrying failed pipeline(s) " + retried;
   }
 
   /**
