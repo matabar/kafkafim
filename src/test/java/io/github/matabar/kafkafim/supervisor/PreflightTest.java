@@ -5,9 +5,19 @@ import static org.assertj.core.api.Assertions.assertThat;
 import io.github.matabar.kafkafim.dlq.TopicStatus;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
+import java.util.function.Supplier;
+import org.apache.kafka.common.acl.AclOperation;
+import org.apache.kafka.common.errors.GroupAuthorizationException;
+import org.apache.kafka.common.errors.GroupIdNotFoundException;
+import org.apache.kafka.common.errors.SaslAuthenticationException;
+import org.apache.kafka.common.errors.TimeoutException;
+import org.apache.kafka.common.errors.UnsupportedVersionException;
 import org.junit.jupiter.api.Test;
 
 class PreflightTest {
+
+  private static final Supplier<Preflight.Status> GROUP_OK = () -> Preflight.Status.OK;
 
   private final CompiledPipeline compiled =
       PipelineMapping.compile(
@@ -30,6 +40,7 @@ class PreflightTest {
         Preflight.run(
             compiled,
             () -> TopicStatus.EXISTS,
+            GROUP_OK,
             (cluster, identity) -> {
               checked.add(cluster + "/" + identity);
               return Preflight.Status.OK;
@@ -58,6 +69,7 @@ class PreflightTest {
         Preflight.run(
             withDrops,
             () -> TopicStatus.EXISTS,
+            GROUP_OK,
             (cluster, identity) -> {
               checked.add(cluster + "/" + identity);
               return Preflight.Status.OK;
@@ -89,6 +101,7 @@ class PreflightTest {
         Preflight.run(
             onlyDrops,
             () -> TopicStatus.EXISTS,
+            GROUP_OK,
             (cluster, identity) -> {
               throw new AssertionError("no cluster to check");
             });
@@ -103,6 +116,7 @@ class PreflightTest {
         Preflight.run(
             compiled,
             () -> TopicStatus.MISSING,
+            GROUP_OK,
             (cluster, identity) ->
                 cluster.equals("es")
                     ? Preflight.Status.rejected("HTTP 401 from _security/_authenticate")
@@ -122,6 +136,7 @@ class PreflightTest {
         Preflight.run(
             compiled,
             () -> TopicStatus.UNREACHABLE,
+            GROUP_OK,
             (cluster, identity) -> Preflight.Status.unreachable("connection refused"));
     assertThat(result.configuration()).isEmpty();
     assertThat(result.transientProblems()).hasSize(3);
@@ -130,8 +145,106 @@ class PreflightTest {
   @Test
   void notAuthorizedDlqTopicIsConfiguration() {
     Preflight.Result result =
-        Preflight.run(compiled, () -> TopicStatus.NOT_AUTHORIZED, (c, i) -> Preflight.Status.OK);
+        Preflight.run(
+            compiled, () -> TopicStatus.NOT_AUTHORIZED, GROUP_OK, (c, i) -> Preflight.Status.OK);
     assertThat(result.configuration()).singleElement().asString().contains("may not describe");
+  }
+
+  @Test
+  void deniedConsumerGroupIsConfigurationNamingGroupIdentityAndCluster() {
+    Preflight.Result result =
+        Preflight.run(
+            compiled,
+            () -> TopicStatus.EXISTS,
+            () -> Preflight.Status.rejected("identity may describe the group but not read it"),
+            (c, i) -> Preflight.Status.OK);
+    assertThat(result.configuration())
+        .containsExactly(
+            "consumer group 'kafkafim.p' (identity '<none>' on Kafka cluster 'k'): identity may"
+                + " describe the group but not read it");
+    assertThat(result.transientProblems()).isEmpty();
+  }
+
+  @Test
+  void unreachableOrThrowingGroupCheckIsTransient() {
+    Preflight.Result unreachable =
+        Preflight.run(
+            compiled,
+            () -> TopicStatus.EXISTS,
+            () -> Preflight.Status.unreachable("no answer within PT30S"),
+            (c, i) -> Preflight.Status.OK);
+    assertThat(unreachable.configuration()).isEmpty();
+    assertThat(unreachable.transientProblems())
+        .singleElement()
+        .asString()
+        .startsWith("consumer group 'kafkafim.p'")
+        .endsWith("no answer within PT30S");
+
+    Preflight.Result threw =
+        Preflight.run(
+            compiled,
+            () -> TopicStatus.EXISTS,
+            () -> {
+              throw new IllegalStateException("boom");
+            },
+            (c, i) -> Preflight.Status.OK);
+    assertThat(threw.configuration()).isEmpty();
+    assertThat(threw.transientProblems()).singleElement().asString().contains("boom");
+  }
+
+  @Test
+  void groupOperationsClassification() {
+    assertThat(KafkaGroupCheck.classify(Set.of(AclOperation.READ, AclOperation.DESCRIBE)).kind())
+        .isEqualTo(Preflight.Kind.OK);
+    assertThat(KafkaGroupCheck.classify(Set.of(AclOperation.ALL)).kind())
+        .isEqualTo(Preflight.Kind.OK);
+    // A broker that lists no operations cannot say: the first join is the check.
+    assertThat(KafkaGroupCheck.classify(null).kind()).isEqualTo(Preflight.Kind.OK);
+    assertThat(KafkaGroupCheck.classify(Set.of(AclOperation.DESCRIBE)).kind())
+        .isEqualTo(Preflight.Kind.CONFIGURATION);
+  }
+
+  @Test
+  void groupFailureClassification() {
+    assertThat(KafkaGroupCheck.classifyFailure(new GroupAuthorizationException("denied")).kind())
+        .isEqualTo(Preflight.Kind.CONFIGURATION);
+    assertThat(KafkaGroupCheck.classifyFailure(new SaslAuthenticationException("bad")).kind())
+        .isEqualTo(Preflight.Kind.CONFIGURATION);
+    assertThat(KafkaGroupCheck.classifyFailure(new GroupIdNotFoundException("new")).kind())
+        .isEqualTo(Preflight.Kind.OK);
+    assertThat(KafkaGroupCheck.classifyFailure(new UnsupportedVersionException("old")).kind())
+        .isEqualTo(Preflight.Kind.OK);
+    assertThat(KafkaGroupCheck.classifyFailure(new TimeoutException("slow")).kind())
+        .isEqualTo(Preflight.Kind.TRANSIENT);
+  }
+
+  @Test
+  void unreachableBrokerFailsTheGroupCheckAsTransient() {
+    Preflight.Status status =
+        KafkaGroupCheck.check(
+            new org.springframework.kafka.core.DefaultKafkaConsumerFactory<>(
+                java.util.Map.of("bootstrap.servers", "127.0.0.1:9")),
+            "kafkafim.p",
+            "kafkafim-p-preflight",
+            java.time.Duration.ofSeconds(1));
+    assertThat(status.kind()).isEqualTo(Preflight.Kind.TRANSIENT);
+  }
+
+  @Test
+  void adminSettingsKeepOnlyAdminKeysAndSetTheClientId() {
+    assertThat(
+            KafkaGroupCheck.adminSettings(
+                java.util.Map.of(
+                    "bootstrap.servers", "b:9092",
+                    "security.protocol", "SASL_SSL",
+                    "group.protocol", "classic",
+                    "max.poll.records", 500,
+                    "client.id", "consumer"),
+                "kafkafim-p-preflight"))
+        .containsOnly(
+            org.assertj.core.api.Assertions.entry("bootstrap.servers", "b:9092"),
+            org.assertj.core.api.Assertions.entry("security.protocol", "SASL_SSL"),
+            org.assertj.core.api.Assertions.entry("client.id", "kafkafim-p-preflight"));
   }
 
   @Test

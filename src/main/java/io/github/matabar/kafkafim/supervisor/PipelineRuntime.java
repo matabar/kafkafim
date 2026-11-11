@@ -352,7 +352,18 @@ final class PipelineRuntime {
       return failed(List.of("configuration cannot run: " + e.getMessage()));
     }
     Preflight.Result result =
-        Preflight.run(compiled, () -> context.dlqProducers().checkTopic(name), context.authCheck());
+        Preflight.run(
+            compiled,
+            () -> context.dlqProducers().checkTopic(name),
+            () ->
+                KafkaGroupCheck.check(
+                    context
+                        .consumerFactories()
+                        .get(config.source().cluster(), config.source().identity()),
+                    config.source().groupId(),
+                    "kafkafim-" + name + "-preflight",
+                    context.sourceOptions().metadataTimeout()),
+            context.authCheck());
     if (!result.configuration().isEmpty()) {
       return failed(result.configuration());
     }

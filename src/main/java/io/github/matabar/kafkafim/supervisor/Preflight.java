@@ -10,9 +10,10 @@ import org.jspecify.annotations.Nullable;
 
 /**
  * The checks a pipeline passes before its source starts (DESIGN §4.6, ADR-0021): the DLQ topic
- * exists and its writer identity may describe it, and every {@code (cluster, identity)} its routes
- * use authenticates against Elasticsearch. The source topics are checked by the source itself when
- * it starts ({@code MissingTopicsException}).
+ * exists and its writer identity may describe it, the source identity may read the consumer group
+ * ({@link KafkaGroupCheck}, ADR-0038), and every {@code (cluster, identity)} its routes use
+ * authenticates against Elasticsearch. The source topics are checked by the source itself when it
+ * starts ({@code MissingTopicsException}).
  *
  * <p>Every check runs, so one log line names every problem at once. A <b>configuration</b> problem
  * (missing topic, rejected identity) keeps the pipeline in {@code failed_preflight}; a
@@ -80,14 +81,19 @@ final class Preflight {
   }
 
   /**
-   * Runs the DLQ and Elasticsearch checks of one pipeline.
+   * Runs the DLQ, consumer group and Elasticsearch checks of one pipeline.
    *
    * @param compiled the compiled pipeline
    * @param dlqTopic describes the pipeline's DLQ topic with its DLQ identity
+   * @param group checks the source identity's permission on the consumer group
    * @param auth the Elasticsearch identity check
    * @return every problem found
    */
-  static Result run(CompiledPipeline compiled, Supplier<TopicStatus> dlqTopic, AuthCheck auth) {
+  static Result run(
+      CompiledPipeline compiled,
+      Supplier<TopicStatus> dlqTopic,
+      Supplier<Status> group,
+      AuthCheck auth) {
     List<String> configuration = new ArrayList<>();
     List<String> transientProblems = new ArrayList<>();
     Pipeline config = compiled.config();
@@ -111,6 +117,25 @@ final class Preflight {
       configuration.add(dlq + ": identity may not describe it");
     } else if (topic != TopicStatus.EXISTS) {
       transientProblems.add(dlq + ": broker did not answer");
+    }
+    Status groupStatus;
+    try {
+      groupStatus = group.get();
+    } catch (RuntimeException e) {
+      groupStatus = Status.unreachable(e.toString());
+    }
+    String groupName =
+        "consumer group '"
+            + config.source().groupId()
+            + "' (identity '"
+            + Objects.toString(config.source().identity(), "<none>")
+            + "' on Kafka cluster '"
+            + config.source().cluster()
+            + "')";
+    if (groupStatus.kind() == Kind.CONFIGURATION) {
+      configuration.add(groupName + ": " + groupStatus.detail());
+    } else if (groupStatus.kind() == Kind.TRANSIENT) {
+      transientProblems.add(groupName + ": broker did not answer: " + groupStatus.detail());
     }
     for (RouteTarget.StreamKey stream : compiled.streams().keySet()) {
       Status status;

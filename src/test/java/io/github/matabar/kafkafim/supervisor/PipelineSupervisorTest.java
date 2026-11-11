@@ -165,7 +165,8 @@ class PipelineSupervisorTest {
 
   @Test
   void failedPreflightIsReportedAndStopsNothingElse() throws Exception {
-    // Kafka cluster k is unreachable, so the DLQ check is transient; an unknown ES identity is a
+    // Kafka cluster k is unreachable, so the DLQ and group checks are transient; an unknown ES
+    // identity is a
     // configuration problem found in the same pass, which wins.
     KafkafimProperties broken =
         TestConfigs.bind(
@@ -187,7 +188,16 @@ class PipelineSupervisorTest {
             relay,
             p -> new ElasticsearchAuthCheck(p.elasticsearch().clusters()),
             new PipelineResources.Settings(
-                SourceOptions.defaults(),
+                // A 1s metadata timeout bounds the consumer group check against the dead broker.
+                new SourceOptions(
+                    1,
+                    0.5,
+                    Duration.ofSeconds(1),
+                    Duration.ofSeconds(1),
+                    Duration.ofSeconds(1),
+                    Duration.ofSeconds(1),
+                    Duration.ofSeconds(1),
+                    Duration.ofSeconds(1)),
                 Duration.ofSeconds(1),
                 new DlqOptions(
                     Duration.ofMillis(100),
