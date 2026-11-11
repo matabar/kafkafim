@@ -65,7 +65,7 @@ final class TimestampPatternSyntax {
         && unquoted(pattern).indexOf('B') >= 0) {
       // 'B' is not a ChronoField, so hasTimeField cannot see it. Decode fails such a timestamp
       // rather than reading it as midnight; it decides from the pattern text ('B' and no hour
-      // letter), which gives the same answer as this sample check.
+      // letter), which agrees with this sample check whenever the sample round-trips.
       errors.add(
           "pattern '"
               + pattern
