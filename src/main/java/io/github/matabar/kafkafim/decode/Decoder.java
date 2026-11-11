@@ -38,9 +38,10 @@ import tools.jackson.databind.json.JsonMapper;
  *       mark is skipped; a second one, a UTF-16/32 byte order mark or a NUL in the first four bytes
  *       (UTF-16/32 without a mark) fails the record.
  *   <li>An object is one document; an array is one document per element. An element that is not an
- *       object (a scalar, {@code null}, a nested array) fails on its own, as do id, version and
- *       timestamp problems: the other elements of the record are still indexed. An empty array is
- *       zero documents.
+ *       object (a scalar, {@code null}, a nested array) fails on its own ({@link
+ *       DocumentOutcome.Failed}); an object with an id, version or timestamp problem is {@link
+ *       DocumentOutcome.Unindexable}: still routed, then failed on its own if it is to be indexed.
+ *       The other elements of the record are still indexed. An empty array is zero documents.
  *   <li>Duplicate keys are rejected (strict detection) because Elasticsearch rejects them too, and
  *       because routing and {@code _id} would otherwise read whichever duplicate Jackson kept.
  *   <li>{@code _id}: a JSON string (1 to 512 UTF-8 bytes, Elasticsearch's limit) is used as is; a
@@ -227,7 +228,11 @@ public final class Decoder {
     }
   }
 
-  /** Reads the object starting at the parser's current {@code START_OBJECT}. */
+  /**
+   * Reads the object starting at the parser's current {@code START_OBJECT} and extracts its id,
+   * version and timestamp. An extraction problem does not fail the document here: it becomes an
+   * {@link DocumentOutcome.Unindexable} that the caller routes before deciding whether it applies.
+   */
   private DocumentOutcome element(
       JsonParser parser, byte[] value, int base, int index, Instant ingestTime) {
     final int start = base + (int) parser.currentTokenLocation().getByteOffset();
@@ -238,13 +243,14 @@ public final class Decoder {
     JsonNode idNode = node.at(idPointer);
     if (idNode.isMissingNode() || idNode.isNull()) {
       if (spec.idMissing() == IdMissing.DLQ) {
-        return failed(index, ErrorType.MISSING_ID, "no id at " + spec.idPointer());
+        return unindexable(index, node, ErrorType.MISSING_ID, "no id at " + spec.idPointer());
       }
       id = Optional.empty();
     } else {
       String error = idError(idNode);
       if (error != null) {
-        return failed(index, ErrorType.MISSING_ID, "id at " + spec.idPointer() + " " + error);
+        return unindexable(
+            index, node, ErrorType.MISSING_ID, "id at " + spec.idPointer() + " " + error);
       }
       id =
           Optional.of(
@@ -256,8 +262,9 @@ public final class Decoder {
       JsonNode versionNode = node.at(versionPointer);
       long parsed = version(versionNode);
       if (parsed < 0) {
-        return failed(
+        return unindexable(
             index,
+            node,
             ErrorType.DECODE,
             "version at "
                 + spec.versionPointer()
@@ -287,8 +294,9 @@ public final class Decoder {
         timestamp = ingestTime;
         source = TimestampSource.INGEST_TIME_FALLBACK;
       } else {
-        return failed(
+        return unindexable(
             index,
+            node,
             ErrorType.BAD_TIMESTAMP,
             "timestamp at " + spec.timestampPointer() + " " + truncate(error));
       }
@@ -368,8 +376,9 @@ public final class Decoder {
     return -1;
   }
 
-  private static DocumentOutcome failed(int index, ErrorType type, String reason) {
-    return new DocumentOutcome.Failed(index, new DecodeError(type, reason));
+  private static DocumentOutcome unindexable(
+      int index, JsonNode node, ErrorType type, String reason) {
+    return new DocumentOutcome.Unindexable(index, node, new DecodeError(type, reason));
   }
 
   private static DecodeResult recordFailure(String reason) {

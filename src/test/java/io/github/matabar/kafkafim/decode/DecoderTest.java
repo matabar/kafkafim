@@ -69,8 +69,8 @@ class DecoderTest {
   static DecodeError singleFailure(Decoder decoder, String json) {
     DecodeResult.Documents docs = documents(decoder, json);
     assertThat(docs.outcomes()).hasSize(1);
-    assertThat(docs.outcomes().getFirst()).isInstanceOf(DocumentOutcome.Failed.class);
-    return ((DocumentOutcome.Failed) docs.outcomes().getFirst()).error();
+    assertThat(docs.outcomes().getFirst()).isInstanceOf(DocumentOutcome.Unindexable.class);
+    return ((DocumentOutcome.Unindexable) docs.outcomes().getFirst()).error();
   }
 
   static String source(DocumentOutcome outcome) {
@@ -299,10 +299,20 @@ class DecoderTest {
             .contains("not an object");
       }
       assertThat(((DocumentOutcome.Failed) outcomes.get(4)).error().reason()).contains("an array");
-      DocumentOutcome.Failed noId = (DocumentOutcome.Failed) outcomes.get(5);
+      DocumentOutcome.Unindexable noId = (DocumentOutcome.Unindexable) outcomes.get(5);
       assertThat(noId.index()).isEqualTo(5);
       assertThat(noId.error().type()).isEqualTo(ErrorType.MISSING_ID);
       assertThat(((DocumentOutcome.Decoded) outcomes.get(6)).index()).isEqualTo(6);
+    }
+
+    @Test
+    void extractionErrorKeepsTheParsedDocumentForRouting() {
+      DocumentOutcome.Unindexable noId =
+          (DocumentOutcome.Unindexable)
+              documents(DEFAULT, "[{\"id\":1},{\"region\":\"eu\"}]").outcomes().get(1);
+      assertThat(noId.index()).isEqualTo(1);
+      assertThat(noId.node().at("/region").stringValue()).isEqualTo("eu");
+      assertThat(noId.error()).isEqualTo(new DecodeError(ErrorType.MISSING_ID, "no id at /id"));
     }
 
     @Test
@@ -571,7 +581,7 @@ class DecoderTest {
               with("epoch-millis", OnBadTimestamp.DLQ),
               "[{\"id\":1,\"ts\":0},{\"id\":2,\"ts\":\"x\"},{\"id\":3,\"ts\":1000}]");
       assertThat(docs.outcomes().get(0)).isInstanceOf(DocumentOutcome.Decoded.class);
-      assertThat(((DocumentOutcome.Failed) docs.outcomes().get(1)).error().type())
+      assertThat(((DocumentOutcome.Unindexable) docs.outcomes().get(1)).error().type())
           .isEqualTo(ErrorType.BAD_TIMESTAMP);
       assertThat(((DocumentOutcome.Decoded) docs.outcomes().get(2)).timestamp())
           .isEqualTo(Instant.ofEpochSecond(1));
