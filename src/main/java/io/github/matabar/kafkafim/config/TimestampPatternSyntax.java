@@ -18,7 +18,7 @@ import java.util.Locale;
  * formatter the {@code decode} package parses with ({@code Locale.ROOT}, strict resolution, era
  * defaulting to CE) and resolves a parsed sample the same way, so a pattern that passes here
  * behaves the same at runtime. ADR-0003 keeps {@code config} and {@code decode} apart, so the two
- * must be kept in step by hand.
+ * must be kept in step by hand; {@code TimestampPatternParityTest} checks that they agree.
  */
 final class TimestampPatternSyntax {
 
@@ -63,12 +63,13 @@ final class TimestampPatternSyntax {
               + " hours), so every timestamp would fail");
     } else if (parsed.query(TemporalQueries.localTime()) == null
         && unquoted(pattern).indexOf('B') >= 0) {
-      // 'B' is not a ChronoField, so decode does not see it as a time field: the parsed period is
-      // dropped and every timestamp lands at midnight.
+      // 'B' is not a ChronoField, so hasTimeField cannot see it. Decode fails such a timestamp
+      // rather than reading it as midnight; it decides from the pattern text ('B' and no hour
+      // letter), which agrees with this sample check whenever the sample round-trips.
       errors.add(
           "pattern '"
               + pattern
-              + "' has a day period 'B' but no time, so every timestamp would be read as midnight");
+              + "' has a day period 'B' but no time, so every timestamp would fail");
     }
     return errors;
   }
