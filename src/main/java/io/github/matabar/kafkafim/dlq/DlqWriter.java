@@ -3,9 +3,11 @@ package io.github.matabar.kafkafim.dlq;
 import java.time.Duration;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.clients.producer.RecordMetadata;
+import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -181,6 +183,7 @@ public final class DlqWriter {
     private final ProducerRecord<byte[], byte[]> record;
     private final CompletableFuture<RecordMetadata> result = new CompletableFuture<>();
     private final AtomicBoolean done = new AtomicBoolean();
+    private volatile @Nullable ScheduledFuture<?> retry;
     private int attempts;
     private boolean failedBefore;
 
@@ -290,10 +293,26 @@ public final class DlqWriter {
       owner.schedule(this, retryIn);
     }
 
-    /** Completes exceptionally: the writer closed or was evicted before an acknowledgement. */
+    /** Keeps the scheduled retry, so {@link #abandon} can cancel it. */
+    void retryWith(ScheduledFuture<?> scheduled) {
+      retry = scheduled;
+      if (done.get()) {
+        // Abandoned while the retry was being scheduled; abandon() may not have seen it.
+        scheduled.cancel(false);
+      }
+    }
+
+    /**
+     * Completes exceptionally: the writer closed or was evicted before an acknowledgement. Cancels
+     * a retry waiting on the timer, which would otherwise hold this send until its delay ran out.
+     */
     void abandon() {
       if (!done.compareAndSet(false, true)) {
         return;
+      }
+      ScheduledFuture<?> scheduled = retry;
+      if (scheduled != null) {
+        scheduled.cancel(false);
       }
       owner.unregister(this);
       result.completeExceptionally(closedException());

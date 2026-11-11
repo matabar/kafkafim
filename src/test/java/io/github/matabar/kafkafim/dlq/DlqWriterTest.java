@@ -42,6 +42,14 @@ class DlqWriterTest {
           Duration.ofSeconds(1),
           Duration.ofSeconds(2));
 
+  /** Retries wait on the timer for the whole test. */
+  private static final DlqOptions SLOW_RETRY =
+      new DlqOptions(
+          Duration.ofMinutes(10),
+          Duration.ofMinutes(10),
+          Duration.ofSeconds(1),
+          Duration.ofSeconds(2));
+
   private final List<FakeClient> clients = new CopyOnWriteArrayList<>();
   private final Events events = new Events();
   private DlqProducers producers;
@@ -79,11 +87,15 @@ class DlqWriterTest {
   }
 
   private DlqProducers producers(Map<String, Pipeline> pipelines) {
+    return producers(pipelines, FAST);
+  }
+
+  private DlqProducers producers(Map<String, Pipeline> pipelines, DlqOptions options) {
     producers =
         new DlqProducers(
             properties(pipelines),
             events,
-            FAST,
+            options,
             settings -> {
               FakeClient client = new FakeClient(settings);
               clients.add(client);
@@ -344,6 +356,29 @@ class DlqWriterTest {
     assertThat(other.get(10, TimeUnit.SECONDS).offset()).isEqualTo(8);
     assertThat(events.log).noneMatch(e -> e.startsWith("written orders"));
     producers.evict("unknown"); // no-op
+  }
+
+  @Test
+  void evictCancelsTheWritersScheduledRetriesAndKeepsTheOthers() throws Exception {
+    producers(
+        Map.of(
+            "orders", pipeline("orders.v2", "reader", null),
+            "payments", pipeline("payments", "reader", null)),
+        SLOW_RETRY);
+    DlqWriter orders = producers.writer("orders");
+    DlqWriter payments = producers.writer("payments");
+    FakeClient client = clients.get(0);
+    final CompletableFuture<RecordMetadata> retrying = orders.send(request());
+    client.next().fail(new NetworkException("broker gone"));
+    final CompletableFuture<RecordMetadata> other = payments.send(request());
+    client.next().fail(new NetworkException("broker gone"));
+    await().atMost(TIMEOUT).until(() -> producers.scheduledRetries() == 2);
+
+    producers.evict("orders");
+
+    assertThat(retrying).isCompletedExceptionally();
+    assertThat(producers.scheduledRetries()).as("only the payments retry waits").isEqualTo(1);
+    assertThat(other).isNotDone();
   }
 
   @Test

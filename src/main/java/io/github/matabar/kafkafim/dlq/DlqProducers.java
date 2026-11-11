@@ -132,10 +132,10 @@ public final class DlqProducers implements SmartLifecycle, AutoCloseable {
    * Drops a pipeline's writer, for a pipeline that moved to other DLQ producers or was removed
    * (ADR-0035). Its unacknowledged sends, including those waiting to retry, complete with {@link
    * DlqClosedException} (their source records stay uncommitted, re-delivered if the pipeline runs
-   * again), later sends through it fail the same way, and it stops retrying; a callback already
-   * under way may still report one last event to the listener. The shared producer stays until
-   * {@link #close()}. A later {@link #writer} call creates a new writer. No-op if the pipeline has
-   * no writer.
+   * again), later sends through it fail the same way, and it stops retrying (retries waiting on the
+   * timer are cancelled); a callback already under way may still report one last event to the
+   * listener. The shared producer stays until {@link #close()}. A later {@link #writer} call
+   * creates a new writer. No-op if the pipeline has no writer.
    *
    * @param pipelineName a {@code kafkafim.pipelines} entry
    */
@@ -253,14 +253,25 @@ public final class DlqProducers implements SmartLifecycle, AutoCloseable {
     }
   }
 
-  /** Retries a send after {@code delay}; abandons it once closed. */
+  /**
+   * Retries a send after {@code delay}; abandons it once closed. Abandoning the send cancels the
+   * retry, so an evicted writer's sends leave the timer at once.
+   */
   void schedule(DlqWriter.Send send, Duration delay) {
     try {
-      scheduler.schedule(
-          () -> dispatch(send::attempt, send::abandon), delay.toMillis(), TimeUnit.MILLISECONDS);
+      send.retryWith(
+          scheduler.schedule(
+              () -> dispatch(send::attempt, send::abandon),
+              delay.toMillis(),
+              TimeUnit.MILLISECONDS));
     } catch (RejectedExecutionException e) {
       send.abandon();
     }
+  }
+
+  /** Number of retries waiting on the timer, for tests. */
+  int scheduledRetries() {
+    return ((ScheduledThreadPoolExecutor) scheduler).getQueue().size();
   }
 
   /** Calls the listener, logging and swallowing what it throws. */
