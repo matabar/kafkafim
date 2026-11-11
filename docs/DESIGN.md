@@ -36,8 +36,9 @@ into ~20 Elasticsearch 8.x clusters.
 - First-class OpenTelemetry (metrics, traces, logs) exported over OTLP to Elastic
   APM Server, Prometheus endpoint for free, Grafana dashboards and alert rules in
   the repo.
-- Local demo stack (Kafka + ES + kafkafim) on Docker Compose and Docker Desktop
-  Kubernetes; the production Helm chart deploys only kafkafim.
+- Local demo stack (Kafka + ES + kafkafim) on Docker Compose and on a local Kubernetes
+  cluster (kind or Docker Desktop, `deploy/local/`); the production Helm chart deploys
+  only kafkafim.
 - kafkafim **never provisions resources**. Topics, consumer groups, credentials,
   indices, index templates, ingest pipelines, users and roles are created by the
   team's external provisioning systems before a pipeline is deployed. kafkafim
@@ -706,8 +707,8 @@ ConfigMap never contains a secret. Startup validation refuses literal values in 
 `password`, containing `secret`, `sasl.jaas.config`, `ssl.keystore.key` or
 `user.info`) unless `kafkafim.allow-inline-secrets=true`. That switch is for local
 development outside Kubernetes (`./mvnw spring-boot:run` with Compose): on
-`CloudPlatform.KUBERNETES` the flag itself stops startup (§5.4), so the planned Docker Desktop
-Kubernetes demo (`deploy/local/`, §13) will mount its secrets as files, like production. A
+`CloudPlatform.KUBERNETES` the flag itself stops startup (§5.4), so the local Kubernetes
+demo (`deploy/local/`, §13) mounts its secrets as files, like production. A
 secret is accepted when it is read straight from a `configtree` file, or when its raw,
 unresolved text is exactly one `${name}` placeholder (no `:default`, which would be an
 inline fallback) whose chain of references ends in a `configtree` file. The check looks
@@ -1218,7 +1219,7 @@ src/main/resources/application.yaml   profile-independent defaults (default prof
 src/main/resources/application-local.yaml   local-dev sample config: clusters + demo pipeline
 src/test/java/...                     unit + Testcontainers integration tests
 charts/kafkafim/                      production Helm chart
-deploy/local/                         planned (chore/local-k8s-demo): Kubernetes demo stack (Kafka + ES operators, local only)
+deploy/local/                         local Kubernetes demo (kind or Docker Desktop): plain Kafka + ES manifests, demo chart values, demo.sh up/smoke/down
 deploy/grafana/                       Grafana dashboards, Prometheus alert rules + promtool tests, compose provisioning
 docs/                                 DESIGN.md, TECH_STACK.md, decisions/, runbook
 ```
