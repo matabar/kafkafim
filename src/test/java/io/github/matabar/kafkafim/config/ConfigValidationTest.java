@@ -652,6 +652,25 @@ class ConfigValidationTest {
     }
 
     @Test
+    void labelsRouteByNameOrPosition() {
+      List<Pipeline.Route> routes =
+          ConfigTestSupport.bind(
+                  pipeline(
+                      """
+                      route-mode: all
+                      routes:
+                        - { name: eu, cluster: es, index: a }
+                        - { cluster: es, index: b }
+                      """))
+              .pipelines()
+              .get("p")
+              .routes();
+
+      assertThat(routes.get(0).label(0)).isEqualTo("eu");
+      assertThat(routes.get(1).label(1)).isEqualTo("1");
+    }
+
+    @Test
     void rejectsNoneAsRouteName() {
       assertInvalid(
           pipeline(

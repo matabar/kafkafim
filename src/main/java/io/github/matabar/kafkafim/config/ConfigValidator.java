@@ -493,9 +493,9 @@ public final class ConfigValidator {
   }
 
   /**
-   * A route's name is its {@code route} label; an unnamed route is labelled by its position and a
-   * document that failed before routing by {@value Route#NO_ROUTE_LABEL}. Rejects every name that
-   * would make two of those labels collide.
+   * A route's name is its {@code route} label ({@link Route#label}); an unnamed route is labelled
+   * by its position and a document that failed before routing by {@value Route#NO_ROUTE_LABEL}.
+   * Rejects every name that would make two of those labels collide.
    */
   private void checkRouteName(String path, String name, int position, Map<String, Integer> names) {
     if (name == null) {
