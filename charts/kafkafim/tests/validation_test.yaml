@@ -210,6 +210,14 @@ tests:
       - failedTemplate:
           errorMessage: 'extraEnv must not set SPRING_PROFILES_ACTIVE; the chart already sets it from values'
 
+  - it: fails when extraEnv redefines POD_NAME (the OTLP service.instance.id)
+    set:
+      extraEnv:
+        - { name: POD_NAME, value: fixed }
+    asserts:
+      - failedTemplate:
+          errorMessage: 'extraEnv must not set POD_NAME; the chart already sets it from values'
+
   - it: fails when extraEnv sets OTEL_EXPORTER_OTLP_HEADERS while otel.headers is set
     set:
       otel.headers: { x-tenant: a }

@@ -98,6 +98,11 @@ spec:
               value: configtree:/etc/kafkafim/secrets/
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: {{ $.Values.otel.endpoint | quote }}
+            # service.instance.id of the OTLP resource (application.yaml), so series stay per pod.
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
             {{- with $.Values.otel.headers }}
             {{- $pairs := list }}
             {{- range $k, $v := . }}

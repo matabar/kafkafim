@@ -124,7 +124,7 @@ Where otel.secretHeaders is mounted (JSON list): configtree turns each file into
 management.otlp.metrics.export.headers.<header> and
 management.opentelemetry.tracing.export.otlp.headers.<header> (Spring Boot 4 names).
 Everything under /etc/kafkafim/secrets/management is reserved for these mounts.
-Keep in sync with OtlpExportHeadersIntegrationTest.SECRET_HEADER_DIRS.
+Keep in sync with OtlpExportIntegrationTest.SECRET_HEADER_DIRS.
 */}}
 {{- define "kafkafim.otelSecretHeaderMountPaths" -}}
 {{- list "/etc/kafkafim/secrets/management/otlp/metrics/export/headers" "/etc/kafkafim/secrets/management/opentelemetry/tracing/export/otlp/headers" | toJson -}}
@@ -246,7 +246,7 @@ cannot express.
   {{- end -}}
   {{- $_ := set $secretHeaders (lower $h) $h -}}
 {{- end -}}
-{{- $reserved := list "SPRING_PROFILES_ACTIVE" "SPRING_CONFIG_ADDITIONAL_LOCATION" "SPRING_CONFIG_IMPORT" "OTEL_EXPORTER_OTLP_ENDPOINT" "JAVA_TOOL_OPTIONS" -}}
+{{- $reserved := list "SPRING_PROFILES_ACTIVE" "SPRING_CONFIG_ADDITIONAL_LOCATION" "SPRING_CONFIG_IMPORT" "OTEL_EXPORTER_OTLP_ENDPOINT" "POD_NAME" "JAVA_TOOL_OPTIONS" -}}
 {{- /* Boot maps these env vars into a property source that wins over configtree, so
        they would silently override otel.headers / otel.secretHeaders. */}}
 {{- if or .Values.otel.headers .Values.otel.secretHeaders -}}

@@ -43,6 +43,9 @@ management:
       export:
         url: ${OTEL_EXPORTER_OTLP_ENDPOINT:http://localhost:4318}/v1/metrics
         step: 15s
+        base-time-unit: seconds     # Micrometer's OTLP default is milliseconds; seconds keeps the OTLP names
+                                    # and units equal to /actuator/prometheus (kafkafim_e2e_latency_seconds),
+                                    # which deploy/grafana/ queries (DESIGN §10)
   tracing:
     sampling:
       probability: 0.01             # 1% of pipeline.batch traces; failed batches are always kept
@@ -52,8 +55,11 @@ management:
       export:
         otlp:
           endpoint: ${OTEL_EXPORTER_OTLP_ENDPOINT:http://localhost:4318}/v1/traces
-    resource-attributes:
+    resource-attributes:            # on both OTLP metrics and traces; these win over OTEL_RESOURCE_ATTRIBUTES
       service.namespace: kafkafim
+      service.instance.id: ${POD_NAME:${HOSTNAME:localhost}}   # per-pod OTLP identity (the backend's
+                                    # `instance`): the chart sets POD_NAME from the downward API; a plain
+                                    # container has HOSTNAME; a local run without either is `localhost`
 
 kafkafim:
   reload:                           # hot reload of the config and secret directories (DESIGN §5.6);
