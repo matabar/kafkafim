@@ -10,6 +10,8 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import org.apache.kafka.clients.consumer.Consumer;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
@@ -24,6 +26,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.SmartLifecycle;
 import org.springframework.kafka.core.ConsumerFactory;
+import org.springframework.kafka.event.ConcurrentContainerStoppedEvent;
 import org.springframework.kafka.event.ConsumerStoppedEvent;
 import org.springframework.kafka.listener.BatchConsumerAwareMessageListener;
 import org.springframework.kafka.listener.BatchInterceptor;
@@ -45,8 +48,9 @@ import org.springframework.kafka.listener.ContainerProperties;
  *
  * <p>Stopping is graceful and bounded (DESIGN §7, SIGTERM): fetching pauses, in-flight records get
  * {@link SourceOptions#drainTimeout()} to complete, then the container stops, which revokes every
- * partition (committing what completed) and leaves the group. The source runs in lifecycle phase
- * {@link #PHASE}.
+ * partition (committing what completed) and leaves the group. The stop returns once every consumer
+ * thread has finished, or after {@link SourceOptions#shutdownTimeout()}, also when the container
+ * had already stopped itself. The source runs in lifecycle phase {@link #PHASE}.
  *
  * <p>A failure the source cannot recover from (the handler threw, or a consumer stopped other than
  * by {@link #stop()}) is reported to {@link SourceRecordHandler#onSourceFailed}; stopping the
@@ -84,6 +88,8 @@ public final class KafkaPipelineSource implements SmartLifecycle {
   private final Map<Consumer<?, ?>, Long> lastCommitNanos = new ConcurrentHashMap<>();
   private final Object lifecycle = new Object();
   private volatile @Nullable ConcurrentMessageListenerContainer<byte[], byte[]> container;
+  // Counted down when every consumer thread of the current container has finished.
+  private volatile CountDownLatch consumersStopped = new CountDownLatch(0);
   private volatile int concurrency;
 
   /**
@@ -164,7 +170,9 @@ public final class KafkaPipelineSource implements SmartLifecycle {
       // State left by a container that stopped on its own (no revoke callback ran) is stale.
       tracker.revokeAll();
       lastCommitNanos.clear();
-      ConcurrentMessageListenerContainer<byte[], byte[]> created = createContainer();
+      CountDownLatch stopped = new CountDownLatch(1);
+      ConcurrentMessageListenerContainer<byte[], byte[]> created = createContainer(stopped);
+      consumersStopped = stopped;
       pauseReasons.remove(HANDLER_FAILURE_REASON);
       container = created;
       pauseReasons.apply();
@@ -180,8 +188,8 @@ public final class KafkaPipelineSource implements SmartLifecycle {
 
   /**
    * Pauses fetching, waits up to the drain timeout for in-flight records, then stops the container
-   * (revoking, committing and leaving the group). Records still incomplete are re-delivered to the
-   * next owner.
+   * (revoking, committing and leaving the group) and waits for its consumer threads, up to the
+   * shutdown timeout. Records still incomplete are re-delivered to the next owner.
    */
   @Override
   public void stop() {
@@ -202,7 +210,9 @@ public final class KafkaPipelineSource implements SmartLifecycle {
       } catch (InterruptedException e) {
         Thread.currentThread().interrupt();
       }
+      long deadline = System.nanoTime() + options.shutdownTimeout().toNanos();
       running.stop();
+      awaitConsumers(deadline);
       tracker.revokeAll();
       lastCommitNanos.clear();
       container = null;
@@ -230,6 +240,25 @@ public final class KafkaPipelineSource implements SmartLifecycle {
             callback.run();
           }
         });
+  }
+
+  /**
+   * Waits for the consumer threads. {@code stop()} of a container that stopped itself (a consumer
+   * hit an {@link Error} or a fatal error, ADR-0036) returns at once, while its other consumers may
+   * still be revoking (flushing the sinks, committing): the sinks must not close under them.
+   */
+  private void awaitConsumers(long deadline) {
+    try {
+      if (!consumersStopped.await(
+          Math.max(0, deadline - System.nanoTime()), TimeUnit.NANOSECONDS)) {
+        LOG.warn(
+            "Pipeline '{}': Kafka consumer threads still running after {}",
+            pipeline,
+            options.shutdownTimeout());
+      }
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+    }
   }
 
   /**
@@ -374,7 +403,8 @@ public final class KafkaPipelineSource implements SmartLifecycle {
     }
   }
 
-  private ConcurrentMessageListenerContainer<byte[], byte[]> createContainer() {
+  private ConcurrentMessageListenerContainer<byte[], byte[]> createContainer(
+      CountDownLatch stopped) {
     ContainerProperties properties =
         new ContainerProperties(source.topics().toArray(String[]::new));
     properties.setGroupId(source.groupId());
@@ -394,8 +424,16 @@ public final class KafkaPipelineSource implements SmartLifecycle {
     created.setCommonErrorHandler(new CommonContainerStoppingErrorHandler());
     // To hear of consumers that stop on their own; the children inherit the publisher. With a
     // publisher set, a stopping child also notifies its parent (childStopped); harmless here, since
-    // every start builds a new container and restartAfterAuthExceptions stays off.
-    created.setApplicationEventPublisher(this::onContainerEvent);
+    // every start builds a new container and restartAfterAuthExceptions stays off. Once the parent
+    // is stopped and its last child has finished, the parent publishes
+    // ConcurrentContainerStoppedEvent: every consumer thread is done (stop() waits for it).
+    created.setApplicationEventPublisher(event -> {
+      if (event instanceof ConcurrentContainerStoppedEvent) {
+        stopped.countDown();
+      } else {
+        onContainerEvent(event);
+      }
+    });
     created.setBeanName(clientId);
     return created;
   }
