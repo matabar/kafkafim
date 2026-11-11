@@ -123,6 +123,75 @@ class RouterTest {
   }
 
   @Test
+  void firstModeLetsOrderDecideBetweenDropAndIndex() {
+    Router<String> router =
+        Router.compile(
+            RouteMode.FIRST,
+            List.of(
+                new RouteSpec<>("keep", List.of(new FieldEquals("/level", "error")), false, "k"),
+                RouteSpec.drop("debug", List.of(new FieldExists("/level", true)), false),
+                new RouteSpec<>("d", List.of(), true, "d")));
+    List<Route<String>> error = router.select(doc("{\"level\":\"error\"}"), "t", HeaderLookup.NONE);
+    List<Route<String>> debug = router.select(doc("{\"level\":\"debug\"}"), "t", HeaderLookup.NONE);
+
+    assertThat(error).extracting(Route::target).containsExactly("keep");
+    assertThat(error.getFirst().isDrop()).isFalse();
+    assertThat(debug).extracting(Route::target).containsExactly("debug");
+    assertThat(debug.getFirst().isDrop()).isTrue();
+    assertThat(targets(router, "{}")).containsExactly("d");
+  }
+
+  @Test
+  void allModeDropCancelsEveryOtherCopy() {
+    Router<String> router =
+        Router.compile(
+            RouteMode.ALL,
+            List.of(
+                new RouteSpec<>("archive", List.of(), false, "archive"),
+                RouteSpec.drop("test-traffic", List.of(new HeaderEquals("test", "1")), false),
+                new RouteSpec<>("eu", List.of(new FieldEquals("/region", "eu")), false, "eu"),
+                RouteSpec.drop("eu-debug", List.of(new FieldEquals("/region", "eu")), false)));
+    HeaderLookup test = HeaderLookup.of(Map.of("test", "1".getBytes(StandardCharsets.UTF_8)));
+
+    assertThat(targets(router, "{\"region\":\"eu\"}")).containsExactly("eu-debug");
+    assertThat(targets(router, "{\"region\":\"eu\"}", "t", test))
+        .as("the first matching drop route labels the document")
+        .containsExactly("test-traffic");
+    assertThat(targets(router, "{\"region\":\"us\"}")).containsExactly("archive");
+  }
+
+  @Test
+  void dropDefaultTurnsTheRoutesIntoAnAllowlist() {
+    for (RouteMode mode : RouteMode.values()) {
+      Router<String> router =
+          Router.compile(
+              mode,
+              List.of(
+                  new RouteSpec<>("orders", List.of(new FieldEquals("/type", "order")), false, "o"),
+                  RouteSpec.drop("rest", List.of(), true)));
+      List<Route<String>> other = router.select(doc("{\"type\":\"ping\"}"), "t", HeaderLookup.NONE);
+
+      assertThat(targets(router, "{\"type\":\"order\"}")).as(mode.name()).containsExactly("orders");
+      assertThat(other).extracting(Route::target).as(mode.name()).containsExactly("rest");
+      assertThat(other.getFirst().isDrop()).isTrue();
+      assertThat(other.getFirst().isDefault()).isTrue();
+    }
+  }
+
+  @Test
+  void dropRouteHasNoIndex() {
+    Route<String> drop =
+        Router.compile(RouteMode.FIRST, List.of(RouteSpec.drop("x", List.of(), true)))
+            .routes()
+            .getFirst();
+    assertThat(drop.isDrop()).isTrue();
+    assertThat(drop).hasToString("Route[0, default, drop]");
+    assertThatThrownBy(drop::index).isInstanceOf(IllegalStateException.class);
+    assertThatThrownBy(() -> new RouteSpec<>("x", List.of(), true, "idx", true))
+        .hasMessage("a drop route takes no index");
+  }
+
+  @Test
   void exposesCompiledRoutes() {
     Router<String> router = Router.compile(RouteMode.FIRST, EXAMPLE);
     assertThat(router.mode()).isEqualTo(RouteMode.FIRST);

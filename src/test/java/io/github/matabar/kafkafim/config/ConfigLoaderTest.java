@@ -56,12 +56,15 @@ class ConfigLoaderTest {
   void beanValidationRunsToo() {
     String yaml =
         ConfigTestSupport.pipeline(
+            ConfigTestSupport.KAFKA_CLUSTERS,
+            ConfigTestSupport.ES_CLUSTERS,
             """
+            source: { cluster: "", topics: [t] }
             routes:
-              - { default: true, cluster: es, index: "" }
+              - { default: true, cluster: es, index: idx }
             """);
     assertThat(ConfigLoader.load(environment(yaml, Map.of())).problems())
-        .anySatisfy(p -> assertThat(p).contains("index").contains("must not be blank"));
+        .anySatisfy(p -> assertThat(p).contains("cluster").contains("must not be blank"));
   }
 
   @Test
