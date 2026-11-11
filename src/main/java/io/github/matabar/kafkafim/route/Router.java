@@ -14,11 +14,14 @@ import tools.jackson.databind.JsonNode;
  *   <li>{@link RouteMode#FIRST}: the first non-default route, in order, whose conditions all hold;
  *       else the default route.
  *   <li>{@link RouteMode#ALL}: every non-default route whose conditions all hold, in order; the
- *       default route only when none did.
+ *       default route only when none did. A matching drop route cancels every other copy: the
+ *       result is then the first matching drop route alone.
  * </ul>
  *
- * <p>An empty result means no route matched and there is no default: the caller sends the document
- * to the DLQ with {@code error.type=}{@value #NO_ROUTE}.
+ * <p>A result whose only route {@linkplain Route#isDrop() drops} means the document goes nowhere; a
+ * drop route is never selected together with another route. An empty result means no route matched
+ * and there is no default: the caller sends the document to the DLQ with {@code error.type=}{@value
+ * #NO_ROUTE}.
  *
  * @param <T> the caller's target type
  */
@@ -80,7 +83,8 @@ public final class Router<T> {
    * @param document the decoded document
    * @param topic the source topic of the record
    * @param headers the record's headers
-   * @return the selected routes; unmodifiable, empty when nothing matched and there is no default
+   * @return the selected routes; unmodifiable, empty when nothing matched and there is no default,
+   *     a single drop route when the document is to be discarded
    */
   public List<Route<T>> select(JsonNode document, String topic, HeaderLookup headers) {
     Objects.requireNonNull(document, "document");
@@ -97,6 +101,9 @@ public final class Router<T> {
     List<Route<T>> all = null;
     for (Route<T> route : conditional) {
       if (route.matches(document, topic, headers)) {
+        if (route.isDrop()) {
+          return route.alone(); // a drop cancels every other copy (DESIGN §5.3)
+        }
         if (first == null) {
           first = route;
         } else {

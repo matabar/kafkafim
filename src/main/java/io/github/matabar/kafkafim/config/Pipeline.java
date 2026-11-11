@@ -194,18 +194,24 @@ public record Pipeline(
    * @param when conditions that must all hold; empty only for the default route or in {@code all}
    *     mode
    * @param isDefault {@code default: true}: taken when no other route matched
-   * @param cluster name of a {@code kafkafim.elasticsearch.clusters} entry
+   * @param drop {@code drop: true}: a selected document is discarded, neither indexed nor
+   *     dead-lettered; takes the place of {@code cluster}, {@code identity}, {@code index} and
+   *     {@code pipeline}, which must then be unset (ADR-0037)
+   * @param cluster name of a {@code kafkafim.elasticsearch.clusters} entry; required unless {@code
+   *     drop}
    * @param identity ES identity; default: the cluster's {@code default-identity}
-   * @param index Logstash-style index pattern ({@code %{field}}, {@code %{+yyyy.MM.dd}})
+   * @param index Logstash-style index pattern ({@code %{field}}, {@code %{+yyyy.MM.dd}}); required
+   *     unless {@code drop}
    * @param pipeline ES ingest pipeline; optional
    */
   public record Route(
       String name,
       List<@Valid Condition> when,
       @Name("default") Boolean isDefault,
-      @NotBlank String cluster,
+      Boolean drop,
+      String cluster,
       String identity,
-      @NotBlank String index,
+      String index,
       String pipeline) {
 
     /** The {@code route} label of a document that failed before a route was selected. */
@@ -215,10 +221,16 @@ public record Pipeline(
     public Route {
       when = Defaults.list(when);
       isDefault = Defaults.orDefault(isDefault, Boolean.FALSE);
+      drop = Defaults.orDefault(drop, Boolean.FALSE);
+    }
+
+    /** Whether this route discards the documents it selects. */
+    public boolean isDrop() {
+      return drop;
     }
 
     Route withIdentity(String newIdentity) {
-      return new Route(name, when, isDefault, cluster, newIdentity, index, pipeline);
+      return new Route(name, when, isDefault, drop, cluster, newIdentity, index, pipeline);
     }
   }
 

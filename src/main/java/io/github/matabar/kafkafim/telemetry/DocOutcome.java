@@ -9,7 +9,9 @@ public enum DocOutcome {
   /** A newer external version was already stored; treated as success. */
   STALE,
   /** Its DLQ record was acknowledged. */
-  DLQ;
+  DLQ,
+  /** A drop route selected it: discarded on purpose, neither indexed nor dead-lettered. */
+  DROPPED;
 
   /** The label value. */
   public String label() {
