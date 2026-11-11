@@ -62,7 +62,8 @@ Notes:
   auth alert and the "Auth failures" panel add the starting value of a series that is
   new in the window. A single 401/403 matters, and nothing else shows it. The panel is
   approximate (`increase()` extrapolates). A scrape gap longer than the window plus 5m
-  makes an old series look new, so the panel then shows its total once. The rate panels
+  makes an old series look new, so the panel then shows its total once. The alert does
+  this after a single failed scrape too, until #134 lands. The rate panels
   have no such term. "DLQ ratio" still shows the first DLQ'd document of a configured
   route, because `kafkafim_docs_total` starts at 0 for every configured route and
   outcome. It misses the first one with `route="none"` (failed before a route was
