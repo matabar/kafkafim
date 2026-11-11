@@ -54,6 +54,12 @@ import org.slf4j.LoggerFactory;
  * outcomes still need the sinks and the DLQ writer) and leaves the group, committing what
  * completed; then the sinks close. The DLQ writer is shared and closes with {@link DlqProducers}.
  *
+ * <p><b>Failure while running</b> (ADR-0036): when the source reports that it cannot go on (the
+ * record handler threw, or a consumer stopped on its own), the pipeline goes to {@link
+ * PipelineState#FAILED} and is stopped like any other stop, on its own thread. It stays stopped,
+ * like {@link PipelineState#FAILED_PREFLIGHT}, until {@link #retryIfFailed} or a reload restarts
+ * it.
+ *
  * <p><b>Pause reasons</b> set by the supervisor (breaker, auth, DLQ blocked) are kept here, so they
  * survive a restart of the source and are applied to a source created later.
  *
@@ -114,6 +120,7 @@ final class PipelineRuntime {
   private @Nullable String failure; // guarded by lock
   private final Set<String> pauseReasons = new TreeSet<>(); // guarded by lock
   private @Nullable Thread starter; // guarded by lock
+  private @Nullable Thread failer; // stops a pipeline that failed while running, guarded by lock
   private int stops; // stops in progress, guarded by lock
   private @Nullable CountDownLatch stopSignal; // guarded by lock
   private @Nullable KafkaPipelineSource source; // guarded by lock
@@ -227,7 +234,7 @@ final class PipelineRuntime {
     }
   }
 
-  /** Why the last start failed, or {@code null}. */
+  /** Why the last start, or the run after it, failed; or {@code null}. */
   @Nullable String failure() {
     synchronized (lock) {
       return failure;
@@ -266,19 +273,19 @@ final class PipelineRuntime {
   }
 
   /**
-   * Starts the pipeline again if its last start failed preflight and nothing is starting or
-   * stopping it: what an accepted reload does for a pipeline it leaves unchanged (DESIGN §5.6). One
-   * attempt per call; a pipeline that still fails goes back to {@link
-   * PipelineState#FAILED_PREFLIGHT} and waits for the next call, so nothing retries it on its own.
+   * Starts the pipeline again if it failed (preflight, or while running) and nothing is starting or
+   * stopping it: what an accepted reload does for a pipeline it leaves unchanged (DESIGN §5.6,
+   * ADR-0032, ADR-0036). One attempt per call; a pipeline that fails again goes back to a failed
+   * state and waits for the next call, so nothing retries it on its own.
    *
    * @return whether a start was begun
    */
   boolean retryIfFailed() {
     synchronized (lock) {
-      if (state != PipelineState.FAILED_PREFLIGHT || stops > 0 || starter != null) {
+      if (!state.isFailed() || stops > 0 || starter != null) {
         return false;
       }
-      LOG.info("Pipeline '{}': retrying after failed preflight", name);
+      LOG.info("Pipeline '{}': retrying after {}", name, state.label());
       start();
       return true;
     }
@@ -362,6 +369,7 @@ final class PipelineRuntime {
       Map<RouteTarget.StreamKey, BulkSink<RecordProcessor.DocumentRef>> opened =
           new LinkedHashMap<>();
       RecordProcessor[] processor = new RecordProcessor[1];
+      KafkaPipelineSource[] self = new KafkaPipelineSource[1];
       try {
         for (Map.Entry<RouteTarget.StreamKey, SinkSettings> stream :
             compiled.streams().entrySet()) {
@@ -391,8 +399,13 @@ final class PipelineRuntime {
                 context
                     .consumerFactories()
                     .get(config.source().cluster(), config.source().identity()),
-                new Handler(processor[0], actionSinks.values(), pipelineMeters),
+                new Handler(
+                    processor[0],
+                    actionSinks.values(),
+                    pipelineMeters,
+                    cause -> sourceFailed(self[0], cause)),
                 context.sourceOptions());
+        self[0] = created;
       } catch (IllegalArgumentException | KafkaException e) {
         closeSinks(opened, Duration.ZERO);
         return failed(List.of("configuration cannot run: " + e.getMessage()));
@@ -497,28 +510,72 @@ final class PipelineRuntime {
   }
 
   /**
+   * The current run's source reported that it cannot go on (ADR-0036): the pipeline becomes {@link
+   * PipelineState#FAILED} at once and is stopped on its own thread (the caller is a consumer
+   * thread, which a container stop would wait for). Ignored for a source of an earlier run, and
+   * while the pipeline is being stopped anyway. The stop counts as one in progress from here, so
+   * nothing restarts the pipeline before its source and sinks are closed.
+   */
+  void sourceFailed(@Nullable KafkaPipelineSource failed, String cause) {
+    synchronized (lock) {
+      if (failed == null || source != failed || stops > 0) {
+        return;
+      }
+      LOG.error(
+          "Pipeline '{}': failed while running; stopping it until the next accepted reload or a"
+              + " restart: {}",
+          name,
+          cause);
+      failure = cause;
+      setState(PipelineState.FAILED);
+      stops++;
+      if (stopSignal != null) {
+        stopSignal.countDown();
+      }
+      Thread pending = starter;
+      failer =
+          Thread.ofVirtual()
+              .name("kafkafim-fail-" + name)
+              .start(() -> {
+                try {
+                  drainAndStop(pending, null);
+                } finally {
+                  synchronized (lock) {
+                    if (failer == Thread.currentThread()) {
+                      failer = null;
+                    }
+                  }
+                }
+              });
+    }
+  }
+
+  /**
    * Stops the pipeline gracefully and waits for it: cancels a pending start, drains and stops the
-   * source, then closes the sinks. Idempotent.
+   * source, then closes the sinks; also waits for a stop after a failure that is in progress.
+   * Idempotent. A failed pipeline keeps its failed state.
    */
   void stop() {
     Thread pending;
+    Thread failing;
     synchronized (lock) {
       stops++;
       if (stopSignal != null) {
         stopSignal.countDown();
       }
       pending = starter;
+      failing = failer;
     }
+    drainAndStop(pending, failing);
+  }
+
+  /** The body of a stop whose {@code stops} increment is done; decrements it when finished. */
+  private void drainAndStop(@Nullable Thread pending, @Nullable Thread failing) {
     KafkaPipelineSource running = null;
     Map<RouteTarget.StreamKey, BulkSink<RecordProcessor.DocumentRef>> toClose = Map.of();
     try {
-      if (pending != null) {
-        try {
-          pending.join();
-        } catch (InterruptedException e) {
-          Thread.currentThread().interrupt();
-        }
-      }
+      join(failing);
+      join(pending);
       synchronized (lock) {
         running = source;
         toClose = sinks;
@@ -537,11 +594,22 @@ final class PipelineRuntime {
           sinks = Map.of();
         }
         pauseReasons.removeIf(reason -> reason.startsWith(AUTH_REASON_PREFIX));
-        if (state != PipelineState.FAILED_PREFLIGHT) {
+        if (!state.isFailed()) {
           setState(PipelineState.STOPPED);
         }
         stops--;
       }
+    }
+  }
+
+  private static void join(@Nullable Thread thread) {
+    if (thread == null || thread == Thread.currentThread()) {
+      return;
+    }
+    try {
+      thread.join();
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
     }
   }
 
@@ -650,20 +718,31 @@ final class PipelineRuntime {
     };
   }
 
-  /** The source's handler: the record processor, plus a flush when partitions go away. */
+  /**
+   * The source's handler: the record processor, plus a flush when partitions go away, and the
+   * runtime's reaction when the source fails.
+   */
   private static final class Handler implements SourceRecordHandler {
 
     private final RecordProcessor processor;
     private final Collection<RecordProcessor.ActionSink> sinks;
     private final PipelineMeters meters;
+    private final Consumer<String> onFailure;
 
     Handler(
         RecordProcessor processor,
         Collection<RecordProcessor.ActionSink> sinks,
-        PipelineMeters meters) {
+        PipelineMeters meters,
+        Consumer<String> onFailure) {
       this.processor = processor;
       this.sinks = List.copyOf(sinks);
       this.meters = meters;
+      this.onFailure = onFailure;
+    }
+
+    @Override
+    public void onSourceFailed(String cause) {
+      onFailure.accept(cause);
     }
 
     @Override
