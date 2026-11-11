@@ -297,8 +297,9 @@ class PipelineSupervisorIntegrationTest {
     props.put("kafkafim.elasticsearch.clusters.local.bulk.in-flight", 1);
     int records = 2000;
     int perRecord = 10;
-    // Sent in batches, not one round trip per record: one slow acknowledgement under shared Docker
-    // load then delays the whole seeding by its own time only, not 2000 times over (#68).
+    // Sent asynchronously and flushed once, not one round trip per record: seeding takes a fraction
+    // of the time, so a stall of the shared Docker host is less likely to hit it, and the leader
+    // wait in createTopics keeps the first sends from waiting on metadata (#68).
     List<Future<RecordMetadata>> sent = new ArrayList<>();
     for (int r = 0; r < records; r++) {
       StringBuilder value = new StringBuilder("[");
@@ -338,8 +339,9 @@ class PipelineSupervisorIntegrationTest {
   void consumerTheBrokerRejectsMovesThePipelineToFailedInStateGaugeAndReadiness() throws Exception {
     // A real source failure, end to end (ADR-0036, #101): a broker that admits one member per
     // consumer group, and a group that is already full. kafkafim's consumer is refused on join;
-    // poll throws GroupMaxSizeReachedException, an error the container does not retry (it is no
-    // authentication or authorization error), so the consumer stops and the source reports it.
+    // poll throws GroupMaxSizeReachedException. It is no authentication or authorization error,
+    // which the container would retry, so kafkafim's stopping error handler stops the consumer and
+    // the source reports it.
     // Its own broker, because the shared one runs groups of several consumers.
     try (KafkaContainer oneMemberGroups =
         KafkaTestContainers.kafka()
@@ -367,23 +369,26 @@ class PipelineSupervisorIntegrationTest {
         Map<String, Object> props =
             new PipelineProps("f").topic("f.events").defaultRoute("f-docs").map();
         props.put("kafkafim.kafka.clusters.local.bootstrap-servers[0]", bootstrap);
-        ConfigurableApplicationContext app = start(props);
-
-        awaitState(app, "f", PipelineState.FAILED);
-        PipelineSupervisor supervisor = supervisor(app);
-        // ABNORMAL: an exception from poll (ERROR is for a java.lang.Error from the listener).
-        assertThat(supervisor.failure("f")).isEqualTo("Kafka consumer stopped (ABNORMAL)");
-        // State, gauge and readiness agree: the pod's only pipeline failed, so it is out of
-        // service.
-        MeterRegistry meters = app.getBean(MeterRegistry.class);
-        assertThat(gauge(meters, "f", "failed")).isEqualTo(1);
-        assertThat(gauge(meters, "f", "running")).isZero();
-        assertThat(readiness(app)).isEqualTo(503);
-        // The failed source is stopped and closed, not left behind.
-        await()
-            .atMost(TIMEOUT)
-            .until(() -> supervisor.runtimes().stream().allMatch(r -> r.source() == null));
-        assertThat(supervisor.state("f")).isEqualTo(PipelineState.FAILED);
+        // Closed here, before its broker stops, even when an assertion fails (closeContexts closes
+        // it again, which does nothing).
+        try (ConfigurableApplicationContext app = start(props)) {
+          awaitState(app, "f", PipelineState.FAILED);
+          PipelineSupervisor supervisor = supervisor(app);
+          // ABNORMAL: the container's stopping error handler stopped the consumer on the poll
+          // exception (ERROR is for a java.lang.Error from the listener).
+          assertThat(supervisor.failure("f")).isEqualTo("Kafka consumer stopped (ABNORMAL)");
+          // State, gauge and readiness agree: the pod's only pipeline failed, so it is out of
+          // service.
+          MeterRegistry meters = app.getBean(MeterRegistry.class);
+          assertThat(gauge(meters, "f", "failed")).isEqualTo(1);
+          assertThat(gauge(meters, "f", "running")).isZero();
+          assertThat(readiness(app)).isEqualTo(503);
+          // The failed source is stopped and closed, not left behind.
+          await()
+              .atMost(TIMEOUT)
+              .until(() -> supervisor.runtimes().stream().allMatch(r -> r.source() == null));
+          assertThat(supervisor.state("f")).isEqualTo(PipelineState.FAILED);
+        }
       }
     }
   }
