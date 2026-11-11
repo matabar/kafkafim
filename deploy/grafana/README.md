@@ -6,7 +6,7 @@ with the repo". Every query uses the metric names and labels of `/actuator/prome
 
 | File | What |
 |---|---|
-| [`dashboards/kafkafim-overview.json`](dashboards/kafkafim-overview.json) | Per pipeline: state, end-to-end latency, records/bytes/documents, DLQ, in-flight bytes and heap, assigned partitions, Kafka connectivity, config generation and reloads |
+| [`dashboards/kafkafim-overview.json`](dashboards/kafkafim-overview.json) | Per pipeline: state, end-to-end latency, records/bytes/documents, dropped documents per route, DLQ, in-flight bytes and heap, assigned partitions, Kafka connectivity, config generation and reloads |
 | [`dashboards/kafkafim-elasticsearch.json`](dashboards/kafkafim-elasticsearch.json) | Per Elasticsearch cluster: breaker state, bulk requests by status, 429 ratio, bulk latency, docs and bytes per request, flush reasons, retries, item errors, auth failures |
 | [`alerts/kafkafim-alerts.yaml`](alerts/kafkafim-alerts.yaml) | Prometheus alerting rules (below) |
 | [`alerts/kafkafim-alerts.test.yaml`](alerts/kafkafim-alerts.test.yaml) | `promtool test rules` unit tests for every alert |
@@ -47,6 +47,12 @@ Notes:
   ([ADR-0034](../../docs/decisions/0034-consumer-lag-is-monitored-outside-kafkafim.md)).
   Lag and its alerts come from the Kafka team's consumer-lag monitoring, per consumer
   group (`source.group-id`, default `kafkafim.<pipeline>`).
+- There is no alert on dropped documents: a `drop: true` route discards documents on
+  purpose ([ADR-0037](../../docs/decisions/0037-routes-can-drop-documents.md)). The
+  overview's "Dropped documents by route" panel shows
+  `kafkafim_docs_total{outcome="dropped"}` per drop route, and the DLQ ratio leaves
+  dropped documents out of its denominator. [RUNBOOK §5.13](../../docs/RUNBOOK.md#513-documents-missing-from-elasticsearch-dropped-or-lost)
+  tells dropped from lost.
 - `KafkafimNoAssignedPartitions` is expected on pods beyond a pipeline's partition
   count; silence it for such groups (severity `info`).
 - `kafkafim_auth_failures_total` and `kafkafim_dlq_records_total` appear with their
