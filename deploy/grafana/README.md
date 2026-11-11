@@ -60,12 +60,15 @@ Notes:
   records, item errors, retries, bulk requests by status and flushes by reason.
   `rate()` and `increase()` need two samples, so they miss that first increment. The
   auth alert and the "Auth failures" panel add the starting value of a series that is
-  new in the window. A single 401/403 matters, and nothing else shows it. A scrape gap
-  longer than the window plus 5m makes an old series look new, so the panel then shows
-  its total once. The rate panels have no such term: the first DLQ record still shows
-  in "DLQ ratio", because `kafkafim_docs_total` starts at 0 for every route and outcome.
-  The other counters come in streams, where one missed event doesn't matter. The DLQ
-  alert needs a sustained rate, so it has no such term either.
+  new in the window. A single 401/403 matters, and nothing else shows it. The panel is
+  approximate (`increase()` extrapolates). A scrape gap longer than the window plus 5m
+  makes an old series look new, so the panel then shows its total once. The rate panels
+  have no such term. "DLQ ratio" still shows the first DLQ'd document of a configured
+  route, because `kafkafim_docs_total` starts at 0 for every configured route and
+  outcome. It misses the first one with `route="none"` (failed before a route was
+  chosen), which is registered on first use. The other counters come in streams, where
+  one missed event doesn't matter. The DLQ alert needs a sustained rate, so it has no
+  such term either.
 - Rules group by `job`/`instance` where a per-pod answer matters; relabel to your own
   pod label if your scrape config uses another one.
 - Each alert carries a `runbook_url` annotation to the matching RUNBOOK section.
