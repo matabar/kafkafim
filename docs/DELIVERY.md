@@ -220,13 +220,14 @@ the signature manifest; check that
 the image unsigned: `cosign verify` there fails with `no signatures found`. With both
 copies, `cosign verify --offline` works on the internal reference as after
 `cosign load`, given the trusted root described above. A release has no Cosign
-attestation; a layout that has one (a third entry, `kind: dev.cosignproject.cosign/atts`)
-takes a third copy, `:@2` to `sha256-<hex>.att`. (Checked with cosign 3.1.3 and
-skopeo 1.24.1 against a local registry, signing with a local key in the release's
-`--new-bundle-format=false` format: both copies keep their digests, and `cosign verify`
-and `cosign verify-attestation` pass on the copy. The release's keyless certificate and
-transparency-log entry travel in the same signature manifest, which skopeo copies
-unchanged.)
+attestation; a layout that has one (a third entry, kind
+`dev.cosignproject.cosign/atts`) takes a third copy, `:@2` to `sha256-<hex>.att`.
+(Checked with cosign 3.1.3 and skopeo 1.24.1 against a local registry, signing with
+a local key in the release's `--new-bundle-format=false` format: both copies keep
+their digests, and `cosign verify` and `cosign verify-attestation` pass on the copy.)
+Keyless verification of the copy was not tested; the release's certificate and
+transparency-log entry are part of the signature manifest, which skopeo copies
+unchanged.
 
 ## Local developer loop
 
