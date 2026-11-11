@@ -189,10 +189,14 @@ Leave `image.tag` empty, or set it to `1.2.3` for a `:1.2.3@sha256:...` referenc
 `1.2.3@sha256:...` in `image.tag` (the chart fails and points at `image.digest`).
 
 Where `cosign` is unavailable inside the air gap, skopeo (1.18 or later, for the
-`@<index>` source syntax) pushes the image without its signature:
+`@<index>` source syntax) pushes the image, then its signature in a second copy:
 
 ```bash
 skopeo copy --all --preserve-digests oci:kafkafim-1.2.3-image:@0 docker://registry.internal/kafkafim/kafkafim:1.2.3
+```
+
+```bash
+skopeo copy --preserve-digests oci:kafkafim-1.2.3-image:@1 "docker://registry.internal/kafkafim/kafkafim:$(cut -d@ -f2 kafkafim-1.2.3-image.digest | tr : -).sig"
 ```
 
 The layout `cosign save` writes holds more than one manifest (the image index, then
@@ -206,6 +210,23 @@ nothing; `:@0` selects the first entry of `index.json`, the image index. Check t
 check above afterwards. `--preserve-digests` makes skopeo fail rather than convert
 the manifests, which would change the digest. (Checked with cosign 3.1.3 and
 skopeo 1.24.1.)
+
+The second copy recreates what `cosign load` writes: Cosign finds a classic signature
+under the tag `sha256-<hex>.sig` next to the image, where `sha256:<hex>` is the signed
+digest from `kafkafim-1.2.3-image.digest`. `:@1` is the second entry of `index.json`,
+the signature manifest; check that
+`jq -r '.manifests[1].annotations.kind' kafkafim-1.2.3-image/index.json` prints
+`dev.cosignproject.cosign/sigs`. Skip the second copy and the internal registry holds
+the image unsigned: `cosign verify` there fails with `no signatures found`. With both
+copies, `cosign verify --offline` works on the internal reference as after
+`cosign load`, given the trusted root described above. A release has no Cosign
+attestation; a layout that has one (a third entry, `kind: dev.cosignproject.cosign/atts`)
+takes a third copy, `:@2` to `sha256-<hex>.att`. (Checked with cosign 3.1.3 and
+skopeo 1.24.1 against a local registry, signing with a local key in the release's
+`--new-bundle-format=false` format: both copies keep their digests, and `cosign verify`
+and `cosign verify-attestation` pass on the copy. The release's keyless certificate and
+transparency-log entry travel in the same signature manifest, which skopeo copies
+unchanged.)
 
 ## Local developer loop
 
