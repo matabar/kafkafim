@@ -38,6 +38,7 @@ import org.apache.kafka.common.errors.AuthorizationException;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.kafka.core.ConsumerFactory;
 
 /**
  * One pipeline at runtime: its preflight, its Kafka source, its bulk sinks (one per {@code
@@ -345,9 +346,13 @@ final class PipelineRuntime {
     Pipeline config = this.config;
     CompiledPipeline compiled;
     DlqWriter writer;
+    ConsumerFactory<byte[], byte[]> consumers;
     try {
       compiled = PipelineMapping.compile(name, context.properties());
       writer = context.dlqProducers().writer(name);
+      // Resolved here, so a passthrough key kafkafim owns fails the pipeline, not the group check.
+      consumers =
+          context.consumerFactories().get(config.source().cluster(), config.source().identity());
     } catch (IllegalArgumentException | KafkaException e) {
       return failed(List.of("configuration cannot run: " + e.getMessage()));
     }
@@ -357,9 +362,7 @@ final class PipelineRuntime {
             () -> context.dlqProducers().checkTopic(name),
             () ->
                 KafkaGroupCheck.check(
-                    context
-                        .consumerFactories()
-                        .get(config.source().cluster(), config.source().identity()),
+                    consumers,
                     config.source().groupId(),
                     "kafkafim-" + name + "-preflight",
                     context.sourceOptions().metadataTimeout()),

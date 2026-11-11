@@ -1,10 +1,13 @@
 package io.github.matabar.kafkafim.supervisor;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.entry;
 
 import io.github.matabar.kafkafim.dlq.TopicStatus;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.function.Supplier;
 import org.apache.kafka.common.acl.AclOperation;
@@ -14,6 +17,7 @@ import org.apache.kafka.common.errors.SaslAuthenticationException;
 import org.apache.kafka.common.errors.TimeoutException;
 import org.apache.kafka.common.errors.UnsupportedVersionException;
 import org.junit.jupiter.api.Test;
+import org.springframework.kafka.core.DefaultKafkaConsumerFactory;
 
 class PreflightTest {
 
@@ -214,6 +218,12 @@ class PreflightTest {
         .isEqualTo(Preflight.Kind.OK);
     assertThat(KafkaGroupCheck.classifyFailure(new UnsupportedVersionException("old")).kind())
         .isEqualTo(Preflight.Kind.OK);
+    // A group id taken by another protocol: no consumer can join it.
+    assertThat(
+            KafkaGroupCheck.classifyFailure(
+                    new IllegalArgumentException("Group g is not a consumer group (connect)."))
+                .kind())
+        .isEqualTo(Preflight.Kind.CONFIGURATION);
     assertThat(KafkaGroupCheck.classifyFailure(new TimeoutException("slow")).kind())
         .isEqualTo(Preflight.Kind.TRANSIENT);
   }
@@ -222,29 +232,39 @@ class PreflightTest {
   void unreachableBrokerFailsTheGroupCheckAsTransient() {
     Preflight.Status status =
         KafkaGroupCheck.check(
-            new org.springframework.kafka.core.DefaultKafkaConsumerFactory<>(
-                java.util.Map.of("bootstrap.servers", "127.0.0.1:9")),
+            new DefaultKafkaConsumerFactory<>(
+                Map.<String, Object>of("bootstrap.servers", "127.0.0.1:9")),
             "kafkafim.p",
             "kafkafim-p-preflight",
-            java.time.Duration.ofSeconds(1));
+            Duration.ofSeconds(1));
     assertThat(status.kind()).isEqualTo(Preflight.Kind.TRANSIENT);
   }
 
   @Test
-  void adminSettingsKeepOnlyAdminKeysAndSetTheClientId() {
+  void adminSettingsDropOnlyConsumerKeysAndSetTheClientId() {
     assertThat(
             KafkaGroupCheck.adminSettings(
-                java.util.Map.of(
+                Map.of(
                     "bootstrap.servers", "b:9092",
                     "security.protocol", "SASL_SSL",
+                    "config.providers", "file",
+                    "config.providers.file.class",
+                        "org.apache.kafka.common.config.provider.FileConfigProvider",
+                    "custom.handler.key", "x",
                     "group.protocol", "classic",
                     "max.poll.records", 500,
+                    "key.deserializer", "d",
                     "client.id", "consumer"),
                 "kafkafim-p-preflight"))
         .containsOnly(
-            org.assertj.core.api.Assertions.entry("bootstrap.servers", "b:9092"),
-            org.assertj.core.api.Assertions.entry("security.protocol", "SASL_SSL"),
-            org.assertj.core.api.Assertions.entry("client.id", "kafkafim-p-preflight"));
+            entry("bootstrap.servers", "b:9092"),
+            entry("security.protocol", "SASL_SSL"),
+            entry("config.providers", "file"),
+            entry(
+                "config.providers.file.class",
+                "org.apache.kafka.common.config.provider.FileConfigProvider"),
+            entry("custom.handler.key", "x"),
+            entry("client.id", "kafkafim-p-preflight"));
   }
 
   @Test

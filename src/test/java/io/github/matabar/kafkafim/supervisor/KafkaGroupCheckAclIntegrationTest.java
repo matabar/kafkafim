@@ -10,6 +10,7 @@ import io.github.matabar.kafkafim.source.kafka.ConsumerFactories;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 import org.apache.kafka.clients.CommonClientConfigs;
@@ -124,13 +125,20 @@ class KafkaGroupCheckAclIntegrationTest {
     createGroup(group);
     grant(ResourceType.GROUP, group, AclOperation.DESCRIBE);
     // Until the ACL reaches the broker's authorizer, FindCoordinator is still denied.
-    await().atMost(TIMEOUT).until(() -> !check(group).detail().contains("may not use the group"));
+    await()
+        .atMost(TIMEOUT)
+        .pollInterval(Duration.ofMillis(500))
+        .until(
+            () -> !Objects.toString(check(group).detail(), "").contains("may not use the group"));
 
     assertThat(check(group))
         .isEqualTo(Preflight.Status.rejected("identity may describe the group but not read it"));
 
     grant(ResourceType.GROUP, group, AclOperation.READ);
-    await().atMost(TIMEOUT).until(() -> check(group).kind() == Preflight.Kind.OK);
+    await()
+        .atMost(TIMEOUT)
+        .pollInterval(Duration.ofMillis(500))
+        .until(() -> check(group).kind() == Preflight.Kind.OK);
   }
 
   @Test
@@ -139,7 +147,10 @@ class KafkaGroupCheckAclIntegrationTest {
     createGroup(group);
     grant(ResourceType.GROUP, group, AclOperation.READ);
 
-    await().atMost(TIMEOUT).until(() -> check(group).kind() == Preflight.Kind.OK);
+    await()
+        .atMost(TIMEOUT)
+        .pollInterval(Duration.ofMillis(500))
+        .until(() -> check(group).kind() == Preflight.Kind.OK);
   }
 
   /**
@@ -151,7 +162,10 @@ class KafkaGroupCheckAclIntegrationTest {
     String group = "kafkafim.new-" + UUID.randomUUID();
     grant(ResourceType.GROUP, group, AclOperation.DESCRIBE);
 
-    await().atMost(TIMEOUT).until(() -> check(group).kind() == Preflight.Kind.OK);
+    await()
+        .atMost(TIMEOUT)
+        .pollInterval(Duration.ofMillis(500))
+        .until(() -> check(group).kind() == Preflight.Kind.OK);
   }
 
   private static Preflight.Status check(String group) {

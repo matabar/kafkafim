@@ -12,6 +12,7 @@ import org.apache.kafka.clients.admin.Admin;
 import org.apache.kafka.clients.admin.AdminClientConfig;
 import org.apache.kafka.clients.admin.ConsumerGroupDescription;
 import org.apache.kafka.clients.admin.DescribeConsumerGroupsOptions;
+import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.common.acl.AclOperation;
 import org.apache.kafka.common.errors.AuthenticationException;
 import org.apache.kafka.common.errors.AuthorizationException;
@@ -44,6 +45,8 @@ import org.springframework.kafka.core.ConsumerFactory;
  */
 final class KafkaGroupCheck {
 
+  private static final Duration CLOSE_TIMEOUT = Duration.ofSeconds(5);
+
   private KafkaGroupCheck() {}
 
   /**
@@ -64,7 +67,12 @@ final class KafkaGroupCheck {
     try {
       admin = Admin.create(settings);
     } catch (RuntimeException e) {
-      return Preflight.Status.rejected("cannot create a Kafka admin client: " + e.getMessage());
+      // Bad settings, or no resolvable bootstrap host; the DLQ producer on the same cluster is
+      // built first and already fails the same way.
+      return Preflight.Status.rejected(
+          "cannot create a Kafka admin client: "
+              + e
+              + (e.getCause() == null ? "" : " (" + e.getCause() + ")"));
     }
     try {
       ConsumerGroupDescription description =
@@ -122,15 +130,25 @@ final class KafkaGroupCheck {
     if (failure instanceof AuthenticationException) {
       return Preflight.Status.rejected("identity does not authenticate (" + failure + ")");
     }
+    if (failure instanceof IllegalArgumentException) {
+      // The group id is taken by another protocol (Connect, share group): no consumer can join.
+      return Preflight.Status.rejected("group is not a consumer group (" + failure + ")");
+    }
     return Preflight.Status.unreachable(failure.toString());
   }
 
-  /** The consumer settings an admin client understands, with its own client id. */
+  /**
+   * The consumer settings without the consumer-only keys, with the admin client's own client id.
+   * Everything else is kept, including keys neither client declares: config provider definitions
+   * ({@code config.providers.<name>.class}) that resolve {@code ${file:...}} placeholders in the
+   * credentials, and keys custom login or callback handlers read.
+   */
   static Map<String, Object> adminSettings(Map<String, Object> consumer, String clientId) {
     Set<String> adminKeys = AdminClientConfig.configNames();
+    Set<String> consumerKeys = ConsumerConfig.configNames();
     Map<String, Object> settings = new HashMap<>();
     consumer.forEach((key, value) -> {
-      if (adminKeys.contains(key)) {
+      if (adminKeys.contains(key) || !consumerKeys.contains(key)) {
         settings.put(key, value);
       }
     });
@@ -139,13 +157,14 @@ final class KafkaGroupCheck {
   }
 
   /**
-   * Closes the admin client with the interrupt flag cleared, then restores it, so a stop that
-   * interrupted the check does not cut the client's shutdown short.
+   * Closes the admin client with the interrupt flag cleared, then restores it: a stop interrupts a
+   * check in progress, and an interrupted close would stop waiting for the client's I/O thread and
+   * leave it running. Nothing is pending by now, so the bound is only a guard.
    */
   private static void close(Admin admin) {
     boolean interrupted = Thread.interrupted();
     try {
-      admin.close(Duration.ZERO);
+      admin.close(CLOSE_TIMEOUT);
     } finally {
       if (interrupted) {
         Thread.currentThread().interrupt();

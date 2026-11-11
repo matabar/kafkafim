@@ -372,11 +372,12 @@ other than 401, 403 and 5xx passes.
 
 The group check exists because a denied join is otherwise invisible: the listener
 container retries it every 10s and never stops, so the pipeline would show `running`.
-One `DescribeGroups` with `includeAuthorizedOperations`, through a short-lived admin
-client built from the source identity's consumer settings and bounded by the source's
-metadata timeout, answers it. An authorization or authentication error (no group ACL,
+One `DescribeGroups` with `includeAuthorizedOperations` answers it. It goes through a
+short-lived admin client built from the source identity's consumer settings (all except
+the consumer-only keys) and is bounded by the source's metadata timeout. An authorization or authentication error (no group ACL,
 or one on another group name: `FindCoordinator` needs `Describe`) is a configuration
-failure. So is an existing group whose authorized operations lack `READ`. `READ` or
+failure. So is an existing group whose authorized operations lack `READ`, and a group id
+another protocol already uses. `READ` or
 `ALL` listed, no operations listed, or a broker that does not support the request
 passes. So does a group that has never been joined: the broker answers
 `GroupIdNotFoundException` and cannot tell `Read` from `Describe`, so the first join stays

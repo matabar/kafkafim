@@ -23,7 +23,21 @@ with `includeAuthorizedOperations(true)` reports, by the identity's group ACLs:
 | `Describe` or `Read` | no (never joined) | `GroupIdNotFoundException` |
 | no authorizer on the broker | yes | every group operation |
 
-Alternatives considered:
+## Decision
+- Preflight sends one `DescribeGroups` for the pipeline's group. It uses a short-lived
+  admin client built from the source identity's consumer settings (all of them except
+  the consumer-only keys, so config providers and custom handler keys still apply),
+  bounded by the source's metadata timeout (30s). It runs with the DLQ and
+  Elasticsearch checks, so one ERROR line still names every problem.
+- **Configuration** (`failed_preflight`): a group or other authorization error, an
+  authentication error, an existing group whose authorized operations lack `READ`
+  (and `ALL`), or a group id another protocol already uses (Connect, a share group).
+- **Passes**: `READ` or `ALL` listed; no operations listed (a broker that cannot say);
+  a group that does not exist yet; a broker that does not support the request.
+- **Transient** (stays `starting`, retried with backoff): a timeout or connection error.
+  An interrupt from a stop also counts as transient, and the stop discards the verdict.
+
+## Alternatives
 - **Join the group from preflight.** This is exact, but a join rebalances the live group
   of every other pod on each pipeline start and reload.
 - **`describeAcls`.** It needs `Describe` on the cluster, which a consumer identity does
@@ -33,19 +47,6 @@ Alternatives considered:
   the topics, so a commit to a topic that does not exist would test exactly `Read`. But
   it depends on the broker checking things in that order, and commits are not something
   preflight should send.
-
-## Decision
-- Preflight sends one `DescribeGroups` for the pipeline's group. It uses a short-lived
-  admin client built from the source identity's consumer settings, bounded by the
-  source's metadata timeout (30s). It runs with the DLQ and Elasticsearch checks, so one
-  ERROR line still names every problem.
-- **Configuration** (`failed_preflight`): a group or other authorization error, an
-  authentication error, or an existing group whose authorized operations lack `READ`
-  (and `ALL`).
-- **Passes**: `READ` or `ALL` listed; no operations listed (a broker that cannot say);
-  a group that does not exist yet; a broker that does not support the request.
-- **Transient** (stays `starting`, retried with backoff): a timeout or connection error.
-  An interrupt from a stop also counts as transient, and the stop discards the verdict.
 
 ## Consequences
 - The common mistakes now reach `failed_preflight` and its alert, with the group, the
@@ -57,3 +58,6 @@ Alternatives considered:
   still the check there, and the runbook lists it as a known gap.
 - Each pipeline start makes one more admin connection to the source cluster. On a
   broker without an authorizer the check always passes.
+- Against a cluster that does not answer, each start attempt now also waits out this
+  check's timeout (the source's metadata timeout, 30s) after the DLQ check, so retries
+  in `starting` are spaced further apart.
