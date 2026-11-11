@@ -824,7 +824,11 @@ in `ConfigValidator`, whose messages never include values.
   - **`POST /actuator/reload`** returns `{result, generation, added, removed,
     restarted: [{pipeline, reasons}], retried, unchanged, errors}`: 200 for `applied` or
     `unchanged`, 400 with every violation for `rejected`, 503 while the supervisor is
-    not running. Names and violations only, never configuration values. It is
+    not running. `applied` means the valid tree differs from the running one, even
+    when no pipeline restarts (a change to a cluster or identity no pipeline uses, or to
+    `kafkafim.reload.*`): the new tree is in effect and gets a new generation, which is
+    how an operator sees a config-only change land on every pod. `unchanged` means it is
+    equal to the running tree. Names and violations only, never configuration values. It is
     defined in `supervisor` (nothing depends on `supervisor`, so it cannot create a
     `telemetry` ↔ `supervisor` cycle).
   - **Metrics and logs**: `kafkafim_config_reload_total{result=success|failure}`
@@ -835,7 +839,9 @@ in `ConfigValidator`, whose messages never include values.
   - **Settings**: `kafkafim.reload.enabled` (default `true`), `poll-interval` (10s),
     `debounce` (2s), read at startup only. The watched paths are the file and
     `configtree:` locations of the three properties above; `classpath:` locations are
-    not watched. `POST /actuator/reload` works with the watcher disabled.
+    not watched. `POST /actuator/reload` works with the watcher disabled. A reload
+    that changes them is still `applied` and logs a WARN that the watcher settings
+    apply after a restart.
   - Not reloaded: the `KafkafimProperties` bean stays the startup tree (the supervisor
     holds the one in effect); OTLP export headers (§10) and everything outside
     `kafkafim.*` need a restart.

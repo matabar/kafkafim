@@ -6,10 +6,12 @@ import java.util.List;
  * The outcome of one reload, as {@code POST /actuator/reload} returns it (DESIGN §5.6). Names and
  * violations only, never a value of the configuration, so no secret can appear.
  *
- * @param result {@code applied} (pipelines changed), {@code unchanged} (valid, nothing to do) or
- *     {@code rejected} (invalid or unreadable; the running configuration stays)
+ * @param result {@code applied} (valid and different from the running tree: a new generation, also
+ *     when no pipeline restarts, as for a change to a cluster no pipeline uses or to {@code
+ *     kafkafim.reload.*}), {@code unchanged} (valid and equal to the running tree) or {@code
+ *     rejected} (invalid or unreadable; the running configuration stays)
  * @param generation the configuration generation running after the reload (1 at startup, +1 per
- *     applied change)
+ *     applied reload)
  * @param added pipelines started
  * @param removed pipelines drained and stopped
  * @param restarted pipelines drained and started again, each with why
@@ -28,10 +30,10 @@ public record ReloadResult(
     List<String> unchanged,
     List<String> errors) {
 
-  /** {@link #result()} of an applied reload. */
+  /** {@link #result()} of a reload whose valid tree differs from the running one. */
   public static final String APPLIED = "applied";
 
-  /** {@link #result()} of a valid reload with nothing to do. */
+  /** {@link #result()} of a reload whose valid tree equals the running one. */
   public static final String UNCHANGED = "unchanged";
 
   /** {@link #result()} of a rejected reload. */
