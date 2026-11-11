@@ -51,7 +51,7 @@ Notes:
   purpose ([ADR-0037](../../docs/decisions/0037-routes-can-drop-documents.md)). The
   overview's "Dropped documents by route" panel shows
   `kafkafim_docs_total{outcome="dropped"}` per drop route, and the DLQ ratio leaves
-  dropped documents out of its denominator. [RUNBOOK §5.13](../../docs/RUNBOOK.md#513-documents-missing-from-elasticsearch-dropped-or-lost)
+  dropped documents out of its denominator. [RUNBOOK §5.14](../../docs/RUNBOOK.md#514-documents-missing-from-elasticsearch-dropped-or-lost)
   tells dropped from lost.
 - `KafkafimNoAssignedPartitions` is expected on pods beyond a pipeline's partition
   count; silence it for such groups (severity `info`).
@@ -92,15 +92,12 @@ promtool check rules deploy/grafana/alerts/kafkafim-alerts.yaml
 Prometheus stores them under the names below. The alert rules are not loaded in the
 demo (otel-lgtm's Prometheus has no `rule_files`).
 
-Through OTLP, every name matches `/actuator/prometheus` except the two timers:
-Micrometer's OTLP registry exports times in milliseconds by default, so otel-lgtm
-stores `kafkafim_bulk_latency_milliseconds_*` and `kafkafim_e2e_latency_milliseconds_*`
-and the latency panels stay empty. Export seconds to fill them:
-
-```bash
-./mvnw spring-boot:run -Dspring-boot.run.arguments=--management.otlp.metrics.export.base-time-unit=seconds
-```
-
-The OTLP series also carry no `instance` label (otel-lgtm's Prometheus derives it from
-`service.instance.id`, which kafkafim does not set), so per-pod legends are blank with
-a single local app; `job` is `kafkafim/kafkafim`.
+Through OTLP every name matches `/actuator/prometheus`, the timers included: the app
+exports times in seconds (`management.otlp.metrics.export.base-time-unit: seconds`), so
+otel-lgtm stores `kafkafim_e2e_latency_seconds_*` and `kafkafim_bulk_latency_seconds_*`
+([DESIGN §10](../../docs/DESIGN.md#10-observability)). `job` is `kafkafim/kafkafim`
+(`service.namespace`/`service.name`), and `instance` comes from `service.instance.id`:
+the pod name on Kubernetes (`POD_NAME` from the chart), the container's `HOSTNAME` in a
+plain container, and `localhost` for `./mvnw spring-boot:run` without either.
+The one OTLP-only difference is the timers' max gauge, `kafkafim_e2e_latency_max_seconds`
+(`kafkafim_e2e_latency_seconds_max` on `/actuator/prometheus`); no query here uses it.

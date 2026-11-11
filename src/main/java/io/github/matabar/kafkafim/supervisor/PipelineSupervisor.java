@@ -47,8 +47,8 @@ import org.springframework.context.SmartLifecycle;
  *
  * <p><b>Reload</b> ({@link #apply}, DESIGN §5.6): removed and changed pipelines drain and stop in
  * parallel; changed ones get a new context and start again, added ones start, unchanged ones are
- * not touched, except that an unchanged one in {@code failed_preflight} is started once more
- * ({@link #retryFailedPreflight}).
+ * not touched, except that an unchanged one in {@code failed_preflight} or {@code failed} is
+ * started once more ({@link #retryFailedPipelines}).
  */
 public final class PipelineSupervisor implements SmartLifecycle {
 
@@ -64,7 +64,7 @@ public final class PipelineSupervisor implements SmartLifecycle {
   private final List<SupervisorListener> listeners;
   private final List<Runnable> topologyListeners = new CopyOnWriteArrayList<>();
 
-  /** Held by start, stop, apply and retryFailedPreflight: one of them at a time. */
+  /** Held by start, stop, apply and retryFailedPipelines: one of them at a time. */
   private final Object lifecycle = new Object();
 
   private final Function<String, PipelineMeters> meters;
@@ -196,7 +196,7 @@ public final class PipelineSupervisor implements SmartLifecycle {
     return runtime == null ? null : runtime.state();
   }
 
-  /** Why a pipeline failed preflight, or {@code null}. */
+  /** Why a pipeline failed (preflight, or while running), or {@code null}. */
   public @Nullable String failure(String pipeline) {
     return runtime(pipeline).failure();
   }
@@ -216,8 +216,9 @@ public final class PipelineSupervisor implements SmartLifecycle {
   }
 
   /**
-   * Stops one pipeline gracefully and waits for it. A pipeline in {@code failed_preflight} keeps
-   * that state, so the next accepted reload retries it ({@link #retryFailedPreflight}).
+   * Stops one pipeline gracefully and waits for it. A pipeline in {@code failed_preflight} or
+   * {@code failed} keeps that state, so the next accepted reload retries it ({@link
+   * #retryFailedPipelines}).
    */
   public void stopPipeline(String pipeline) {
     runtime(pipeline).stop();
@@ -272,7 +273,8 @@ public final class PipelineSupervisor implements SmartLifecycle {
    *
    * @param next the new configuration, valid as a whole
    * @param diff {@code ConfigDiff.between(properties(), next)}
-   * @return the unchanged pipelines in {@code failed_preflight} that were started once more
+   * @return the unchanged pipelines in {@code failed_preflight} or {@code failed} that were started
+   *     once more
    * @throws IllegalStateException if the supervisor is not running
    */
   List<String> apply(KafkafimProperties next, ConfigDiff diff) {
@@ -331,15 +333,16 @@ public final class PipelineSupervisor implements SmartLifecycle {
   }
 
   /**
-   * Starts once more those of {@code candidates} whose last start failed preflight (DESIGN §5.6):
-   * an accepted reload that leaves a pipeline unchanged retries it, since its cause (a missing
-   * topic, an ACL, a credential) is usually fixed outside kafkafim. One attempt per call, none
-   * while the pipeline is starting or stopping; nothing while the supervisor is not running.
+   * Starts once more those of {@code candidates} that failed, in preflight or while running (DESIGN
+   * §5.6, ADR-0032, ADR-0036): an accepted reload that leaves a pipeline unchanged retries it,
+   * since its cause (a missing topic, an ACL, a credential, a consumer error) is usually fixed
+   * outside kafkafim. One attempt per call, none while the pipeline is starting or stopping;
+   * nothing while the supervisor is not running.
    *
    * @param candidates pipeline names, typically {@code ConfigDiff.unchanged()}
    * @return the pipelines started, in configuration order
    */
-  List<String> retryFailedPreflight(Collection<String> candidates) {
+  List<String> retryFailedPipelines(Collection<String> candidates) {
     synchronized (lifecycle) {
       return running ? retryFailed(candidates) : List.of();
     }

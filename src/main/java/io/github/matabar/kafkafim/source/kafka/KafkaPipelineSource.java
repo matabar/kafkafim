@@ -24,6 +24,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.SmartLifecycle;
 import org.springframework.kafka.core.ConsumerFactory;
+import org.springframework.kafka.event.ConsumerStoppedEvent;
 import org.springframework.kafka.listener.BatchConsumerAwareMessageListener;
 import org.springframework.kafka.listener.BatchInterceptor;
 import org.springframework.kafka.listener.CommonContainerStoppingErrorHandler;
@@ -46,6 +47,10 @@ import org.springframework.kafka.listener.ContainerProperties;
  * {@link SourceOptions#drainTimeout()} to complete, then the container stops, which revokes every
  * partition (committing what completed) and leaves the group. The source runs in lifecycle phase
  * {@link #PHASE}.
+ *
+ * <p>A failure the source cannot recover from (the handler threw, or a consumer stopped other than
+ * by {@link #stop()}) is reported to {@link SourceRecordHandler#onSourceFailed}; stopping the
+ * source is then up to its owner.
  */
 public final class KafkaPipelineSource implements SmartLifecycle {
 
@@ -387,8 +392,31 @@ public final class KafkaPipelineSource implements SmartLifecycle {
     created.setBatchInterceptor(new CommitBeforePoll());
     // The listener never throws to the container; if something still does, stop rather than skip.
     created.setCommonErrorHandler(new CommonContainerStoppingErrorHandler());
+    // To hear of consumers that stop on their own; the children inherit the publisher. With a
+    // publisher set, a stopping child also notifies its parent (childStopped); harmless here, since
+    // every start builds a new container and restartAfterAuthExceptions stays off.
+    created.setApplicationEventPublisher(this::onContainerEvent);
     created.setBeanName(clientId);
     return created;
+  }
+
+  /**
+   * A consumer that stops for any reason but a normal stop (an error the container does not retry,
+   * or an {@link Error} from the handler) leaves its partitions unconsumed: report it.
+   */
+  private void onContainerEvent(Object event) {
+    if (event instanceof ConsumerStoppedEvent stopped
+        && stopped.getReason() != ConsumerStoppedEvent.Reason.NORMAL) {
+      reportFailure("Kafka consumer stopped (" + stopped.getReason() + ")");
+    }
+  }
+
+  private void reportFailure(String cause) {
+    try {
+      handler.onSourceFailed(cause);
+    } catch (RuntimeException e) {
+      LOG.warn("Pipeline '{}': failure handler failed", pipeline, e);
+    }
   }
 
   /** Commits what advanced, if {@code commit-interval} elapsed for this consumer. */
@@ -455,6 +483,7 @@ public final class KafkaPipelineSource implements SmartLifecycle {
             pipeline,
             e);
         pauseReasons.add(HANDLER_FAILURE_REASON);
+        reportFailure("record handler failed: " + e);
       }
     }
   }
