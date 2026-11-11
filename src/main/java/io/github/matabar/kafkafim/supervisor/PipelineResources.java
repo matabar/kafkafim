@@ -130,7 +130,7 @@ final class PipelineResources implements SmartLifecycle, AutoCloseable {
       Map<String, ElasticsearchSinks> sinks = new LinkedHashMap<>();
       List<EsHandle> es = new ArrayList<>();
       for (Pipeline.Route route : config.routes()) {
-        if (!sinks.containsKey(route.cluster())) {
+        if (route.cluster() != null && !sinks.containsKey(route.cluster())) {
           EsHandle handle = elasticsearch(route.cluster(), properties, retired);
           sinks.put(route.cluster(), handle.sinks);
           es.add(handle);

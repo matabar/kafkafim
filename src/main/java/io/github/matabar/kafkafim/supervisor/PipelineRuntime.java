@@ -148,7 +148,9 @@ final class PipelineRuntime {
     }
     Set<String> routed = new LinkedHashSet<>();
     for (Pipeline.Route route : pipeline.routes()) {
-      routed.add(route.cluster());
+      if (route.cluster() != null) {
+        routed.add(route.cluster()); // a drop route writes to none
+      }
     }
     this.config = pipeline;
     this.clusters = Set.copyOf(routed);

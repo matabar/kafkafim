@@ -97,6 +97,32 @@ class ConfigDiffTest {
   }
 
   @Test
+  void addedOrChangedDropRouteRestartsOnlyItsPipeline() {
+    String drop =
+        "routes:\n    - { when: [ { field: /level, equals: debug } ], drop: true }\n    - ";
+    String before =
+        PIPELINES.replace(
+            "routes: [ { default: true, cluster: es, index: a } ]",
+            drop + "{ default: true, cluster: es, index: a }");
+    KafkafimProperties withDrop = bind(tree("", "", before), SECRETS);
+
+    ConfigDiff added = ConfigDiff.between(base(), withDrop);
+    ConfigDiff changed =
+        ConfigDiff.between(
+            withDrop,
+            bind(tree("", "", before.replace("equals: debug", "equals: trace")), SECRETS));
+    ConfigDiff esChanged =
+        ConfigDiff.between(withDrop, bind(tree("", "  compression: false\n", before), SECRETS));
+
+    assertThat(added.restarted()).containsOnlyKeys("a");
+    assertThat(changed.restarted()).containsOnlyKeys("a");
+    assertThat(changed.restarted().get("a")).containsExactly("pipeline definition changed");
+    assertThat(changed.unchanged()).containsExactly("b", "c");
+    assertThat(esChanged.restarted().get("a"))
+        .containsExactly("Elasticsearch cluster 'es' changed");
+  }
+
+  @Test
   void addedAndRemovedPipelines() {
     String d =
         """

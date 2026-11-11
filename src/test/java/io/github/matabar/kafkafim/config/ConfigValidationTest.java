@@ -736,6 +736,128 @@ class ConfigValidationTest {
   }
 
   @Nested
+  class DropRoutes {
+
+    @Test
+    void acceptsDropRouteBeforeTheDefault() {
+      KafkafimProperties properties =
+          ConfigTestSupport.bind(
+              pipeline(
+                  """
+                  routes:
+                    - { name: debug, when: [ { field: /level, equals: debug } ], drop: true }
+                    - { default: true, cluster: es, index: idx }
+                  """));
+
+      Pipeline.Route drop = properties.pipelines().get("p").routes().get(0);
+      assertThat(drop.isDrop()).isTrue();
+      assertThat(drop.cluster()).isNull();
+      assertThat(drop.identity()).isNull();
+      assertThat(ConfigValidator.validate(properties).warnings())
+          .noneMatch(w -> w.contains("every route has drop: true"));
+    }
+
+    @Test
+    void acceptsDropDefaultAsAllowlist() {
+      assertValid(
+          pipeline(
+              """
+              routes:
+                - { when: [ { field: /type, equals: order } ], cluster: es, index: orders }
+                - { default: true, drop: true }
+              """));
+    }
+
+    @Test
+    void acceptsDropRouteInAllMode() {
+      assertValid(
+          pipeline(
+              """
+              route-mode: all
+              routes:
+                - { cluster: es, index: a }
+                - { when: [ { header: test, equals: "1" } ], drop: true }
+              """));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"cluster: es", "identity: writer", "index: idx", "pipeline: p"})
+    void rejectsTargetOnDropRoute(String setting) {
+      String key = setting.substring(0, setting.indexOf(':'));
+      assertInvalid(
+          pipeline(
+              "routes:\n  - { when: [ { field: /a, exists: true } ], drop: true, "
+                  + setting
+                  + " }\n  - { default: true, cluster: es, index: idx }\n"),
+          P
+              + ".routes[0]."
+              + key
+              + ": a drop: true route discards its documents and takes no "
+              + key
+              + "; remove "
+              + key
+              + " or drop: true");
+    }
+
+    @Test
+    void stillRequiresClusterAndIndexOnAnIndexingRoute() {
+      List<String> errors =
+          ConfigTestSupport.errors(
+              pipeline(
+                  """
+                  routes:
+                    - { default: true }
+                  """));
+
+      assertThat(errors)
+          .contains(
+              P + ".routes[0].cluster: must not be blank",
+              P + ".routes[0].index: must not be blank");
+    }
+
+    @Test
+    void dropFalseIsAnIndexingRoute() {
+      assertInvalid(
+          pipeline(
+              """
+              routes:
+                - { default: true, drop: false, cluster: es }
+              """),
+          P + ".routes[0].index: must not be blank");
+    }
+
+    @Test
+    void warnsWhenEveryRouteDrops() {
+      KafkafimProperties properties =
+          ConfigTestSupport.bind(
+              pipeline(
+                  """
+                  routes:
+                    - { when: [ { field: /a, exists: true } ], drop: true }
+                    - { default: true, drop: true }
+                  """));
+
+      assertThat(ConfigValidator.validate(properties).warnings())
+          .contains(
+              P
+                  + ".routes: every route has drop: true; the pipeline consumes and commits its"
+                  + " topics without indexing anything");
+    }
+
+    @Test
+    void keepsTheRouteRulesForDropRoutes() {
+      assertInvalid(
+          pipeline(
+              """
+              routes:
+                - { drop: true }
+                - { default: true, cluster: es, index: idx }
+              """),
+          P + ".routes[0].when: a route without conditions matches everything");
+    }
+  }
+
+  @Nested
   class Conditions {
 
     private static String withCondition(String condition) {

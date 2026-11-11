@@ -40,6 +40,64 @@ class PreflightTest {
   }
 
   @Test
+  void skipsDropRoutesWhichHaveNoCluster() {
+    CompiledPipeline withDrops =
+        PipelineMapping.compile(
+            "p",
+            TestConfigs.withPipelines(
+                """
+                p:
+                  source: { cluster: k, topics: [t] }
+                  routes:
+                    - { when: [ { field: /level, equals: debug } ], drop: true }
+                    - { when: [ { field: /level, equals: info } ], cluster: es2, index: b }
+                    - { default: true, drop: true }
+                """));
+    List<String> checked = new ArrayList<>();
+    Preflight.Result result =
+        Preflight.run(
+            withDrops,
+            () -> TopicStatus.EXISTS,
+            (cluster, identity) -> {
+              checked.add(cluster + "/" + identity);
+              return Preflight.Status.OK;
+            });
+
+    assertThat(result.passed()).isTrue();
+    assertThat(checked).containsExactly("es2/null");
+    assertThat(withDrops.streams()).containsOnlyKeys(new RouteTarget.StreamKey("es2", null));
+    assertThat(withDrops.router().routes())
+        .extracting(r -> r.isDrop(), r -> r.target())
+        .containsExactly(
+            org.assertj.core.groups.Tuple.tuple(true, RouteTarget.drop("0")),
+            org.assertj.core.groups.Tuple.tuple(false, new RouteTarget("es2", null, null, "1")),
+            org.assertj.core.groups.Tuple.tuple(true, RouteTarget.drop("2")));
+  }
+
+  @Test
+  void pipelineThatOnlyDropsChecksNoElasticsearch() {
+    CompiledPipeline onlyDrops =
+        PipelineMapping.compile(
+            "p",
+            TestConfigs.withPipelines(
+                """
+                p:
+                  source: { cluster: k, topics: [t] }
+                  routes: [ { default: true, drop: true } ]
+                """));
+    Preflight.Result result =
+        Preflight.run(
+            onlyDrops,
+            () -> TopicStatus.EXISTS,
+            (cluster, identity) -> {
+              throw new AssertionError("no cluster to check");
+            });
+
+    assertThat(result.passed()).isTrue();
+    assertThat(onlyDrops.streams()).isEmpty();
+  }
+
+  @Test
   void missingDlqTopicAndRejectedIdentityAreBothReportedWithResourceAndIdentity() {
     Preflight.Result result =
         Preflight.run(
