@@ -2,7 +2,6 @@ package io.github.matabar.kafkafim.config;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
 
@@ -16,9 +15,12 @@ import io.github.matabar.kafkafim.decode.DocumentOutcome.Decoded;
 import io.github.matabar.kafkafim.decode.DocumentOutcome.Unindexable;
 import io.github.matabar.kafkafim.decode.ErrorType;
 import java.time.Instant;
+import java.time.LocalTime;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
+import java.time.temporal.TemporalAccessor;
+import java.time.temporal.TemporalQueries;
 import java.util.List;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
@@ -142,7 +144,14 @@ class TimestampPatternParityTest {
       assertThat(outcome).as("'%s' decoding '%s'", pattern, text).isInstanceOf(Unindexable.class);
       assertThat(((Unindexable) outcome).error().type()).isEqualTo(ErrorType.BAD_TIMESTAMP);
     } else {
-      assertThatCode(() -> formatter.parse(text)).doesNotThrowAnyException();
+      TemporalAccessor parsed = formatter.parse(text);
+      LocalTime time = parsed.query(TemporalQueries.localTime());
+      assertThat(
+              parsed
+                  .query(TemporalQueries.localDate())
+                  .atTime(time == null ? LocalTime.MIDNIGHT : time)
+                  .toInstant(ZoneOffset.UTC))
+          .isEqualTo(Instant.parse(expected));
       assertThat(outcome).as("'%s' decoding '%s'", pattern, text).isInstanceOf(Decoded.class);
       assertThat(((Decoded) outcome).timestamp()).isEqualTo(Instant.parse(expected));
     }
