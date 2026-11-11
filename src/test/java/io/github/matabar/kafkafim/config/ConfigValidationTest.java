@@ -334,6 +334,32 @@ class ConfigValidationTest {
               ES + ".client.connect-timeout: must be positive",
               ES + ".client.response-timeout: must be positive");
     }
+
+    @Test
+    void warnsWhenMaxBytesIsUnlikelyToFinishWithinTheResponseTimeout() {
+      KafkafimProperties properties =
+          ConfigTestSupport.bind(
+              MINIMAL, ES + ".bulk.max-bytes=100MB", ES + ".client.response-timeout=30s");
+
+      assertThat(ConfigValidator.validate(properties).warnings())
+          .contains(
+              ES
+                  + ".bulk.max-bytes: 100MB takes about 100s at 1MB/s, longer than"
+                  + " client.response-timeout (30s); a slow cluster may time out every full bulk"
+                  + " request and retry it forever. Lower bulk.max-bytes or raise"
+                  + " client.response-timeout");
+    }
+
+    @Test
+    void doesNotWarnForTheDefaultsOrAtTheBoundary() {
+      assertThat(ConfigValidator.validate(ConfigTestSupport.bind(MINIMAL)).warnings())
+          .noneMatch(w -> w.contains(".bulk.max-bytes"));
+      KafkafimProperties boundary =
+          ConfigTestSupport.bind(
+              MINIMAL, ES + ".bulk.max-bytes=60MB", ES + ".client.response-timeout=60s");
+      assertThat(ConfigValidator.validate(boundary).warnings())
+          .noneMatch(w -> w.contains(".bulk.max-bytes"));
+    }
   }
 
   @Nested

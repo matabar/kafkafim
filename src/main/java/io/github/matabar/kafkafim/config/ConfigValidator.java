@@ -37,6 +37,13 @@ public final class ConfigValidator {
   private static final Pattern BOOTSTRAP_SERVER =
       Pattern.compile("(?:[A-Za-z_]+://)?(\\[[0-9A-Fa-f:.%]+]|[A-Za-z0-9._-]+):(\\d{1,5})");
 
+  /**
+   * Pessimistic bulk throughput of a loaded cluster, for the {@code max-bytes} versus {@code
+   * response-timeout} warning: 1MB per second, so the warning fires when {@code max-bytes} in MB
+   * exceeds {@code response-timeout} in seconds (the defaults, 5MB and 60s, leave a factor of 12).
+   */
+  private static final DataSize SLOW_BULK_BYTES_PER_SECOND = DataSize.ofMegabytes(1);
+
   private static final Set<String> TIMESTAMP_FORMATS =
       Set.of("iso-8601", "epoch-millis", "epoch-seconds");
 
@@ -206,6 +213,55 @@ public final class ConfigValidator {
     ElasticsearchCluster.Client client = cluster.client();
     checkPositive(path + ".client.connect-timeout", client.connectTimeout());
     checkPositive(path + ".client.response-timeout", client.responseTimeout());
+    checkBulkFitsResponseTimeout(path, bulk.maxBytes(), client.responseTimeout());
+  }
+
+  /**
+   * Warns when a full bulk request is unlikely to be answered within the response timeout: a
+   * timeout is a request-level failure that is retried forever (DESIGN §7), so every full batch
+   * would only produce lag. The heuristic assumes {@link #SLOW_BULK_BYTES_PER_SECOND}, a
+   * pessimistic rate for a loaded cluster, so it fires only for clearly mismatched settings.
+   */
+  private void checkBulkFitsResponseTimeout(String path, DataSize maxBytes, Duration timeout) {
+    if (maxBytes == null || timeout == null || maxBytes.toBytes() <= 0) {
+      return;
+    }
+    if (timeout.isZero() || timeout.isNegative()) {
+      return; // reported as an error
+    }
+    double seconds = (double) maxBytes.toBytes() / SLOW_BULK_BYTES_PER_SECOND.toBytes();
+    if (seconds * 1000 > timeout.toMillis()) {
+      warnings.add(
+          path
+              + ".bulk.max-bytes: "
+              + yaml(maxBytes)
+              + " takes about "
+              + (long) Math.ceil(seconds)
+              + "s at "
+              + yaml(SLOW_BULK_BYTES_PER_SECOND)
+              + "/s, longer than client.response-timeout ("
+              + yaml(timeout)
+              + "); a slow cluster may time out every full bulk request and retry it forever."
+              + " Lower bulk.max-bytes or raise client.response-timeout");
+    }
+  }
+
+  /** {@code size} as the configuration would spell it: whole MB, KB or bytes. */
+  private static String yaml(DataSize size) {
+    long bytes = size.toBytes();
+    if (bytes % DataSize.ofMegabytes(1).toBytes() == 0) {
+      return size.toMegabytes() + "MB";
+    }
+    if (bytes % DataSize.ofKilobytes(1).toBytes() == 0) {
+      return size.toKilobytes() + "KB";
+    }
+    return bytes + "B";
+  }
+
+  /** {@code duration} as the configuration would spell it: whole seconds or milliseconds. */
+  private static String yaml(Duration duration) {
+    long millis = duration.toMillis();
+    return millis % 1000 == 0 ? (millis / 1000) + "s" : millis + "ms";
   }
 
   private void checkElasticsearchIdentity(
