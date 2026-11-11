@@ -216,7 +216,7 @@ tests:
         - { name: POD_NAME, value: fixed }
     asserts:
       - failedTemplate:
-          errorMessage: 'extraEnv must not set POD_NAME; the chart already sets it from values'
+          errorMessage: 'extraEnv must not set POD_NAME; the chart sets it from the downward API (metadata.name), and it becomes the OTLP service.instance.id'
 
   - it: fails when extraEnv sets OTEL_EXPORTER_OTLP_HEADERS while otel.headers is set
     set:
