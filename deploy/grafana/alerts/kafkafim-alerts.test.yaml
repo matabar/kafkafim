@@ -23,9 +23,9 @@ tests:
         values: '0 1x10'
       - series: 'kafkafim_pipeline_state{job="kafkafim",instance="pod-b",pipeline="events",state="failed"}'
         values: '0x11'
-      # failed for 30s, then a reload retried it: below the 1m for.
+      # failed at 30s and 1m, then a reload retried it: pending at 1m, never 1m long.
       - series: 'kafkafim_pipeline_state{job="kafkafim",instance="pod-a",pipeline="retried",state="failed"}'
-        values: '0 1 0x9'
+        values: '0 1 1 0x8'
     alert_rule_test:
       # failed is its own alert: failed_preflight fires only for orders.
       - eval_time: 1m

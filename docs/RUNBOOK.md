@@ -170,6 +170,9 @@ Where to read it:
   max by (pipeline) (kafkafim_pipeline_state{state=~"failed_preflight|failed"}) == 1
   ```
 
+  The shipped `KafkafimPipelineFailed` keeps `job` and `instance` instead, since a
+  `failed` pipeline is retried pod by pod ([§5.13](#513-failed-pipelines)).
+
   From a port-forwarded pod:
 
   ```bash
