@@ -62,6 +62,7 @@ final class KafkaDlqClient implements DlqClient {
 
   private final Map<String, Object> producerSettings;
   private final Function<Map<String, Object>, Producer<byte[], byte[]>> producers;
+  private final Duration closeGrace;
   private final Object producerLock = new Object();
   private volatile Generation generation;
   private final Map<String, Object> adminSettings;
@@ -70,7 +71,6 @@ final class KafkaDlqClient implements DlqClient {
   private volatile boolean closed;
   private boolean replacing;
   private volatile boolean needsProducer;
-  private final Duration closeGrace;
 
   KafkaDlqClient(Map<String, Object> producerSettings) {
     this(producerSettings, KafkaProducer::new);
@@ -275,7 +275,12 @@ final class KafkaDlqClient implements DlqClient {
    * sender and then joins the I/O thread without a bound, and that thread may sit in a wait for the
    * node to become ready, which ends only at {@code request.timeout.ms} (30s by default). The close
    * therefore runs on its own thread; past the grace it is left to finish there (the I/O thread is
-   * a daemon and exits at that timeout), so that a shutdown or reload is not held up by it.
+   * a daemon and exits at that timeout), so that a shutdown or reload is not held up by it. The
+   * same bound covers kafka-clients' graceful join, which becomes unbounded too ({@code join(0)})
+   * when the remaining close time reaches zero. An interrupted caller does not wait at all.
+   *
+   * <p>The admin client's {@code close(Duration.ZERO)} also joins its thread without a bound, but
+   * returns promptly: it fails the pending calls at once and never waits for a node to be ready.
    */
   @Override
   public void close(Duration timeout) {
@@ -316,6 +321,9 @@ final class KafkaDlqClient implements DlqClient {
           timeout.plus(closeGrace).toMillis());
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
+      log.warn(
+          "Interrupted while closing DLQ producer {}; it finishes closing on its own",
+          producerSettings.get("client.id"));
     }
   }
 

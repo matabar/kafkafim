@@ -29,6 +29,7 @@ import org.apache.kafka.common.errors.NetworkException;
 import org.apache.kafka.common.errors.SaslAuthenticationException;
 import org.apache.kafka.common.serialization.ByteArraySerializer;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 /** Replacement of a producer that kafka-clients put into a fatal error state. */
 class KafkaDlqClientTest {
@@ -279,6 +280,7 @@ class KafkaDlqClientTest {
   }
 
   @Test
+  @Timeout(30) // without the bound, close() would wait on the latch forever
   void closeReturnsAfterItsTimeoutAndGraceWhenTheProducerDoesNotFinishClosing() {
     CountDownLatch release = new CountDownLatch(1);
     AtomicReference<Duration> closedWith = new AtomicReference<>();
