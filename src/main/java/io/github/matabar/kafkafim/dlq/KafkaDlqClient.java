@@ -4,6 +4,7 @@ import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.FutureTask;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -56,6 +57,9 @@ final class KafkaDlqClient implements DlqClient {
 
   private static final Logger log = LoggerFactory.getLogger(KafkaDlqClient.class);
 
+  /** How much longer than its timeout {@link #close} waits for the producer to finish closing. */
+  static final Duration CLOSE_GRACE = Duration.ofSeconds(2);
+
   private final Map<String, Object> producerSettings;
   private final Function<Map<String, Object>, Producer<byte[], byte[]>> producers;
   private final Object producerLock = new Object();
@@ -66,6 +70,7 @@ final class KafkaDlqClient implements DlqClient {
   private volatile boolean closed;
   private boolean replacing;
   private volatile boolean needsProducer;
+  private final Duration closeGrace;
 
   KafkaDlqClient(Map<String, Object> producerSettings) {
     this(producerSettings, KafkaProducer::new);
@@ -74,11 +79,19 @@ final class KafkaDlqClient implements DlqClient {
   KafkaDlqClient(
       Map<String, Object> producerSettings,
       Function<Map<String, Object>, Producer<byte[], byte[]>> producers) {
+    this(producerSettings, producers, CLOSE_GRACE);
+  }
+
+  KafkaDlqClient(
+      Map<String, Object> producerSettings,
+      Function<Map<String, Object>, Producer<byte[], byte[]>> producers,
+      Duration closeGrace) {
     log.info("Creating DLQ producer with settings {}", ProducerSettings.redacted(producerSettings));
     this.producerSettings = producerSettings;
     this.producers = producers;
     this.generation = new Generation(producers.apply(producerSettings));
     this.adminSettings = ProducerSettings.adminSettings(producerSettings);
+    this.closeGrace = closeGrace;
   }
 
   @Override
@@ -253,6 +266,17 @@ final class KafkaDlqClient implements DlqClient {
     }
   }
 
+  /**
+   * Flushes for up to {@code timeout}, then returns within {@link #CLOSE_GRACE} more even when the
+   * producer has not finished closing.
+   *
+   * <p>kafka-clients' {@code KafkaProducer.close(timeout)} does not honour its timeout against a
+   * broker that accepts the connection and never answers: after the timeout it force-closes the
+   * sender and then joins the I/O thread without a bound, and that thread may sit in a wait for the
+   * node to become ready, which ends only at {@code request.timeout.ms} (30s by default). The close
+   * therefore runs on its own thread; past the grace it is left to finish there (the I/O thread is
+   * a daemon and exits at that timeout), so that a shutdown or reload is not held up by it.
+   */
   @Override
   public void close(Duration timeout) {
     Admin toClose;
@@ -263,11 +287,35 @@ final class KafkaDlqClient implements DlqClient {
       }
     }
     try {
-      generation.producer.close(timeout);
+      closeBounded(generation.producer, timeout);
     } finally {
       if (toClose != null) {
         toClose.close(Duration.ZERO);
       }
+    }
+  }
+
+  private void closeBounded(Producer<byte[], byte[]> producer, Duration timeout) {
+    FutureTask<@Nullable Void> close = new FutureTask<>(() -> producer.close(timeout), null);
+    Thread.ofVirtual().name("kafkafim-dlq-close-" + producerSettings.get("client.id")).start(close);
+    try {
+      close.get(timeout.plus(closeGrace).toNanos(), TimeUnit.NANOSECONDS);
+    } catch (ExecutionException e) {
+      if (e.getCause() instanceof RuntimeException failure) {
+        throw failure;
+      }
+      if (e.getCause() instanceof Error error) {
+        throw error;
+      }
+      throw new IllegalStateException(e.getCause());
+    } catch (TimeoutException e) {
+      log.warn(
+          "DLQ producer {} did not finish closing within {} ms (a broker that does not answer?);"
+              + " it finishes on its own, at the latest after request.timeout.ms",
+          producerSettings.get("client.id"),
+          timeout.plus(closeGrace).toMillis());
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
     }
   }
 

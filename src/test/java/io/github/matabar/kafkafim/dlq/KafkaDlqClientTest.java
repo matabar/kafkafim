@@ -2,15 +2,23 @@ package io.github.matabar.kafkafim.dlq;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.awaitility.Awaitility.await;
 
+import java.io.IOException;
+import java.net.InetAddress;
+import java.net.ServerSocket;
+import java.net.Socket;
 import java.time.Duration;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.apache.kafka.clients.producer.Callback;
+import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.MockProducer;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.clients.producer.RecordMetadata;
@@ -245,6 +253,133 @@ class KafkaDlqClientTest {
     }
 
     assertThat(created).hasSize(1);
+  }
+
+  /**
+   * A client whose producer's close blocks until {@code release} opens, as against a silent broker.
+   */
+  private static KafkaDlqClient clientWithHangingClose(
+      CountDownLatch release, AtomicReference<Duration> closedWith, Duration grace) {
+    return new KafkaDlqClient(
+        Map.of("bootstrap.servers", "localhost:9092", "client.id", "kafkafim-local-dlq"),
+        s ->
+            new MockProducer<>(false, null, new ByteArraySerializer(), new ByteArraySerializer()) {
+              @Override
+              public void close(Duration timeout) {
+                closedWith.set(timeout);
+                try {
+                  release.await();
+                } catch (InterruptedException e) {
+                  Thread.currentThread().interrupt();
+                }
+                super.close(timeout);
+              }
+            },
+        grace);
+  }
+
+  @Test
+  void closeReturnsAfterItsTimeoutAndGraceWhenTheProducerDoesNotFinishClosing() {
+    CountDownLatch release = new CountDownLatch(1);
+    AtomicReference<Duration> closedWith = new AtomicReference<>();
+    KafkaDlqClient client = clientWithHangingClose(release, closedWith, Duration.ofMillis(100));
+    try {
+      long start = System.nanoTime();
+      client.close(Duration.ofMillis(200));
+      Duration took = Duration.ofNanos(System.nanoTime() - start);
+
+      assertThat(took)
+          .isGreaterThanOrEqualTo(Duration.ofMillis(300))
+          .isLessThan(Duration.ofSeconds(5));
+      assertThat(closedWith.get())
+          .as("the producer still gets the whole timeout")
+          .isEqualTo(Duration.ofMillis(200));
+      assertThat(((MockProducer<byte[], byte[]>) client.producer()).closed()).isFalse();
+    } finally {
+      release.countDown();
+    }
+    await()
+        .atMost(Duration.ofSeconds(10))
+        .until(() -> ((MockProducer<byte[], byte[]>) client.producer()).closed());
+  }
+
+  @Test
+  void closeWaitsForProducerThatFinishesWithinTheGrace() {
+    CountDownLatch release = new CountDownLatch(1);
+    KafkaDlqClient client =
+        clientWithHangingClose(release, new AtomicReference<>(), Duration.ofSeconds(10));
+    Thread.ofVirtual()
+        .start(() -> {
+          try {
+            Thread.sleep(100);
+          } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+          }
+          release.countDown();
+        });
+
+    client.close(Duration.ZERO);
+
+    assertThat(((MockProducer<byte[], byte[]>) client.producer()).closed()).isTrue();
+  }
+
+  @Test
+  void failingProducerCloseReachesTheCaller() {
+    KafkaException failure = new KafkaException("close failed");
+    KafkaDlqClient client =
+        new KafkaDlqClient(
+            Map.of("bootstrap.servers", "localhost:9092", "client.id", "kafkafim-local-dlq"),
+            s ->
+                new MockProducer<>(
+                    false, null, new ByteArraySerializer(), new ByteArraySerializer()) {
+                  @Override
+                  public void close(Duration timeout) {
+                    throw failure;
+                  }
+                });
+
+    assertThatThrownBy(() -> client.close(Duration.ofSeconds(1))).isSameAs(failure);
+  }
+
+  @Test
+  void closeIsBoundedAgainstBrokerThatAcceptsAndNeverAnswers() throws Exception {
+    try (ServerSocket silent = new ServerSocket(0, 50, InetAddress.getLoopbackAddress())) {
+      List<Socket> accepted = new CopyOnWriteArrayList<>();
+      Thread.ofVirtual()
+          .start(() -> {
+            while (!silent.isClosed()) {
+              try {
+                accepted.add(silent.accept());
+              } catch (IOException e) {
+                return;
+              }
+            }
+          });
+      Map<String, Object> settings = new HashMap<>();
+      settings.put("bootstrap.servers", "127.0.0.1:" + silent.getLocalPort());
+      settings.put("client.id", "kafkafim-silent-dlq");
+      settings.put("enable.idempotence", true);
+      settings.put("acks", "all");
+      settings.put("key.serializer", ByteArraySerializer.class);
+      settings.put("value.serializer", ByteArraySerializer.class);
+      KafkaDlqClient client =
+          new KafkaDlqClient(settings, KafkaProducer::new, Duration.ofMillis(500));
+      try {
+        assertThat(client.describe("dlq", Duration.ofMillis(300)))
+            .isEqualTo(TopicStatus.UNREACHABLE);
+        await().atMost(Duration.ofSeconds(10)).until(() -> !accepted.isEmpty());
+
+        long start = System.nanoTime();
+        client.close(Duration.ofMillis(200));
+        Duration took = Duration.ofNanos(System.nanoTime() - start);
+
+        assertThat(took).as("not request.timeout.ms (30s)").isLessThan(Duration.ofSeconds(5));
+      } finally {
+        for (Socket socket : accepted) {
+          socket.close();
+        }
+      }
+    }
   }
 
   @Test
