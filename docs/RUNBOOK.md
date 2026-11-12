@@ -689,7 +689,7 @@ or roll back. Until then the pods run the previous generation and new pods fail.
   | `<cause>` | Before it | Meaning |
   |---|---|---|
   | `record handler failed: <exception>` | `Pipeline '<p>': record handler failed; pausing until the pipeline is restarted` | Decoding, routing or submitting a batch threw: a kafkafim bug. The batch's records were not committed, so whoever reads them next (a retry, or another pod) may hit it again. |
-  | `Kafka consumer stopped (<reason>)` | Spring Kafka's ERROR from the listener container, such as `Stopping container due to an Error` | A consumer hit an error the container does not retry. Authentication and authorization errors are retried every 10s instead ([§5.4](#54-kafka-authentication-or-acl-missing)), so they do not end here. |
+  | `Kafka consumer stopped (<reason>)` | Spring Kafka's ERROR from the listener container, such as `Stopping container due to an Error` | A consumer hit an error the container does not retry. Authentication and authorization errors are retried every 10s instead ([§5.4](#54-kafka-authentication-or-acl-missing)), so they do not end here. After an `Error`, Spring Kafka logs a second ERROR for the same failure, `Error while stopping the container`, just after the pipeline's `failed while running` line, with a `CompletionException` wrapping that `Error`. The container stopped itself, and that ERROR reports its consumer thread ending with the `Error`. It is not a second failure. |
 
 - **Action**: collect the ERROR lines ([§6](#6-escalation-data-to-collect)), fix the
   cause if it is outside kafkafim, then run a no-op `POST /actuator/reload` on the pod
