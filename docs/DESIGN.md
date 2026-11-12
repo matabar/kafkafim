@@ -1074,7 +1074,10 @@ uncommitted. Before the first record to a topic the writer describes it
 (`Describe`, already required): the producer always lets the broker auto-create a topic
 it sends to, so producing blind would create a missing DLQ topic on a broker with
 `auto.create.topics.enable=true` (ADR-0021) and would otherwise only surface as a metadata
-timeout. A topic once seen is only checked again after a send timeout, so a DLQ topic
+timeout. A missing, forbidden or unreachable topic is remembered for one second on the shared
+producer, so that many blocked sends do not describe it once each; a check cut short by an
+interrupt (a stop during preflight) is not remembered, since no broker answered it. A topic
+once seen is only checked again after a send timeout, so a DLQ topic
 deleted while kafkafim runs can still be re-created by the producer's metadata refresh on
 such a broker; brokers should keep auto-creation off, and the writer identity never has
 `Create` (ADR-0021). A resend after `delivery.timeout.ms` can duplicate a DLQ record and resends are
