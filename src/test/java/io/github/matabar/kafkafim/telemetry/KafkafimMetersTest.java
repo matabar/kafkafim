@@ -108,6 +108,28 @@ class KafkafimMetersTest {
             .isZero();
       }
     }
+    // Pre-routing failures (route="none") can only end in the DLQ.
+    assertThat(
+            counter(
+                TelemetryNames.DOCS,
+                "pipeline",
+                "orders",
+                "kafka_cluster",
+                "prod-a",
+                "route",
+                TelemetryNames.NO_ROUTE,
+                "outcome",
+                "dlq"))
+        .isZero();
+    assertThat(
+            registry
+                .find(TelemetryNames.DOCS)
+                .tag("route", TelemetryNames.NO_ROUTE)
+                .meters()
+                .stream()
+                .map(m -> m.getId().getTag("outcome"))
+                .toList())
+        .containsExactly("dlq");
     assertThat(registry.get(TelemetryNames.BULK_LATENCY).tag("es_cluster", "search-eu").timer())
         .isNotNull();
     assertThat(registry.get(TelemetryNames.E2E_LATENCY).tag("pipeline", "orders").timer())
@@ -224,6 +246,73 @@ class KafkafimMetersTest {
                 with(base, "es_cluster", "search-eu", "identity", "none")))
         .isOne();
     assertThat(counter(TelemetryNames.DLQ_RECORDS, with(base, "error_type", "es_error"))).isOne();
+  }
+
+  @Test
+  void authFailureSeriesExistFromTheStartPerClusterAndIdentity() {
+    Set<PipelineSpec.EsStream> streams =
+        Set.of(
+            new PipelineSpec.EsStream("search-eu", "writer"),
+            new PipelineSpec.EsStream("search-eu", "reader"),
+            new PipelineSpec.EsStream("plain", null));
+    sync(
+        Map.of(
+            "orders",
+            new PipelineSpec(
+                "prod-a",
+                List.of("t"),
+                List.of("0"),
+                Set.of("search-eu", "plain"),
+                streams,
+                new Probe())));
+    String[] base = {"pipeline", "orders", "kafka_cluster", "prod-a"};
+
+    assertThat(
+            registry.find(TelemetryNames.AUTH_FAILURES).counters().stream()
+                .map(c -> c.getId().getTag("es_cluster") + "/" + c.getId().getTag("identity"))
+                .toList())
+        .containsExactlyInAnyOrder("search-eu/writer", "search-eu/reader", "plain/none");
+    assertThat(
+            counter(
+                TelemetryNames.AUTH_FAILURES,
+                with(base, "es_cluster", "search-eu", "identity", "writer")))
+        .isZero();
+
+    meters.pipeline("orders").authFailure("search-eu", "writer");
+    meters.pipeline("orders").authFailure("plain", null);
+    assertThat(
+            counter(
+                TelemetryNames.AUTH_FAILURES,
+                with(base, "es_cluster", "search-eu", "identity", "writer")))
+        .isOne();
+    assertThat(
+            counter(
+                TelemetryNames.AUTH_FAILURES,
+                with(base, "es_cluster", "plain", "identity", "none")))
+        .isOne();
+    assertThat(registry.find(TelemetryNames.AUTH_FAILURES).counters()).hasSize(3);
+  }
+
+  @Test
+  void changedIdentityGetsFreshAuthFailureSeries() {
+    sync(Map.of("orders", withStream("writer")));
+    sync(Map.of("orders", withStream("writer-v2")));
+
+    assertThat(
+            registry.find(TelemetryNames.AUTH_FAILURES).counters().stream()
+                .map(c -> c.getId().getTag("identity"))
+                .toList())
+        .containsExactly("writer-v2");
+  }
+
+  private static PipelineSpec withStream(String identity) {
+    return new PipelineSpec(
+        "prod-a",
+        List.of("t"),
+        List.of("0"),
+        Set.of("search-eu"),
+        Set.of(new PipelineSpec.EsStream("search-eu", identity)),
+        new Probe());
   }
 
   @Test

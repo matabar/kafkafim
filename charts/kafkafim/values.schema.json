@@ -5,6 +5,39 @@
   "type": "object",
   "additionalProperties": false,
   "definitions": {
+    "pipeline": {
+      "description": "One kafkafim pipeline; the application validates it in full at startup and on reload (DESIGN §5.7). The chart checks only the shape of its routes.",
+      "type": "object",
+      "properties": {
+        "routes": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/route" }
+        }
+      }
+    },
+    "route": {
+      "description": "A routing rule (DESIGN §5.3). drop: true discards the documents it selects (ADR-0037) and takes the place of cluster, identity, index and pipeline.",
+      "type": "object",
+      "properties": {
+        "drop": { "type": "boolean" },
+        "default": { "type": "boolean" }
+      },
+      "if": {
+        "properties": { "drop": { "const": true } },
+        "required": ["drop"]
+      },
+      "then": {
+        "properties": {
+          "cluster": { "not": {}, "description": "drop: true takes no cluster" },
+          "identity": { "not": {}, "description": "drop: true takes no identity" },
+          "index": { "not": {}, "description": "drop: true takes no index" },
+          "pipeline": { "not": {}, "description": "drop: true takes no ingest pipeline" }
+        }
+      },
+      "else": {
+        "required": ["cluster", "index"]
+      }
+    },
     "stringMap": {
       "type": "object",
       "additionalProperties": { "type": "string" }
@@ -121,7 +154,7 @@
             "elasticsearch": { "type": "object" },
             "pipelines": {
               "type": "object",
-              "additionalProperties": { "type": "object" }
+              "additionalProperties": { "$ref": "#/definitions/pipeline" }
             }
           }
         }

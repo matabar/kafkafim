@@ -50,6 +50,9 @@ public final class PipelineMapping {
     Router<RouteTarget> router = Router.compile(routeMode(pipeline.routeMode()), routes);
     Map<RouteTarget.StreamKey, SinkSettings> streams = new LinkedHashMap<>();
     for (RouteSpec<RouteTarget> route : routes) {
+      if (route.drop()) {
+        continue; // no cluster: nothing to open or check in preflight
+      }
       RouteTarget target = route.target();
       ElasticsearchCluster cluster = properties.elasticsearch().clusters().get(target.cluster());
       if (cluster == null) {
@@ -93,18 +96,35 @@ public final class PipelineMapping {
     };
   }
 
-  /** The routes, in configuration order, each with its {@link RouteTarget}. */
+  /**
+   * The routes, in configuration order, each with its {@link RouteTarget}; a drop route's target
+   * has only its label ({@link RouteTarget#drop}).
+   */
   static List<RouteSpec<RouteTarget>> routeSpecs(Pipeline pipeline) {
     List<RouteSpec<RouteTarget>> specs = new ArrayList<>(pipeline.routes().size());
     for (int i = 0; i < pipeline.routes().size(); i++) {
       Pipeline.Route route = pipeline.routes().get(i);
       String label = route.name() != null ? route.name() : Integer.toString(i);
-      if (route.pipeline() != null && route.pipeline().isBlank()) {
-        throw new IllegalArgumentException("route " + label + ": ingest pipeline name is blank");
-      }
       List<ConditionSpec> when = new ArrayList<>(route.when().size());
       for (Pipeline.Condition condition : route.when()) {
         when.add(condition(label, condition));
+      }
+      if (route.isDrop()) {
+        if (route.cluster() != null
+            || route.identity() != null
+            || route.index() != null
+            || route.pipeline() != null) {
+          throw new IllegalArgumentException(
+              "route " + label + ": drop: true takes no cluster, identity, index or pipeline");
+        }
+        specs.add(RouteSpec.drop(RouteTarget.drop(label), when, route.isDefault()));
+        continue;
+      }
+      if (route.cluster() == null || route.index() == null) {
+        throw new IllegalArgumentException("route " + label + ": cluster and index are required");
+      }
+      if (route.pipeline() != null && route.pipeline().isBlank()) {
+        throw new IllegalArgumentException("route " + label + ": ingest pipeline name is blank");
       }
       specs.add(
           new RouteSpec<>(

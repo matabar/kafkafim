@@ -27,7 +27,8 @@ import org.jspecify.annotations.Nullable;
  * partition labels.
  *
  * <p>Series that are known from the configuration (consumption per topic, documents per route and
- * outcome, bulk histograms per Elasticsearch cluster, the gauges) exist from the start with 0, so
+ * outcome plus {@code route="none", outcome="dlq"}, bulk histograms per Elasticsearch cluster, auth
+ * failures per Elasticsearch cluster and identity, the gauges) exist from the start with 0, so
  * {@code rate()} works from the first event; the others (statuses, error types) appear with their
  * first event. {@link #close()} removes every series of the pipeline, which is what a reload does
  * for a removed pipeline (ADR-0028); events after that are ignored.
@@ -94,10 +95,17 @@ public final class PipelineMeters {
         counter(TelemetryNames.DOCS, Tags.of("route", route, "outcome", outcome.label()));
       }
     }
+    // Documents that fail before a route is selected only ever end in the DLQ.
+    counter(
+        TelemetryNames.DOCS,
+        Tags.of("route", TelemetryNames.NO_ROUTE, "outcome", DocOutcome.DLQ.label()));
     for (String cluster : spec.esClusters()) {
       bulkLatency(cluster);
       bulkDocs(cluster);
       bulkBytes(cluster);
+    }
+    for (PipelineSpec.EsStream stream : spec.esStreams()) {
+      authFailures(stream.esCluster(), stream.identityLabel());
     }
     this.e2e = timer(TelemetryNames.E2E_LATENCY, E2E_SLOS_SECONDS, Tags.empty());
   }
@@ -238,14 +246,7 @@ public final class PipelineMeters {
 
   /** Elasticsearch rejected an identity with 401/403. */
   public void authFailure(String esCluster, @Nullable String identity) {
-    counter(
-            TelemetryNames.AUTH_FAILURES,
-            Tags.of(
-                TelemetryNames.ES_CLUSTER,
-                esCluster,
-                "identity",
-                identity == null ? TelemetryNames.NONE : identity))
-        .increment();
+    authFailures(esCluster, identity == null ? TelemetryNames.NONE : identity).increment();
   }
 
   // ---- DLQ ----
@@ -273,6 +274,12 @@ public final class PipelineMeters {
             TelemetryNames.BULK_REQUESTS,
             Tags.of(TelemetryNames.ES_CLUSTER, esCluster, "status", status))
         .increment();
+  }
+
+  private Counter authFailures(String esCluster, String identity) {
+    return counter(
+        TelemetryNames.AUTH_FAILURES,
+        Tags.of(TelemetryNames.ES_CLUSTER, esCluster, "identity", identity));
   }
 
   private Timer bulkLatency(String esCluster) {

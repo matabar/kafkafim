@@ -6,7 +6,7 @@ with the repo". Every query uses the metric names and labels of `/actuator/prome
 
 | File | What |
 |---|---|
-| [`dashboards/kafkafim-overview.json`](dashboards/kafkafim-overview.json) | Per pipeline: state, end-to-end latency, records/bytes/documents, DLQ, in-flight bytes and heap, assigned partitions, Kafka connectivity, config generation and reloads |
+| [`dashboards/kafkafim-overview.json`](dashboards/kafkafim-overview.json) | Per pipeline: state, end-to-end latency, records/bytes/documents, dropped documents per route, DLQ, in-flight bytes and heap, assigned partitions, Kafka connectivity, config generation and reloads |
 | [`dashboards/kafkafim-elasticsearch.json`](dashboards/kafkafim-elasticsearch.json) | Per Elasticsearch cluster: breaker state, bulk requests by status, 429 ratio, bulk latency, docs and bytes per request, flush reasons, retries, item errors, auth failures |
 | [`alerts/kafkafim-alerts.yaml`](alerts/kafkafim-alerts.yaml) | Prometheus alerting rules (below) |
 | [`alerts/kafkafim-alerts.test.yaml`](alerts/kafkafim-alerts.test.yaml) | `promtool test rules` unit tests for every alert |
@@ -48,12 +48,29 @@ Notes:
   ([ADR-0034](../../docs/decisions/0034-consumer-lag-is-monitored-outside-kafkafim.md)).
   Lag and its alerts come from the Kafka team's consumer-lag monitoring, per consumer
   group (`source.group-id`, default `kafkafim.<pipeline>`).
+- There is no alert on dropped documents: a `drop: true` route discards documents on
+  purpose ([ADR-0037](../../docs/decisions/0037-routes-can-drop-documents.md)). The
+  overview's "Dropped documents by route" panel shows
+  `kafkafim_docs_total{outcome="dropped"}` per drop route, and the DLQ ratio leaves
+  dropped documents out of its denominator. [RUNBOOK §5.14](../../docs/RUNBOOK.md#514-documents-missing-from-elasticsearch-dropped-or-lost)
+  tells dropped from lost.
 - `KafkafimNoAssignedPartitions` is expected on pods beyond a pipeline's partition
   count; silence it for such groups (severity `info`).
-- `kafkafim_auth_failures_total` and `kafkafim_dlq_records_total` appear with their
-  first event, so `increase()` alone misses the first increment; the auth alert has a
-  second clause for a series that is new in the window. The DLQ alert needs a sustained
-  rate and does not.
+- Some counters appear with their first event instead of at 0: DLQ records, item
+  errors, retries, bulk requests by status and flushes by reason. `rate()` and
+  `increase()` need two samples, so they miss that first increment.
+  `kafkafim_auth_failures_total` exists from startup with 0 for every Elasticsearch
+  cluster and identity a pipeline's routes write with, so `increase()` sees a 401/403
+  once the pod has been scraped. The auth alert and the "Auth failures" panel still add
+  the starting value of a series that is new in the window, for a 401/403 before a pod's
+  first scrape: a single one matters, and nothing else shows it. The panel is
+  approximate (`increase()` extrapolates), and a scrape gap longer than the window plus
+  5m makes an old series look new, so the panel then shows its total once; a single
+  failed scrape does not. "DLQ ratio" shows the first DLQ'd document, because
+  `kafkafim_docs_total` starts at 0 for every configured route and outcome and for
+  `route="none"`, `outcome="dlq"` (failed before a route was chosen). The other
+  counters come in streams, where one missed event doesn't matter. The DLQ alert needs a
+  sustained rate, so it has no such term.
 - Rules group by `job`/`instance` where a per-pod answer matters; relabel to your own
   pod label if your scrape config uses another one.
 - Each alert carries a `runbook_url` annotation to the matching RUNBOOK section.

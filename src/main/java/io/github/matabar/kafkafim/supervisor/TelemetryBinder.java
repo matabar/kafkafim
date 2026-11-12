@@ -41,11 +41,15 @@ final class TelemetryBinder {
         .forEach((name, pipeline) -> {
           List<String> routes = new ArrayList<>();
           Set<String> clusters = new LinkedHashSet<>();
+          Set<PipelineSpec.EsStream> streams = new LinkedHashSet<>();
           List<Pipeline.Route> configured = pipeline.routes();
           for (int i = 0; i < configured.size(); i++) {
             Pipeline.Route route = configured.get(i);
             routes.add(route.name() != null ? route.name() : Integer.toString(i));
-            clusters.add(route.cluster());
+            if (route.cluster() != null) {
+              clusters.add(route.cluster()); // a drop route writes to none
+              streams.add(new PipelineSpec.EsStream(route.cluster(), route.identity()));
+            }
           }
           esClusters.addAll(clusters);
           specs.put(
@@ -55,6 +59,7 @@ final class TelemetryBinder {
                   pipeline.source().topics(),
                   routes,
                   clusters,
+                  streams,
                   new Probe(name)));
         });
     meters.sync(specs, esClusters, supervisor::breakerState);

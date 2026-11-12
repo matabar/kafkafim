@@ -3,9 +3,11 @@ package io.github.matabar.kafkafim.dlq;
 import java.time.Duration;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.clients.producer.RecordMetadata;
+import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -181,6 +183,7 @@ public final class DlqWriter {
     private final ProducerRecord<byte[], byte[]> record;
     private final CompletableFuture<RecordMetadata> result = new CompletableFuture<>();
     private final AtomicBoolean done = new AtomicBoolean();
+    private volatile @Nullable ScheduledFuture<?> retry;
     private int attempts;
     private boolean failedBefore;
 
@@ -212,6 +215,9 @@ public final class DlqWriter {
             .send(
                 record,
                 (metadata, exception) -> {
+                  if (done.get()) {
+                    return; // abandoned: a late callback changes nothing
+                  }
                   if (exception == null) {
                     // Synchronously, so a close that follows sees this send as acknowledged.
                     owner.unregister(this);
@@ -253,7 +259,10 @@ public final class DlqWriter {
           request.targetCluster() == null ? "-" : request.targetCluster(),
           request.targetIndex() == null ? "-" : request.targetIndex());
       owner.notify(listener -> listener.onWritten(pipeline, request, metadata));
-      if (failedBefore) {
+      // Once the writer is evicted (during onWritten, or after the acknowledgement unregistered
+      // this send, so evict did not abandon it), onWritten is the last event (ADR-0035): an
+      // evicted writer's blocked state is not reported.
+      if (failedBefore && !evicted) {
         recovered();
       }
       result.complete(metadata);
@@ -279,6 +288,12 @@ public final class DlqWriter {
           retryIn,
           exception);
       owner.notify(listener -> listener.onSendFailed(pipeline, request, failure));
+      if (stopped()) {
+        // Evicted or closed during onSendFailed: it was the last event (ADR-0035). The return
+        // skips onBlocked and the retry; evict and close have already abandoned the send.
+        abandon();
+        return;
+      }
       if (!failedBefore) {
         failedBefore = true;
         blocked(failure);
@@ -290,10 +305,28 @@ public final class DlqWriter {
       owner.schedule(this, retryIn);
     }
 
-    /** Completes exceptionally: the writer closed or was evicted before an acknowledgement. */
+    /** Keeps the scheduled retry, so {@link #abandon} can cancel it. */
+    void retryWith(ScheduledFuture<?> scheduled) {
+      // Write retry, then read done; abandon() sets done, then reads retry. Either side sees the
+      // other, so a racing abandon never leaves the retry on the timer. Keep this order.
+      retry = scheduled;
+      if (done.get()) {
+        // Abandoned while the retry was being scheduled; abandon() may not have seen it.
+        scheduled.cancel(false);
+      }
+    }
+
+    /**
+     * Completes exceptionally: the writer closed or was evicted before an acknowledgement. Cancels
+     * a retry waiting on the timer, which would otherwise hold this send until its delay ran out.
+     */
     void abandon() {
       if (!done.compareAndSet(false, true)) {
         return;
+      }
+      ScheduledFuture<?> scheduled = retry;
+      if (scheduled != null) {
+        scheduled.cancel(false);
       }
       owner.unregister(this);
       result.completeExceptionally(closedException());

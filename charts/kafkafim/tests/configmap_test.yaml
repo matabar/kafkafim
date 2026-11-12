@@ -133,6 +133,39 @@ tests:
       - failedTemplate:
           errorPattern: "allow-inline-secrets"
 
+  - it: renders a drop route as written, without a cluster or index
+    values:
+      - ../ci/minimal-values.yaml
+    set:
+      config.kafkafim.pipelines.orders.routes:
+        - { name: test-traffic, when: [ { header: test, equals: "1" } ], drop: true }
+        - { default: true, cluster: search-eu, index: orders }
+    asserts:
+      - matchRegex:
+          path: data["application-kafkafim.yaml"]
+          pattern: '(?m)^ +- drop: true\n +name: test-traffic\n'
+
+  - it: rejects a drop route that also names a cluster or an index
+    values:
+      - ../ci/minimal-values.yaml
+    set:
+      config.kafkafim.pipelines.orders.routes:
+        - { when: [ { field: /level, equals: debug } ], drop: true, cluster: search-eu, index: x }
+        - { default: true, cluster: search-eu, index: orders }
+    asserts:
+      - failedTemplate:
+          errorPattern: "routes/0/(cluster|index)"
+
+  - it: still requires cluster and index on a route without drop
+    values:
+      - ../ci/minimal-values.yaml
+    set:
+      config.kafkafim.pipelines.orders.routes:
+        - { default: true, cluster: search-eu }
+    asserts:
+      - failedTemplate:
+          errorPattern: "index"
+
   - it: renders nothing without groups
     asserts:
       - hasDocuments:

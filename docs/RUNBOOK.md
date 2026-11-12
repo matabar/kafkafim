@@ -213,6 +213,7 @@ neither (`kafkafim_config_reload_total` has `result`) ([DESIGN §10](DESIGN.md#1
 | Is Elasticsearch healthy? | `kafkafim_breaker_state{es_cluster}` (0 closed, 1 half-open, 2 open), `kafkafim_bulk_requests_total{es_cluster,status}`, `kafkafim_bulk_latency_seconds`, `kafkafim_retries_total{scope}` |
 | Credentials rejected? | `kafkafim_auth_failures_total{es_cluster,identity}` |
 | What is going to the DLQ? | `kafkafim_dlq_records_total{error_type}`, `kafkafim_item_errors_total{es_cluster,error_type,retryable}` |
+| What are drop routes discarding? | `rate(kafkafim_docs_total{outcome="dropped"}[5m])` by `route` ([§5.14](#514-documents-missing-from-elasticsearch-dropped-or-lost)) |
 | Backpressure / memory? | `kafkafim_in_flight_bytes` against the pipeline's `source.max-in-flight-bytes`; `jvm_memory_used_bytes{area="heap"}` |
 | Does this pod own partitions? Is Kafka connected? | `kafkafim_assigned_partitions`, `kafkafim_kafka_connected` (1/0) |
 
@@ -688,7 +689,7 @@ or roll back. Until then the pods run the previous generation and new pods fail.
   | `<cause>` | Before it | Meaning |
   |---|---|---|
   | `record handler failed: <exception>` | `Pipeline '<p>': record handler failed; pausing until the pipeline is restarted` | Decoding, routing or submitting a batch threw: a kafkafim bug. The batch's records were not committed, so whoever reads them next (a retry, or another pod) may hit it again. |
-  | `Kafka consumer stopped (<reason>)` | Spring Kafka's ERROR from the listener container, such as `Stopping container due to an Error` | A consumer hit an error the container does not retry. Authentication and authorization errors are retried every 10s instead ([§5.4](#54-kafka-authentication-or-acl-missing)), so they do not end here. |
+  | `Kafka consumer stopped (<reason>)` | Spring Kafka's ERROR from the listener container, such as `Stopping container due to an Error` | A consumer hit an error the container does not retry. Authentication and authorization errors are retried every 10s instead ([§5.4](#54-kafka-authentication-or-acl-missing)), so they do not end here. After an `Error`, Spring Kafka logs a second ERROR for the same failure, `Error while stopping the container`, just after the pipeline's `failed while running` line, with a `CompletionException` wrapping that `Error`. The container stopped itself, and that ERROR reports its consumer thread ending with the `Error`. It is not a second failure. |
 
 - **Action**: collect the ERROR lines ([§6](#6-escalation-data-to-collect)), fix the
   cause if it is outside kafkafim, then run a no-op `POST /actuator/reload` on the pod
@@ -696,6 +697,38 @@ or roll back. Until then the pods run the previous generation and new pods fail.
   `starting` → `running`. A pipeline that fails again on the same records points to a
   bug: escalate with the logs. A pod restart also recovers it. Nothing retries on its
   own ([ADR-0036](decisions/0036-pipeline-that-fails-while-running-is-stopped-as-failed.md)).
+
+### 5.14 Documents missing from Elasticsearch: dropped or lost?
+
+**Alerts**: none. Dropping is configured behaviour, so there is no default alert
+([ADR-0037](decisions/0037-routes-can-drop-documents.md)).
+
+- **Symptom**: someone expects documents in an index that are not there, and the
+  pipeline is `running` with no DLQ records for them.
+- **Check**:
+  1. Does the pipeline have drop routes? Look for `drop: true` in its `routes`
+     (`/actuator/configprops`, or the chart values). The startup log warns
+     `every route has drop: true` for a pipeline that indexes nothing.
+  2. `sum by (route) (rate(kafkafim_docs_total{pipeline="<p>",outcome="dropped"}[5m]))`.
+     Every dropped document is counted once, under the label of the drop route that
+     selected it (in `route-mode: all`, the first matching drop route). The dashboard's
+     "Dropped documents" panel shows the same thing. kafkafim logs nothing per dropped
+     document.
+  3. Compare the totals: over the same window, the records consumed should equal
+     `indexed + stale + dlq + dropped` for an object-per-record topic. Array records
+     add one count per element, and `route-mode: all` adds one per extra copy. If the
+     documents are not under `dropped` and not in the DLQ
+     ([§5.6](#56-dlq-filling-or-dlq-blocked)), they were not consumed yet, or the
+     records were never produced. Apart from a drop route, every document of a
+     committed record is in Elasticsearch or in the DLQ
+     ([ADR-0006](decisions/0006-at-least-once-with-id-idempotence.md)).
+- **Action**: if a drop route matches more than intended, narrow its `when` or move it
+  below the indexing route that should win (`route-mode: first` decides by order). The
+  reload restarts only that pipeline and applies to records not yet committed. Dropped
+  documents are gone from kafkafim's point of view: to get them back, re-read the topic
+  with a temporary pipeline that has the corrected routes, a new `source.group-id` and
+  `offset-reset: earliest`, while the topic still retains them. `_id` idempotence makes
+  the overlap with what is already indexed harmless.
 
 ## 6. Escalation data to collect
 
