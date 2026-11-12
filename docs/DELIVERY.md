@@ -148,8 +148,11 @@ cosign initialize
 cp ~/.sigstore/root/tuf-repo-cdn.sigstore.dev/targets/trusted_root.json .
 ```
 
-Sigstore rotates these keys, so fetch a fresh copy for each import. Then carry the
-bundle and `trusted_root.json` across and, inside the air gap:
+Sigstore rotates these keys, so fetch a fresh copy for each import. `SHA256SUMS`
+does not cover `trusted_root.json`, and it is the trust anchor for the check inside
+the air gap, so carry it on the same trusted medium as the bundle (or note its
+`sha256sum` here and compare it there). Then carry both across and, inside the air
+gap, in the directory that holds the extracted bundle and `trusted_root.json`:
 
 ```bash
 sha256sum -c SHA256SUMS
