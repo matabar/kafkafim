@@ -33,7 +33,8 @@
 		<resilience4j.version>2.3.0</resilience4j.version>
 		<archunit.version>1.5.1</archunit.version>
 		<!-- Not in the Boot, OpenTelemetry or Micrometer BOMs: keep equal to the version
-		     micrometer-registry-otlp ${micrometer.version} depends on (runtime scope) -->
+		     micrometer-registry-otlp ${micrometer.version} depends on (runtime scope).
+		     The maven-enforcer-plugin execution below fails the build when they differ. -->
 		<opentelemetry-proto.version>1.10.0-alpha</opentelemetry-proto.version>
 		<!-- Google Java Style (ADR-0024) -->
 		<spotless.version>3.11.0</spotless.version>
@@ -222,6 +223,33 @@
 						<goals>
 							<goal>check</goal>
 						</goals>
+					</execution>
+				</executions>
+			</plugin>
+			<plugin>
+				<!-- opentelemetry-proto is declared explicitly (runtime scope) but no BOM manages it.
+				     Fail in validate when the declared version differs from the one micrometer-registry-otlp
+				     depends on, so a Boot/Micrometer upgrade cannot silently keep an old pin. Dependabot
+				     ignores the artifact (.github/dependabot.yml); bump it in the upgrade that fails here.
+				     Micrometer 1.18 (Boot 4.2) shades the proto and the rule then passes vacuously: see #127. -->
+				<groupId>org.apache.maven.plugins</groupId>
+				<artifactId>maven-enforcer-plugin</artifactId>
+				<executions>
+					<execution>
+						<id>opentelemetry-proto-convergence</id>
+						<phase>validate</phase>
+						<goals>
+							<goal>enforce</goal>
+						</goals>
+						<configuration>
+							<rules>
+								<dependencyConvergence>
+									<includes>
+										<include>io.opentelemetry.proto:opentelemetry-proto</include>
+									</includes>
+								</dependencyConvergence>
+							</rules>
+						</configuration>
 					</execution>
 				</executions>
 			</plugin>
