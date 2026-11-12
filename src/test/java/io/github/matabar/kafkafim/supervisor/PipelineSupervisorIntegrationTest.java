@@ -6,6 +6,7 @@ import static org.awaitility.Awaitility.await;
 import io.github.matabar.kafkafim.KafkaTestContainers;
 import io.github.matabar.kafkafim.KafkafimApplication;
 import io.github.matabar.kafkafim.dlq.DlqRecordFormat;
+import io.github.matabar.kafkafim.telemetry.TelemetryNames;
 import io.micrometer.core.instrument.MeterRegistry;
 import java.io.IOException;
 import java.net.URI;
@@ -152,6 +153,50 @@ class PipelineSupervisorIntegrationTest {
     assertThat(count("a-orders-2026.01.04")).isEqualTo(30);
     awaitCommittedToEnd("kafkafim.a", "a.events");
     assertThat(readAll("a.events.kafkafim-dlq", Duration.ofSeconds(1))).isEmpty();
+  }
+
+  // ---- (a2) drop routes ----
+
+  @Test
+  void droppedDocumentsAreCommittedWithNothingInElasticsearchOrTheDlq() throws Exception {
+    createTopics(2, "f.events", "f.events.kafkafim-dlq");
+    ConfigurableApplicationContext app =
+        start(
+            new PipelineProps("f")
+                .topic("f.events")
+                .set("routes[0].name", "debug")
+                .set("routes[0].when[0].field", "/level")
+                .set("routes[0].when[0].equals", "debug")
+                .set("routes[0].drop", true)
+                .set("routes[1].default", true)
+                .set("routes[1].cluster", "local")
+                .set("routes[1].index", "f-docs")
+                .map());
+    awaitState(app, "f", PipelineState.RUNNING);
+
+    // No id: it would be missing_id if it were indexed, but it is dropped first (ADR-0037).
+    send("f.events", "k1", "{\"level\":\"debug\",\"msg\":\"x\"}");
+    send("f.events", "k2", "[{\"id\":\"d1\",\"level\":\"debug\"},{\"level\":\"debug\"}]");
+    send("f.events", "k3", "[{\"id\":\"d2\",\"level\":\"debug\"},{\"id\":\"kept\"}]");
+    for (int i = 0; i < 20; i++) {
+      send("f.events", "k" + i, "{\"id\":\"drop-" + i + "\",\"level\":\"debug\"}");
+    }
+    producer.flush();
+
+    awaitCommittedToEnd("kafkafim.f", "f.events");
+    await().atMost(TIMEOUT).untilAsserted(() -> assertThat(count("f-docs")).isOne());
+    assertThat(document("f-docs", "kept").path("found").asBoolean()).isTrue();
+    assertThat(document("f-docs", "d1").path("found").asBoolean()).isFalse();
+    assertThat(document("f-docs", "drop-0").path("found").asBoolean()).isFalse();
+    assertThat(readAll("f.events.kafkafim-dlq", Duration.ofSeconds(1))).isEmpty();
+    MeterRegistry meters = app.getBean(MeterRegistry.class);
+    assertThat(
+            meters
+                .get(TelemetryNames.DOCS)
+                .tags("pipeline", "f", "route", "debug", "outcome", "dropped")
+                .counter()
+                .count())
+        .isEqualTo(24);
   }
 
   // ---- (b) ----

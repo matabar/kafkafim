@@ -444,6 +444,140 @@ class RecordProcessorTest {
     }
   }
 
+  /** Drops debug documents, indexes the rest; ids, versions and timestamps are required. */
+  private static final String DROP_DEBUG =
+      """
+      p:
+        source: { cluster: k, topics: [t], max-record-bytes: 1KB }
+        route-mode: %s
+        document: { id-field: /id, timestamp-field: /ts, version-field: /v }
+        routes:
+          - { name: debug, when: [ { field: /level, equals: debug } ], drop: true }
+          - name: logs
+            when: [ { field: /level, exists: true } ]
+            cluster: es
+            index: logs
+          - { default: true, cluster: es, index: other }
+      """;
+
+  private RecordProcessor dropProcessor(String mode, KafkafimMeters meters) {
+    meters.sync(
+        Map.of(
+            "p",
+            new PipelineSpec(
+                "k", List.of("t"), List.of("debug", "logs", "2"), Set.of("es"), SourceProbe.NONE)),
+        Set.of("es"),
+        cluster -> null);
+    return processor(DROP_DEBUG.formatted(mode), meters.pipeline("p"));
+  }
+
+  @ParameterizedTest(name = "route-mode: {0}")
+  @ValueSource(strings = {"first", "all"})
+  void recordWhoseDocumentsAllDropCompletesAtOnce(String mode) {
+    SimpleMeterRegistry dropRegistry = new SimpleMeterRegistry();
+    try (KafkafimMeters meters = new KafkafimMeters(dropRegistry)) {
+      processor = dropProcessor(mode, meters);
+      FakeRecord object = record("{\"level\":\"debug\"}");
+      FakeRecord array = record("[{\"level\":\"debug\"},{\"level\":\"debug\",\"id\":1}]");
+      processor.process(List.of(object, array));
+
+      assertThat(object.expected).isOne();
+      assertThat(array.expected).isEqualTo(2);
+      assertThat(object.isComplete()).isTrue();
+      assertThat(array.isComplete()).isTrue();
+      assertThat(actions(ES)).isEmpty();
+      assertThat(dlq).isEmpty();
+      assertThat(docs(dropRegistry, "debug", "dropped")).isEqualTo(3);
+      assertThat(docs(dropRegistry, "logs", "dropped")).isZero();
+    }
+  }
+
+  @Test
+  void arrayElementsDropOneByOneWhileTheRestGoAhead() {
+    SimpleMeterRegistry dropRegistry = new SimpleMeterRegistry();
+    try (KafkafimMeters meters = new KafkafimMeters(dropRegistry)) {
+      processor = dropProcessor("first", meters);
+      String ok = "\"v\":1,\"ts\":\"2026-01-02T03:04:05Z\"";
+      FakeRecord r =
+          record(
+              "["
+                  + "{\"level\":\"debug\"}," // 0: dropped
+                  + "{\"id\":\"a\",\"level\":\"info\","
+                  + ok
+                  + "}," // 1: indexed
+                  + "7," // 2: decode
+                  + "{\"level\":\"debug\",\"id\":\"b\"}," // 3: dropped
+                  + "{\"level\":\"info\","
+                  + ok
+                  + "}" // 4: missing_id
+                  + "]");
+      processor.process(List.of(r));
+
+      assertThat(r.expected).isEqualTo(5);
+      assertThat(actions(ES)).extracting(BulkAction::id).containsExactly("a");
+      assertThat(dlq)
+          .extracting(sent -> sent.request().errorType(), sent -> sent.request().docIndex())
+          .containsExactly(
+              org.assertj.core.groups.Tuple.tuple("decode", 2),
+              org.assertj.core.groups.Tuple.tuple("missing_id", 4));
+      assertThat(docs(dropRegistry, "debug", "dropped")).isEqualTo(2);
+      ack(actions(ES).getFirst());
+      dlq.getFirst().ack();
+      assertThat(r.isComplete()).isFalse();
+      dlq.get(1).ack();
+      assertThat(r.isComplete()).isTrue();
+    }
+  }
+
+  /**
+   * A drop route decides before the id, version and timestamp checks (ADR-0037, part 1 in #63): a
+   * dropped document with none of them is not dead-lettered. In {@code all} mode the drop cancels
+   * the copy the {@code logs} route would have made.
+   */
+  @ParameterizedTest(name = "route-mode: {0}")
+  @ValueSource(strings = {"first", "all"})
+  void droppedDocumentSkipsTheIdVersionAndTimestampChecks(String mode) {
+    SimpleMeterRegistry dropRegistry = new SimpleMeterRegistry();
+    try (KafkafimMeters meters = new KafkafimMeters(dropRegistry)) {
+      processor = dropProcessor(mode, meters);
+      FakeRecord r = record("[{\"level\":\"debug\",\"ts\":\"yesterday\"},{\"level\":\"debug\"}]");
+      processor.process(List.of(r));
+
+      assertThat(r.isComplete()).isTrue();
+      assertThat(dlq).isEmpty();
+      assertThat(actions(ES)).isEmpty();
+      assertThat(docs(dropRegistry, "debug", "dropped")).isEqualTo(2);
+    }
+  }
+
+  @Test
+  void decodeFailuresStillGoToTheDlqWhenEverythingWouldDrop() {
+    processor =
+        processor(
+            """
+            p:
+              source: { cluster: k, topics: [t], max-record-bytes: 1KB }
+              routes:
+                - { default: true, drop: true }
+            """);
+    FakeRecord broken = record("not json");
+    FakeRecord scalar = record("42");
+    FakeRecord tombstone = record(null);
+    FakeRecord oversize = record("{}", new RecordHeaders(), RECORD_TS, true);
+    FakeRecord element = record("[{},true]");
+    processor.process(List.of(broken, scalar, tombstone, oversize, element));
+
+    assertThat(dlq)
+        .extracting(sent -> sent.request().errorType())
+        .containsExactly("decode", "decode", "decode", "decode", "decode");
+    assertThat(sinks).isEmpty();
+    assertThat(element.expected).isEqualTo(2);
+    assertThat(element.isComplete()).isFalse(); // the dropped {} is done; true waits for its ack
+    dlq.forEach(Sent::ack);
+    assertThat(List.of(broken, scalar, tombstone, oversize, element))
+        .allMatch(FakeRecord::isComplete);
+  }
+
   @Test
   void extractionErrorWinsOverNoRoute() {
     FakeRecord r = record("[{\"region\":\"us\"},{\"id\":\"lost\"}]");

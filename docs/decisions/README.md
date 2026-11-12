@@ -40,3 +40,4 @@ One file per decision, MADR-style. Supersede with a new ADR rather than editing 
 | [0034](0034-consumer-lag-is-monitored-outside-kafkafim.md) | Consumer lag is monitored outside kafkafim; kafkafim reads and exports none (supersedes 0033 and the lag parts of 0014 and 0011) |
 | [0035](0035-dlq-writer-evicted-when-its-pipeline-leaves-the-instance.md) | A DLQ writer is evicted when its pipeline leaves its `DlqProducers` instance (refines 0028) |
 | [0036](0036-pipeline-that-fails-while-running-is-stopped-as-failed.md) | A pipeline that fails while running (handler threw, consumer stopped on its own) is stopped in a new `failed` state; an accepted reload retries it (refines 0032) |
+| [0037](0037-routes-can-drop-documents.md) | Routes can drop documents (`drop: true`); in `route-mode: all` a drop cancels every other copy; no `allow-drop` switch (refines 0009 and 0006) |

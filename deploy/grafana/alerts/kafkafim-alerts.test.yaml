@@ -18,7 +18,27 @@ tests:
         values: '1x30'
       - series: 'kafkafim_pipeline_state{job="kafkafim",instance="pod-a",pipeline="quick",state="starting"}'
         values: '1x4 0x26'   # 2m in starting: normal
+      # failed on pod-a only; pod-b keeps running it.
+      - series: 'kafkafim_pipeline_state{job="kafkafim",instance="pod-a",pipeline="events",state="failed"}'
+        values: '0 1x10'
+      - series: 'kafkafim_pipeline_state{job="kafkafim",instance="pod-b",pipeline="events",state="failed"}'
+        values: '0x11'
+      # failed at 30s and 1m, then a reload retried it: pending at 1m, never 1m long.
+      - series: 'kafkafim_pipeline_state{job="kafkafim",instance="pod-a",pipeline="retried",state="failed"}'
+        values: '0 1 1 0x8'
     alert_rule_test:
+      # failed is its own alert: failed_preflight fires only for orders.
+      - eval_time: 1m
+        alertname: KafkafimPipelineFailed
+        exp_alerts: []
+      - eval_time: 3m
+        alertname: KafkafimPipelineFailed
+        exp_alerts:
+          - exp_labels: { severity: critical, job: kafkafim, instance: pod-a, pipeline: events }
+            exp_annotations:
+              summary: "Pipeline events failed while running on pod-a"
+              description: "The record handler threw or a Kafka consumer stopped on its own. The pipeline is stopped on this pod until an accepted reload retries it or the pod restarts; the ERROR \"Pipeline '<name>': failed while running\" line names the cause."
+              runbook_url: https://github.com/matabar/kafkafim/blob/main/docs/RUNBOOK.md#513-failed-pipelines
       - eval_time: 3m
         alertname: KafkafimPipelineFailedPreflight
         exp_alerts:
@@ -171,7 +191,7 @@ tests:
   - name: auth failures, including the first one
     interval: 1m
     input_series:
-      # The first 401 creates the series at 1; increase() alone would miss it.
+      # A 401 before the first scrape: the first sample is 1; increase() alone would miss it.
       - series: 'kafkafim_auth_failures_total{instance="pod-a",pipeline="orders",kafka_cluster="main",es_cluster="logs",identity="writer"}'
         values: '_x3 1x20'
     alert_rule_test:
@@ -188,6 +208,43 @@ tests:
               runbook_url: https://github.com/matabar/kafkafim/blob/main/docs/RUNBOOK.md#52-elasticsearch-authentication-failure-pipeline-paused
       # No new failure for 5m: resolved.
       - eval_time: 12m
+        alertname: KafkafimEsAuthFailures
+        exp_alerts: []
+
+  - name: auth failures on a series registered at 0
+    interval: 1m
+    input_series:
+      # PipelineMeters registers the series at startup; a revoked key counts later.
+      - series: 'kafkafim_auth_failures_total{instance="pod-a",pipeline="orders",kafka_cluster="main",es_cluster="logs",identity="writer"}'
+        values: '0x10 1x20'
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: KafkafimEsAuthFailures
+        exp_alerts: []
+      - eval_time: 12m
+        alertname: KafkafimEsAuthFailures
+        exp_alerts:
+          - exp_labels: { severity: critical, pipeline: orders, es_cluster: logs, identity: writer }
+            exp_annotations:
+              summary: "Elasticsearch logs rejects identity writer"
+              description: "401/403 responses for pipeline orders; it pauses until the credentials or roles work again. Nothing goes to the DLQ."
+              runbook_url: https://github.com/matabar/kafkafim/blob/main/docs/RUNBOOK.md#52-elasticsearch-authentication-failure-pipeline-paused
+      - eval_time: 17m
+        alertname: KafkafimEsAuthFailures
+        exp_alerts: []
+
+  - name: auth failures, one failed scrape is not a new series (#134)
+    interval: 30s
+    input_series:
+      # An old non-zero total; the scrape at 10m30s failed and wrote a stale marker.
+      - series: 'kafkafim_auth_failures_total{instance="pod-a",pipeline="orders",kafka_cluster="main",es_cluster="logs",identity="writer"}'
+        values: '3x20 stale 3x20'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: KafkafimEsAuthFailures
+        exp_alerts: []
+      # 'x offset 5m' at 15m30s hits the stale marker; a range lookback skips it.
+      - eval_time: 15m30s
         alertname: KafkafimEsAuthFailures
         exp_alerts: []
 

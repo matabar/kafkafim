@@ -1,11 +1,12 @@
 package io.github.matabar.kafkafim.route;
 
 import java.util.List;
+import org.jspecify.annotations.Nullable;
 import tools.jackson.databind.JsonNode;
 
 /**
- * A compiled route: its conditions, its {@link IndexPattern} and the caller's target. Immutable and
- * thread-safe.
+ * A compiled route: its conditions, its {@link IndexPattern} (none for a drop route) and the
+ * caller's target. Immutable and thread-safe.
  *
  * @param <T> the caller's target type
  */
@@ -14,7 +15,7 @@ public final class Route<T> {
   private final T target;
   private final Condition[] conditions;
   private final boolean isDefault;
-  private final IndexPattern index;
+  private final @Nullable IndexPattern index;
   private final int position;
 
   /**
@@ -26,7 +27,7 @@ public final class Route<T> {
     this.target = spec.target();
     this.conditions = spec.when().stream().map(Condition::compile).toArray(Condition[]::new);
     this.isDefault = spec.isDefault();
-    this.index = IndexPattern.compile(spec.index());
+    this.index = spec.drop() ? null : IndexPattern.compile(spec.index());
     this.position = position;
     this.alone = List.of(this);
   }
@@ -49,9 +50,21 @@ public final class Route<T> {
     return target;
   }
 
-  /** The compiled index pattern; resolve it per document with {@link IndexPattern#resolve}. */
+  /**
+   * The compiled index pattern; resolve it per document with {@link IndexPattern#resolve}.
+   *
+   * @throws IllegalStateException for a drop route, which has none
+   */
   public IndexPattern index() {
+    if (index == null) {
+      throw new IllegalStateException(this + " drops documents and has no index");
+    }
     return index;
+  }
+
+  /** Whether a document this route selects is discarded instead of indexed (DESIGN §5.3). */
+  public boolean isDrop() {
+    return index == null;
   }
 
   /** Whether this is the fallback route. */
@@ -66,6 +79,10 @@ public final class Route<T> {
 
   @Override
   public String toString() {
-    return "Route[" + position + (isDefault ? ", default" : "") + ", index=" + index + "]";
+    return "Route["
+        + position
+        + (isDefault ? ", default" : "")
+        + (index == null ? ", drop" : ", index=" + index)
+        + "]";
   }
 }
