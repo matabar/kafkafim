@@ -18,7 +18,9 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 import org.apache.kafka.clients.admin.Admin;
 import org.apache.kafka.clients.admin.ConsumerGroupDescription;
@@ -278,6 +280,65 @@ class KafkaPipelineSourceIntegrationTest {
   }
 
   @Test
+  void stopAfterTheContainerStoppedItselfWaitsForTheOtherConsumers() throws Exception {
+    String topic = createTopic(2);
+    TopicPartition fatal = new TopicPartition(topic, 0);
+    Recorder recorder =
+        new Recorder(record -> {
+          if (record.topicPartition().equals(fatal)) {
+            throw new LinkageError("fatal");
+          }
+          record.complete();
+        });
+    final KafkaPipelineSource source =
+        start(source(topic, 500, DataSize.ofMegabytes(1)), recorder, 2);
+    await()
+        .atMost(TIMEOUT)
+        .until(() -> {
+          Map<String, Set<TopicPartition>> owners = stableAssignment(groupOf(topic));
+          return owners.size() == 2 && owners.values().stream().allMatch(tps -> tps.size() == 1);
+        });
+    // The healthy consumer gets records, so it commits partition 1 when it revokes it.
+    produce(topic, 1, 5, 10);
+    await().atMost(TIMEOUT).until(() -> recorder.records.size() == 5);
+
+    // From now on, hold the healthy consumer's revoke of partition 1 (armed only now, so the
+    // rebalance that split the partitions passed). The failed consumer may revoke partition 0.
+    TopicPartition healthy = new TopicPartition(topic, 1);
+    CountDownLatch revoking = new CountDownLatch(1);
+    CountDownLatch releaseRevoke = new CountDownLatch(1);
+    recorder.onRevoke =
+        partitions -> {
+          if (!partitions.contains(healthy)) {
+            return;
+          }
+          revoking.countDown();
+          try {
+            releaseRevoke.await();
+          } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+          }
+        };
+
+    // An Error on partition 0 stops the whole container abnormally; the healthy consumer then
+    // revokes partition 1 on its own thread, held here.
+    produce(topic, 0, 1, 10);
+    await().atMost(TIMEOUT).until(() -> !recorder.failures.isEmpty());
+    assertThat(revoking.await(TIMEOUT.toSeconds(), TimeUnit.SECONDS)).isTrue();
+
+    Thread stopper = Thread.ofVirtual().start(source::stop);
+    try {
+      Thread.sleep(1_000);
+      assertThat(stopper.isAlive()).as("waits for the revoking consumer").isTrue();
+    } finally {
+      releaseRevoke.countDown();
+    }
+    stopper.join(TIMEOUT.toMillis());
+    assertThat(stopper.isAlive()).isFalse();
+    assertThat(committed(groupOf(topic), topic, 1)).as("what completed is committed").isEqualTo(5);
+  }
+
+  @Test
   void normalStopReportsNoFailure() throws Exception {
     String topic = createTopic(1);
     Recorder recorder = new Recorder(SourceRecord::complete);
@@ -457,6 +518,7 @@ class KafkaPipelineSourceIntegrationTest {
     final List<TopicPartition> revoked = new CopyOnWriteArrayList<>();
     final List<String> failures = new CopyOnWriteArrayList<>();
     volatile Consumer<SourceRecord> onRecord;
+    volatile Consumer<Collection<TopicPartition>> onRevoke = partitions -> {};
 
     Recorder(Consumer<SourceRecord> onRecord) {
       this.onRecord = onRecord;
@@ -472,6 +534,7 @@ class KafkaPipelineSourceIntegrationTest {
     @Override
     public void onPartitionsRevoked(Collection<TopicPartition> partitions) {
       revoked.addAll(partitions);
+      onRevoke.accept(partitions);
     }
 
     @Override

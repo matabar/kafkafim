@@ -365,9 +365,14 @@ material, and a Kafka authentication or authorization error are **configuration*
 failures (`failed_preflight` until the next accepted reload or a restart, §5.6). An unreachable broker or cluster
 (timeout, connection error, 5xx) is **transient**: the pipeline stays `starting` and
 retries (1s doubling to 30s), so a pod that starts during a short outage needs no
-restart. Elasticsearch answers 405 on that path when security is disabled; any status
-other than 401, 403 and 5xx passes. The consumer group's permission is not checked
-before the first join; a denied join is retried by the source every 10s and logged.
+restart. A stop (shutdown, or a reload that restarts or removes the pipeline)
+cancels a start in progress: it interrupts any check still waiting for an answer and
+discards the verdict, and the pipeline ends `stopped`. A stop therefore never waits out
+the checks' timeouts (10s for the DLQ describe, up to 15s per Elasticsearch identity);
+an Elasticsearch request in flight is cancelled. Elasticsearch answers 405 on that
+path when security is disabled; any status other than 401, 403 and 5xx passes. The
+consumer group's permission is not checked before the first join; a denied join is
+retried by the source every 10s and logged.
 
 After a successful start, a pipeline whose source cannot go on (the record handler
 threw, or a consumer of the listener container stopped on its own: any
@@ -864,7 +869,11 @@ in `ConfigValidator`, whose messages never include values.
   - **`POST /actuator/reload`** returns `{result, generation, added, removed,
     restarted: [{pipeline, reasons}], retried, unchanged, errors}`: 200 for `applied` or
     `unchanged`, 400 with every violation for `rejected`, 503 while the supervisor is
-    not running. Names and violations only, never configuration values. It is
+    not running. `applied` means the valid tree differs from the running one, even
+    when no pipeline restarts (a change to a cluster or identity no pipeline uses, or to
+    `kafkafim.reload.*`): the new tree is in effect and gets a new generation, which is
+    how an operator sees a config-only change land on every pod. `unchanged` means it is
+    equal to the running tree. Names and violations only, never configuration values. It is
     defined in `supervisor` (nothing depends on `supervisor`, so it cannot create a
     `telemetry` ↔ `supervisor` cycle).
   - **Metrics and logs**: `kafkafim_config_reload_total{result=success|failure}`
@@ -875,7 +884,9 @@ in `ConfigValidator`, whose messages never include values.
   - **Settings**: `kafkafim.reload.enabled` (default `true`), `poll-interval` (10s),
     `debounce` (2s), read at startup only. The watched paths are the file and
     `configtree:` locations of the three properties above; `classpath:` locations are
-    not watched. `POST /actuator/reload` works with the watcher disabled.
+    not watched. `POST /actuator/reload` works with the watcher disabled. A reload
+    that changes them is still `applied` and logs a WARN that the watcher settings
+    apply after a restart.
   - Not reloaded: the `KafkafimProperties` bean stays the startup tree (the supervisor
     holds the one in effect); OTLP export headers (§10) and everything outside
     `kafkafim.*` need a restart.
@@ -1002,7 +1013,7 @@ are reported together:
 | Bulk request rejected with 413 | The request is split in halves and each half retried (recursively); a single-document bulk that still gets 413 sends that document to the DLQ with `error.type=too_large`. |
 | Undecodable record, non-object element, unusable version, missing `_id`, bad timestamp, no matching route, unresolved index pattern | DLQ with the matching `error.type` (`decode`, `missing_id`, `bad_timestamp`, `no_route`, `unresolved_index`). A document a drop route selected skips the version, `_id` and timestamp checks and is never dead-lettered for them (§5.3); undecodable records and non-object elements still are. |
 | Missing topic, DLQ topic, or failed authentication at pipeline start | Pipeline stays stopped (`failed_preflight`) until the next accepted reload or a restart (§5.6), clear log naming resource and identity, alert. Other pipelines unaffected. kafkafim never creates the resource. |
-| Record handler throws, or a consumer of the listener container stops on its own (an error the container does not retry, an `Error` from the listener) | The pipeline goes to `failed` and is stopped gracefully: the source drains, commits what completed and leaves the group, so the group's other pods take its partitions; records still incomplete are re-delivered. It stays stopped until the next accepted reload or a restart (§4.6, §5.6, ADR-0036); one ERROR line names the cause. Other pipelines unaffected. |
+| Record handler throws, or a consumer of the listener container stops on its own (an error the container does not retry, an `Error` from the listener) | The pipeline goes to `failed` and is stopped gracefully: the source drains, commits what completed and leaves the group, so the group's other pods take its partitions; records still incomplete are re-delivered. When the container stopped itself, the source still waits (within its 10s container stop) for the other consumers to finish revoking before the sinks close. It stays stopped until the next accepted reload or a restart (§4.6, §5.6, ADR-0036); one ERROR line names the cause. Other pipelines unaffected. |
 | DLQ produce fails | Block the partition and alert. Losing data is worse than lag. The send is retried forever (100ms doubling to 30s, ±25% jitter) and never completes the source offset until the broker acknowledged it (`acks=all`), so the committed offset stays put. The writer is *blocked* from its first failure until every failed send was acknowledged; the supervisor pauses the pipeline on `onBlocked` and resumes on `onUnblocked`. A missing DLQ topic, failed authentication or authorization, an invalid topic or a record larger than the producer or topic allows is a **configuration** failure (logged at `ERROR`, alert); anything else is **transient**. Both kinds are retried; neither drops the record. A producer error that kafka-clients can make fatal even for an idempotent producer (cluster authorization, authentication, unsupported version, a fenced producer or an invalid producer ID mapping) replaces the shared producer, so fixing the cause unblocks the next attempt without a restart. A missing `Write` ACL is usually not fatal, though: in kafka-clients 4.2 a `CLUSTER_AUTHORIZATION_FAILED` answer to `InitProducerId` is *abortable*: the producer fails the pending batches, goes back to uninitialized and retries `InitProducerId` on its own. The producer becomes fatal only when the error reaches its error state through a failed batch (a produce response carrying it). kafkafim replaces the producer on `ClusterAuthorizationException` either way: replacing it is cheap and covers the fatal path. On the abortable path kafka-clients still logs `Aborting producer batches due to fatal error` at `ERROR`, and kafkafim logs that the producer *may be* in a fatal state and replaces it; both mean only that the pending sends failed and will be retried. A send that fails only because of the replacement (closing the producer aborts its batch, or it reached the producer after the close began) is reported by the failure that triggered the replacement, so a missing ACL never shows up as a transient `Producer is closed forcefully`. Each send attempt is reported once, although kafka-clients can both throw from `send` and later fail the batch it had already appended. |
 | Kafka unavailable | Reconnect with backoff (kafka-clients); `kafkafim_kafka_connected` gauge drops, alert. A Kafka authentication or authorization failure after start is retried every 10s instead of stopping the consumer. |
 | Pod SIGTERM | Spring graceful shutdown, higher phases first: the pipeline supervisor (phase MAX-100) stops all pipelines in parallel; each pipeline's Kafka source pauses fetching, gives in-flight records up to 30s to complete (its bulk sinks and the DLQ writer are still open, so outcomes keep arriving), then stops its container (10s), which commits what completed on revoke and leaves the group; records still incomplete are re-delivered to the next owner; then the pipeline's bulk sinks close (up to 10s; outcomes after the revoke are ignored); then the DLQ producers (phase MAX-1000, so they outlive the source drain; closed by `supervisor/PipelineResources`, which owns every configuration generation's producers) flush for up to 10s and close, failing any send still unacknowledged so that its record is not committed; then the web server drains (phase MAX-1024, instant for actuator-only traffic). `spring.lifecycle.timeout-per-shutdown-phase` (60s, `application.yaml`) bounds each phase; the consumer phase must fit the pod's `terminationGracePeriodSeconds` (90s, chart default). |
@@ -1161,11 +1172,12 @@ documents that failed before a route was selected (`decode`, `missing_id`,
 `bad_timestamp`, `no_route`). Validation reserves `none` and digits-only names and
 rejects duplicate names (§5.3), so each `route` value means exactly one route or the
 pre-routing failures. There are no partition labels. Series known from the
-configuration (per topic, per route and outcome, the bulk histograms per cluster, the
-gauges) exist from startup with 0; status and error-type series appear with their first
+configuration (per topic, per route and outcome, `route="none"` with `outcome="dlq"`, the
+bulk histograms per cluster, auth failures per cluster and identity a route writes with,
+the gauges) exist from startup with 0; status and error-type series appear with their first
 event. On a reload (§5.6, ADR-0028) a removed pipeline loses every series, an added one
-gains them, a pipeline whose labels changed (source cluster, topics, routes, clusters)
-gets fresh series, and an unchanged one keeps its counters across a restart.
+gains them, a pipeline whose labels changed (source cluster, topics, routes, clusters,
+identities) gets fresh series, and an unchanged one keeps its counters across a restart.
 
 Consumer lag is not a kafkafim metric (ADR-0034): the Kafka team's consumer-lag
 monitoring already shows and alerts on it per consumer group (`source.group-id`), and

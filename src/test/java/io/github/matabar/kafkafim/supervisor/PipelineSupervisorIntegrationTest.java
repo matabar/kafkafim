@@ -23,6 +23,7 @@ import java.util.Map;
 import java.util.Properties;
 import java.util.UUID;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Future;
 import java.util.stream.Collectors;
 import org.apache.kafka.clients.admin.Admin;
 import org.apache.kafka.clients.admin.NewTopic;
@@ -34,6 +35,7 @@ import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
+import org.apache.kafka.clients.producer.RecordMetadata;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.header.Header;
 import org.apache.kafka.common.header.internals.RecordHeader;
@@ -340,15 +342,25 @@ class PipelineSupervisorIntegrationTest {
     props.put("kafkafim.elasticsearch.clusters.local.bulk.in-flight", 1);
     int records = 2000;
     int perRecord = 10;
+    // Sent asynchronously and flushed once, not one round trip per record: seeding takes a fraction
+    // of the time, so a stall of the shared Docker host is less likely to hit it, and the leader
+    // wait in createTopics keeps the first sends from waiting on metadata (#68).
+    List<Future<RecordMetadata>> sent = new ArrayList<>();
     for (int r = 0; r < records; r++) {
       StringBuilder value = new StringBuilder("[");
       for (int d = 0; d < perRecord; d++) {
         value.append(d == 0 ? "" : ",").append("{\"id\":\"e-").append(r * perRecord + d);
         value.append("\",\"payload\":\"").append("x".repeat(200)).append("\"}");
       }
-      send("e.events", "k" + r, value.append(']').toString());
+      sent.add(
+          producer.send(
+              new ProducerRecord<>(
+                  "e.events", bytes("k" + r), bytes(value.append(']').toString()))));
     }
     producer.flush();
+    for (Future<RecordMetadata> future : sent) {
+      future.get(); // every record acknowledged, or the test fails here with the cause
+    }
     final int total = records * perRecord;
 
     ConfigurableApplicationContext first = start(props);
@@ -364,6 +376,66 @@ class PipelineSupervisorIntegrationTest {
     await().atMost(TIMEOUT).untilAsserted(() -> assertThat(count("e-docs")).isEqualTo(total));
     awaitCommittedToEnd("kafkafim.e", "e.events");
     assertThat(readAll("e.events.kafkafim-dlq", Duration.ofSeconds(1))).isEmpty();
+  }
+
+  // ---- (f) ----
+
+  @Test
+  void consumerTheBrokerRejectsMovesThePipelineToFailedInStateGaugeAndReadiness() throws Exception {
+    // A real source failure, end to end (ADR-0036, #101): a broker that admits one member per
+    // consumer group, and a group that is already full. kafkafim's consumer is refused on join;
+    // poll throws GroupMaxSizeReachedException. It is no authentication or authorization error,
+    // which the container would retry, so kafkafim's stopping error handler stops the consumer and
+    // the source reports it.
+    // Its own broker, because the shared one runs groups of several consumers.
+    try (KafkaContainer oneMemberGroups =
+        KafkaTestContainers.kafka()
+            .withEnv("KAFKA_AUTO_CREATE_TOPICS_ENABLE", "false")
+            .withEnv("KAFKA_GROUP_MAX_SIZE", "1")) {
+      oneMemberGroups.start();
+      String bootstrap = oneMemberGroups.getBootstrapServers();
+      try (Admin ownAdmin = Admin.create(Map.of("bootstrap.servers", bootstrap));
+          KafkaConsumer<byte[], byte[]> member = consumer(bootstrap, "kafkafim.f")) {
+        ownAdmin
+            .createTopics(
+                List.of(
+                    new NewTopic("f.events", 1, (short) 1),
+                    new NewTopic("f.events.kafkafim-dlq", 1, (short) 1)))
+            .all()
+            .get();
+        member.subscribe(List.of("f.events"));
+        await()
+            .atMost(TIMEOUT)
+            .until(() -> {
+              member.poll(Duration.ofMillis(200));
+              return !member.assignment().isEmpty();
+            });
+
+        Map<String, Object> props =
+            new PipelineProps("f").topic("f.events").defaultRoute("f-docs").map();
+        props.put("kafkafim.kafka.clusters.local.bootstrap-servers[0]", bootstrap);
+        // Closed here, before its broker stops, even when an assertion fails (closeContexts closes
+        // it again, which does nothing).
+        try (ConfigurableApplicationContext app = start(props)) {
+          awaitState(app, "f", PipelineState.FAILED);
+          PipelineSupervisor supervisor = supervisor(app);
+          // ABNORMAL: the container's stopping error handler stopped the consumer on the poll
+          // exception (ERROR is for a java.lang.Error from the listener).
+          assertThat(supervisor.failure("f")).isEqualTo("Kafka consumer stopped (ABNORMAL)");
+          // State, gauge and readiness agree: the pod's only pipeline failed, so it is out of
+          // service.
+          MeterRegistry meters = app.getBean(MeterRegistry.class);
+          assertThat(gauge(meters, "f", "failed")).isEqualTo(1);
+          assertThat(gauge(meters, "f", "running")).isZero();
+          assertThat(readiness(app)).isEqualTo(503);
+          // The failed source is stopped and closed, not left behind.
+          await()
+              .atMost(TIMEOUT)
+              .until(() -> supervisor.runtimes().stream().allMatch(r -> r.source() == null));
+          assertThat(supervisor.state("f")).isEqualTo(PipelineState.FAILED);
+        }
+      }
+    }
   }
 
   // ---- application ----
@@ -458,6 +530,23 @@ class PipelineSupervisorIntegrationTest {
       newTopics.add(new NewTopic(topic, partitions, (short) 1));
     }
     admin.createTopics(newTopics).all().get();
+    awaitLeaders(List.of(topics));
+  }
+
+  /**
+   * Waits until every partition of the topics has a leader. Creation returns once the controller
+   * accepted it; the broker can learn of the leaders later, and a send before that waits for
+   * metadata, which under shared Docker load can take long enough to time out (#68).
+   */
+  private static void awaitLeaders(List<String> topics) {
+    await()
+        .atMost(TIMEOUT)
+        .ignoreExceptions()
+        .until(() ->
+            admin.describeTopics(topics).allTopicNames().get().values().stream()
+                .flatMap(topic -> topic.partitions().stream())
+                .allMatch(
+                    partition -> partition.leader() != null && !partition.leader().isEmpty()));
   }
 
   private static long send(String topic, String key, String value, Header... headers)
@@ -507,15 +596,20 @@ class PipelineSupervisorIntegrationTest {
         .untilAsserted(() -> assertThat(committedTotal(group, topic)).isEqualTo(endTotal(topic)));
   }
 
-  private static List<ConsumerRecord<byte[], byte[]>> readAll(String topic, Duration wait) {
+  private static KafkaConsumer<byte[], byte[]> consumer(String bootstrap, String group) {
     Properties config = new Properties();
-    config.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, KAFKA.getBootstrapServers());
-    config.put(ConsumerConfig.GROUP_ID_CONFIG, "it-reader-" + UUID.randomUUID());
+    config.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrap);
+    config.put(ConsumerConfig.GROUP_ID_CONFIG, group);
     config.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
     config.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, ByteArrayDeserializer.class);
     config.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, ByteArrayDeserializer.class);
+    return new KafkaConsumer<>(config);
+  }
+
+  private static List<ConsumerRecord<byte[], byte[]>> readAll(String topic, Duration wait) {
     List<ConsumerRecord<byte[], byte[]>> records = new ArrayList<>();
-    try (KafkaConsumer<byte[], byte[]> consumer = new KafkaConsumer<>(config)) {
+    try (KafkaConsumer<byte[], byte[]> consumer =
+        consumer(KAFKA.getBootstrapServers(), "it-reader-" + UUID.randomUUID())) {
       consumer.subscribe(List.of(topic));
       long deadline = System.nanoTime() + wait.toNanos();
       while (System.nanoTime() < deadline) {

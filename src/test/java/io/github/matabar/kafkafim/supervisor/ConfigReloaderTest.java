@@ -198,6 +198,40 @@ class ConfigReloaderTest {
         .until(() -> !supervisor.states().containsValue(PipelineState.STARTING));
   }
 
+  /**
+   * A change that no pipeline uses (here: cluster {@code es2}, which only {@code B} routes to, and
+   * the startup-only watcher settings) is still a new tree in effect: {@code applied}, a new
+   * generation, nothing restarted. The generation is how an operator sees a config-only change land
+   * (RUNBOOK §2.2), so it must move even when no pipeline does.
+   */
+  @Test
+  void changeNoPipelineUsesIsAppliedAsNewGenerationWithoutRestarts() {
+    ConfigReloader reloader = start(A);
+    awaitSettled();
+    Environment changed =
+        environment(
+            yaml(A)
+                .replace("http://es2:9200", "http://es2-new:9200")
+                .replace("  pipelines:\n", "  reload: { debounce: 5s }\n  pipelines:\n"));
+    disk = () -> changed;
+    ReloadResult result = reloader.reload("test");
+    assertThat(result.result()).isEqualTo(ReloadResult.APPLIED);
+    assertThat(result.generation()).isEqualTo(2);
+    assertThat(result.added()).isEmpty();
+    assertThat(result.removed()).isEmpty();
+    assertThat(result.restarted()).isEmpty();
+    assertThat(concat(result.unchanged(), result.retried())).containsExactly("a");
+    assertThat(supervisor.properties().elasticsearch().clusters().get("es2").uris())
+        .containsExactly("http://es2-new:9200");
+    assertThat(supervisor.properties().reload().debounce()).isEqualTo(Duration.ofSeconds(5));
+    assertThat(generationGauge()).isEqualTo(2);
+    assertThat(reloads("success")).isEqualTo(1);
+
+    assertThat(reloader.reload("test").result()).isEqualTo(ReloadResult.UNCHANGED);
+    assertThat(generationGauge()).isEqualTo(2);
+    awaitSettled();
+  }
+
   @Test
   void anInvalidTreeIsRejectedWholeAndTheRunningOneStays() {
     ConfigReloader reloader = start(A);
