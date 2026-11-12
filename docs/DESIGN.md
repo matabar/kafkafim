@@ -303,9 +303,22 @@ element, `kafkafim.doc-index`.
   whitespace outside strings removed, because the bulk body is NDJSON.
 - **Limits.** `max-record-bytes` bounds every string, number and token count before
   parsing. Nesting is capped at 500, number literals at 1000 digits and keys at
-  50,000 UTF-8 bytes. Parsed trees are kept for routing and can take far more heap than
-  the value: an 8 MiB array of empty objects retains about 237 MB (~85 bytes per
-  element, ~28× the value), while `max-in-flight-bytes` counts raw bytes.
+  50,000 UTF-8 bytes.
+- **Memory.** Two different costs, and `max-in-flight-bytes` counts neither beyond the
+  raw key + value bytes:
+  - *Decode peak (transient).* A record is decoded, routed and turned into bulk
+    actions on its consumer thread, one record at a time; its parsed trees are garbage
+    once that returns. They can take far more heap than the value: an 8 MiB array of
+    empty objects retains about 237 MB while decoding (~85 bytes per element, ~28× the
+    value). So the peak is about one `max-record-bytes` record × 28 per consumer
+    thread, whatever the budget.
+  - *Held in flight.* Until a record completes, kafkafim keeps the record (its raw
+    bytes, which the budget counts), one copy of each document's bytes (shared by its
+    routes, so at most the value again), and per indexed copy a bulk action with its
+    index name, id and completion handle: roughly 150–250 bytes of objects (an estimate
+    from object layout, not a measurement). For ordinary documents that is small next
+    to their bytes; for a record holding many tiny documents it can be many times the
+    value. Sizing: [RUNBOOK §5.10](RUNBOOK.md#510-out-of-memory-back-pressure).
 
 Timestamps for `%{+...}` index patterns are read from `document.timestamp-field`
 and parsed per `document.timestamp-format`: `iso-8601` (default, offset or `Z`

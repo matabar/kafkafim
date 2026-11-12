@@ -622,12 +622,22 @@ tooling shows it too (`kafka-consumer-groups.sh --describe --group kafkafim.<pip
   - a pod's in-flight memory is the sum over all its pipelines;
   - a poll that crosses the budget is delivered whole, so the overshoot is up to one
     poll per consumer (`max-poll-records` records);
-  - parsed documents take more heap than their bytes: a JSON array of many small
-    objects can retain ~28× its size ([DESIGN §4.5](DESIGN.md#45-decoding)), and each
-    record may be up to `max-record-bytes` (default 8MB);
+  - what is held in flight is more than the counted bytes: a copy of each document's
+    bytes (up to the value again) plus roughly 150–250 bytes of objects per indexed
+    copy (an estimate). Negligible for ordinary documents; large for records that are
+    arrays of many tiny objects ([DESIGN §4.5](DESIGN.md#45-decoding));
+  - decoding adds a transient peak per consumer thread, outside the budget: the record
+    being decoded can retain ~28× its size while its parsed trees are routed, and a
+    record may be up to `max-record-bytes` (default 8MB, so ~237 MB worst case);
   - heap is `MaxRAMPercentage=75` of the container limit; the rest is metaspace,
     threads, direct buffers.
-  `kafkafim_in_flight_bytes` per pipeline against heap use.
+
+  Sizing rule, per pod: heap should cover, summed over its pipelines,
+  2 × `max-in-flight-bytes` plus the one-poll overshoot plus documents in flight ×
+  ~250 B, and on top of that consumer threads × 28 × `max-record-bytes`. For documents of a few hundred bytes
+  or more the document term is small; for arrays of tiny objects, count it (or lower
+  `max-in-flight-bytes`). Compare `kafkafim_in_flight_bytes` per pipeline against heap
+  use.
 - **Action**: lower `max-in-flight-bytes` or `max-poll-records` for the heavy
   pipeline (a config change, hot-reloaded), raise the group's memory limit (rolls the
   pods), or move the pipeline to its own group. A lower budget pauses fetching
