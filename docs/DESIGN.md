@@ -319,7 +319,9 @@ fraction passes through a `double`, which is exact to the millisecond, so send a
 string for more). `pattern:` parses with `Locale.ROOT` and strict resolution (the era
 defaults to CE, so `yyyy` works and `02-30` fails). A pattern without an offset or
 zone is read as **UTC**, one without any time field as midnight; a time that cannot
-resolve (`hh` without `a`) or a pattern that yields no date fails. Era text is
+resolve (`hh` without `a`, or a day period `B` in a pattern with no hour) or a
+pattern that yields no date fails. A pattern whose hour is in an optional section
+(`yyyy-MM-dd[ h:mm B]`) reads a date-only value as midnight. Era text is
 `CE`/`BCE` under `Locale.ROOT`. `k` is the clock hour 1 to 24, whose `24` is the first
 hour of the day (`24:30` is `00:30` of the same date), as java.time defines it; `HH`
 rejects ISO-8601's end-of-day `24:00`, so such a value is a bad timestamp rather than
@@ -950,7 +952,7 @@ are reported together:
   (`Locale.ROOT`, strict, era CE) by formatting a sample and parsing it back: one that
   never yields a date (`yyyy-MM`, `HH:mm`, `YYYY-MM-dd`) or a complete time (`hh`
   without `a`, minutes without hours) is an error, since every document would fail, as
-  is a day period `B` without a time (it would read every value as midnight). A
+  is a day period `B` in a pattern with no hour (`yyyy-MM-dd B`). A
   pattern without an offset or zone (read as UTC; a quoted `'Z'` literal does not warn),
   one using `k`, or one that cannot format and parse back the sample is a warning.
 - **Document**: `op: create` takes no `version-field`; Elasticsearch accepts external
@@ -1149,11 +1151,12 @@ documents that failed before a route was selected (`decode`, `missing_id`,
 `bad_timestamp`, `no_route`). Validation reserves `none` and digits-only names and
 rejects duplicate names (§5.3), so each `route` value means exactly one route or the
 pre-routing failures. There are no partition labels. Series known from the
-configuration (per topic, per route and outcome, the bulk histograms per cluster, the
-gauges) exist from startup with 0; status and error-type series appear with their first
+configuration (per topic, per route and outcome, `route="none"` with `outcome="dlq"`, the
+bulk histograms per cluster, auth failures per cluster and identity a route writes with,
+the gauges) exist from startup with 0; status and error-type series appear with their first
 event. On a reload (§5.6, ADR-0028) a removed pipeline loses every series, an added one
-gains them, a pipeline whose labels changed (source cluster, topics, routes, clusters)
-gets fresh series, and an unchanged one keeps its counters across a restart.
+gains them, a pipeline whose labels changed (source cluster, topics, routes, clusters,
+identities) gets fresh series, and an unchanged one keeps its counters across a restart.
 
 Consumer lag is not a kafkafim metric (ADR-0034): the Kafka team's consumer-lag
 monitoring already shows and alerts on it per consumer group (`source.group-id`), and
