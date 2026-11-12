@@ -365,9 +365,14 @@ material, and a Kafka authentication or authorization error are **configuration*
 failures (`failed_preflight` until the next accepted reload or a restart, §5.6). An unreachable broker or cluster
 (timeout, connection error, 5xx) is **transient**: the pipeline stays `starting` and
 retries (1s doubling to 30s), so a pod that starts during a short outage needs no
-restart. Elasticsearch answers 405 on that path when security is disabled; any status
-other than 401, 403 and 5xx passes. The consumer group's permission is not checked
-before the first join; a denied join is retried by the source every 10s and logged.
+restart. A stop (shutdown, or a reload that restarts or removes the pipeline)
+cancels a start in progress: it interrupts any check still waiting for an answer and
+discards the verdict, and the pipeline ends `stopped`. A stop therefore never waits out
+the checks' timeouts (10s for the DLQ describe, up to 15s per Elasticsearch identity);
+an Elasticsearch request in flight is cancelled. Elasticsearch answers 405 on that
+path when security is disabled; any status other than 401, 403 and 5xx passes. The
+consumer group's permission is not checked before the first join; a denied join is
+retried by the source every 10s and logged.
 
 After a successful start, a pipeline whose source cannot go on (the record handler
 threw, or a consumer of the listener container stopped on its own: any
@@ -861,7 +866,11 @@ in `ConfigValidator`, whose messages never include values.
   - **`POST /actuator/reload`** returns `{result, generation, added, removed,
     restarted: [{pipeline, reasons}], retried, unchanged, errors}`: 200 for `applied` or
     `unchanged`, 400 with every violation for `rejected`, 503 while the supervisor is
-    not running. Names and violations only, never configuration values. It is
+    not running. `applied` means the valid tree differs from the running one, even
+    when no pipeline restarts (a change to a cluster or identity no pipeline uses, or to
+    `kafkafim.reload.*`): the new tree is in effect and gets a new generation, which is
+    how an operator sees a config-only change land on every pod. `unchanged` means it is
+    equal to the running tree. Names and violations only, never configuration values. It is
     defined in `supervisor` (nothing depends on `supervisor`, so it cannot create a
     `telemetry` ↔ `supervisor` cycle).
   - **Metrics and logs**: `kafkafim_config_reload_total{result=success|failure}`
@@ -872,7 +881,9 @@ in `ConfigValidator`, whose messages never include values.
   - **Settings**: `kafkafim.reload.enabled` (default `true`), `poll-interval` (10s),
     `debounce` (2s), read at startup only. The watched paths are the file and
     `configtree:` locations of the three properties above; `classpath:` locations are
-    not watched. `POST /actuator/reload` works with the watcher disabled.
+    not watched. `POST /actuator/reload` works with the watcher disabled. A reload
+    that changes them is still `applied` and logs a WARN that the watcher settings
+    apply after a restart.
   - Not reloaded: the `KafkafimProperties` bean stays the startup tree (the supervisor
     holds the one in effect); OTLP export headers (§10) and everything outside
     `kafkafim.*` need a restart.
