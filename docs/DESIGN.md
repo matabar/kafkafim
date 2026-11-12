@@ -304,8 +304,8 @@ element, `kafkafim.doc-index`.
 - **Limits.** `max-record-bytes` bounds every string, number and token count before
   parsing. Nesting is capped at 500, number literals at 1000 digits and keys at
   50,000 UTF-8 bytes.
-- **Memory.** Two different costs, and `max-in-flight-bytes` counts neither beyond the
-  raw key + value bytes:
+- **Memory.** `max-in-flight-bytes` counts only the raw key + value bytes of delivered,
+  incomplete records. Decoding and delivery cost more heap than that, in two ways:
   - *Decode peak (transient).* A record is decoded, routed and turned into bulk
     actions on its consumer thread, one record at a time; its parsed trees are garbage
     once that returns. They can take far more heap than the value: an 8 MiB array of
@@ -313,11 +313,16 @@ element, `kafkafim.doc-index`.
     value). So the peak is about one `max-record-bytes` record × 28 per consumer
     thread, whatever the budget.
   - *Held in flight.* Until a record completes, kafkafim keeps the record (its raw
-    bytes, which the budget counts), one copy of each document's bytes (shared by its
-    routes, so at most the value again), and per indexed copy a bulk action with its
-    index name, id and completion handle: roughly 150–250 bytes of objects (an estimate
-    from object layout, not a measurement). For ordinary documents that is small next
-    to their bytes; for a record holding many tiny documents it can be many times the
+    bytes, which the budget counts) and one copy of each indexed document's bytes
+    (shared by its routes, so at most the value again). Per indexed copy it also keeps
+    a bulk action (index name, id, completion handle) and the sink's queue entry with
+    its precomputed bulk metadata line: roughly 300–450 bytes of objects, an estimate
+    from object layout, not a measurement. A document bound for the DLQ holds its DLQ
+    request and pending send (headers, reason, futures) until the broker acknowledges
+    it, roughly 1 KB or more each, and the DLQ producer serialises a copy of the
+    record value per failed document into its buffer (`buffer.memory`, Kafka's
+    default 32 MiB per producer). For ordinary documents these are small next to
+    their bytes; for a record holding many tiny documents they can be many times the
     value. Sizing: [RUNBOOK §5.10](RUNBOOK.md#510-out-of-memory-back-pressure).
 
 Timestamps for `%{+...}` index patterns are read from `document.timestamp-field`

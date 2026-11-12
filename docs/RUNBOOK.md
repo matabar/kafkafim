@@ -622,22 +622,29 @@ tooling shows it too (`kafka-consumer-groups.sh --describe --group kafkafim.<pip
   - a pod's in-flight memory is the sum over all its pipelines;
   - a poll that crosses the budget is delivered whole, so the overshoot is up to one
     poll per consumer (`max-poll-records` records);
-  - what is held in flight is more than the counted bytes: a copy of each document's
-    bytes (up to the value again) plus roughly 150–250 bytes of objects per indexed
-    copy (an estimate). Negligible for ordinary documents; large for records that are
-    arrays of many tiny objects ([DESIGN §4.5](DESIGN.md#45-decoding));
+  - what is held in flight is more than the counted bytes: a copy of each indexed
+    document's bytes (up to the value again), roughly 300–450 B of objects per indexed
+    copy (an estimate), and roughly 1 KB or more per document bound for the DLQ until
+    the broker acknowledges it. Negligible for ordinary documents; large for records
+    that are arrays of many tiny objects ([DESIGN §4.5](DESIGN.md#45-decoding));
   - decoding adds a transient peak per consumer thread, outside the budget: the record
     being decoded can retain ~28× its size while its parsed trees are routed, and a
     record may be up to `max-record-bytes` (default 8MB, so ~237 MB worst case);
+  - each sink stream builds up to `bulk.in-flight` request bodies of up to
+    `bulk.max-bytes` (default 5MB), and each DLQ producer buffers up to
+    `buffer.memory` (Kafka's default 32 MiB);
   - heap is `MaxRAMPercentage=75` of the container limit; the rest is metaspace,
     threads, direct buffers.
 
-  Sizing rule, per pod: heap should cover, summed over its pipelines,
-  2 × `max-in-flight-bytes` plus the one-poll overshoot plus documents in flight ×
-  ~250 B, and on top of that consumer threads × 28 × `max-record-bytes`. For documents of a few hundred bytes
-  or more the document term is small; for arrays of tiny objects, count it (or lower
-  `max-in-flight-bytes`). Compare `kafkafim_in_flight_bytes` per pipeline against heap
-  use.
+  Sizing rule, per pod: heap should cover, for each of its pipelines,
+  2 × (`max-in-flight-bytes` + the one-poll overshoot) for the raw bytes and their
+  document copies, plus indexed copies in flight × ~450 B, plus consumer threads ×
+  28 × that pipeline's `max-record-bytes`; then add the bulk bodies and DLQ producer
+  buffers above. No metric counts copies in flight: estimate them as
+  `kafkafim_in_flight_bytes` ÷ average document size × routes per document. For
+  documents of a few hundred bytes or more the per-copy term is small; for arrays of
+  tiny objects, count it (or lower `max-in-flight-bytes`). Compare
+  `kafkafim_in_flight_bytes` per pipeline against heap use.
 - **Action**: lower `max-in-flight-bytes` or `max-poll-records` for the heavy
   pipeline (a config change, hot-reloaded), raise the group's memory limit (rolls the
   pods), or move the pipeline to its own group. A lower budget pauses fetching
