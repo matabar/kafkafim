@@ -201,8 +201,9 @@ class ElasticsearchSinkSecurityIntegrationTest {
    * One request and its reply, whatever the status. {@link Rest5Client#performRequest} returns
    * every status below 500 as a normal response and throws {@link ResponseException} only for 5xx
    * (see {@code Rest5ClientStatusContractTest}), so callers check {@link Reply#status()}. Before
-   * #61 this class treated "no exception" as success: a 4xx reply to the API-key request was parsed
-   * as if it were the key, and {@code get("encoded")} on the error body was the T49 NPE.
+   * #61 this class provisioned through {@code SinkHarness.call}, which treated "no exception" as
+   * success: a 4xx reply to the API-key request was parsed as if it were the key, and {@code
+   * get("encoded")} on the error body was the T49 NPE.
    */
   static Reply send(Rest5Client admin, String method, String path, @Nullable String json)
       throws Exception {

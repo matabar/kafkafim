@@ -49,7 +49,9 @@ class Rest5ClientStatusContractTest {
     client =
         Rest5Client.builder(
                 new HttpHost(
-                    "http", server.getAddress().getHostString(), server.getAddress().getPort()))
+                    "http",
+                    server.getAddress().getAddress().getHostAddress(),
+                    server.getAddress().getPort()))
             .build();
   }
 
