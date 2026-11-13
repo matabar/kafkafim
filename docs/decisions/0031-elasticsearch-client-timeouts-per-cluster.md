@@ -1,6 +1,6 @@
 # ADR-0031: Elasticsearch client timeouts are set per cluster; the breaker's half-open limit follows the response timeout
 
-Status: accepted · Date: 2026-11-09 · Refines [ADR-0026](0026-bulk-retry-loop-in-the-sink.md)
+Status: accepted; the `max-bytes` versus `response-timeout` warning noted as missing under Consequences now exists (#89, DESIGN §5.7) · Date: 2026-11-09 · Refines [ADR-0026](0026-bulk-retry-loop-in-the-sink.md)
 
 ## Context
 The sink's HTTP clients (ADR-0005, ADR-0026) used code defaults that DESIGN §7 called "not

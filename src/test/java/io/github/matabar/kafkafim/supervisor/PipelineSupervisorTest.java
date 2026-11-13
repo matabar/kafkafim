@@ -170,9 +170,68 @@ class PipelineSupervisorTest {
   }
 
   @Test
+  void passthroughKeyTheConsumerOwnsFailsPreflightRatherThanRetrying() throws Exception {
+    // The DLQ producer accepts max.poll.records; the consumer factory rejects it. That is a
+    // configuration failure, not a group check that retries forever.
+    KafkafimProperties broken =
+        TestConfigs.bind(
+            """
+            kafkafim:
+              kafka:
+                clusters:
+                  k:
+                    bootstrap-servers: ["127.0.0.1:9"]
+                    properties: { max.poll.records: 5 }
+              elasticsearch:
+                clusters:
+                  es: { uris: ["http://127.0.0.1:9"] }
+              pipelines:
+                bad:
+                  source: { cluster: k, topics: [a] }
+                  routes: [ { default: true, cluster: es, index: a } ]
+            """);
+    PipelineResources brokenResources =
+        new PipelineResources(
+            relay,
+            p -> new ElasticsearchAuthCheck(p.elasticsearch().clusters()),
+            new PipelineResources.Settings(
+                // A 1s metadata timeout bounds the consumer group check against the dead broker.
+                new SourceOptions(
+                    1,
+                    0.5,
+                    Duration.ofSeconds(1),
+                    Duration.ofSeconds(1),
+                    Duration.ofSeconds(1),
+                    Duration.ofSeconds(1),
+                    Duration.ofSeconds(1),
+                    Duration.ofSeconds(1)),
+                Duration.ofSeconds(1),
+                new DlqOptions(
+                    Duration.ofMillis(100),
+                    Duration.ofSeconds(1),
+                    Duration.ofMillis(500),
+                    Duration.ofSeconds(1)),
+                ClientSettings.DEFAULT,
+                BreakerSettings.DEFAULT,
+                Clock.systemUTC()));
+    PipelineSupervisor failing = new PipelineSupervisor(broken, brokenResources, List.of());
+    failing.startPipeline("bad");
+    long deadline = System.nanoTime() + Duration.ofSeconds(30).toNanos();
+    while (failing.state("bad") == PipelineState.STARTING && System.nanoTime() < deadline) {
+      Thread.sleep(50);
+    }
+    assertThat(failing.state("bad")).isEqualTo(PipelineState.FAILED_PREFLIGHT);
+    assertThat(failing.failure("bad"))
+        .contains("configuration cannot run")
+        .contains("max.poll.records");
+    failing.stop();
+    brokenResources.close();
+  }
+
+  @Test
   void failedPreflightIsReportedAndStopsNothingElse() throws Exception {
-    // Kafka cluster k is unreachable, so the DLQ check is transient; an unknown ES identity is a
-    // configuration problem found in the same pass, which wins.
+    // Kafka cluster k is unreachable, so the DLQ and group checks are transient; an unknown ES
+    // identity is a configuration problem found in the same pass, which wins.
     KafkafimProperties broken =
         TestConfigs.bind(
             """
@@ -193,7 +252,16 @@ class PipelineSupervisorTest {
             relay,
             p -> new ElasticsearchAuthCheck(p.elasticsearch().clusters()),
             new PipelineResources.Settings(
-                SourceOptions.defaults(),
+                // A 1s metadata timeout bounds the consumer group check against the dead broker.
+                new SourceOptions(
+                    1,
+                    0.5,
+                    Duration.ofSeconds(1),
+                    Duration.ofSeconds(1),
+                    Duration.ofSeconds(1),
+                    Duration.ofSeconds(1),
+                    Duration.ofSeconds(1),
+                    Duration.ofSeconds(1)),
                 Duration.ofSeconds(1),
                 new DlqOptions(
                     Duration.ofMillis(100),
@@ -219,7 +287,8 @@ class PipelineSupervisorTest {
   @Test
   void stopInterruptsPreflightChecksWaitingForServersThatNeverAnswer() throws Exception {
     // Both the broker and the Elasticsearch cluster accept connections and never answer, so the
-    // DLQ describe and the _security/_authenticate request would each wait out a 10s timeout.
+    // DLQ describe and the _security/_authenticate request would each wait out a 10s timeout, and
+    // the consumer group describe the source's metadata timeout (30s).
     try (ServerSocket silent = new ServerSocket(0, 50, InetAddress.getLoopbackAddress())) {
       List<Socket> accepted = new CopyOnWriteArrayList<>();
       Thread acceptor =

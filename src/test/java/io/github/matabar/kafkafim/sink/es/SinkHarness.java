@@ -43,26 +43,36 @@ final class SinkHarness {
     return JSON.readTree(raw(admin, method, path, json));
   }
 
+  /**
+   * Performs a request as the admin and returns the raw body; fails on a non-2xx status.
+   *
+   * <p>{@link Rest5Client#performRequest} throws {@link ResponseException} only for 5xx: it returns
+   * every status below 500 as a normal response (see {@code Rest5ClientStatusContractTest}), so the
+   * status has to be checked here, not by catching the exception.
+   */
   static String raw(Rest5Client admin, String method, String path, @Nullable String json)
       throws IOException {
     Request request = new Request(method, path);
     if (json != null) {
       request.setJsonEntity(json);
     }
+    Response response;
     try {
-      Response response = admin.performRequest(request);
-      return EntityUtils.toString(response.getEntity(), UTF_8);
+      response = admin.performRequest(request);
     } catch (ResponseException e) {
-      throw new AssertionError(
-          method
-              + " "
-              + path
-              + " failed: "
-              + new String(EntityUtils.toByteArray(e.getResponse().getEntity()), UTF_8),
-          e);
+      response = e.getResponse();
+    }
+    String body;
+    try {
+      body = response.getEntity() == null ? "" : EntityUtils.toString(response.getEntity(), UTF_8);
     } catch (org.apache.hc.core5.http.ParseException e) {
       throw new IOException(e);
     }
+    int status = response.getStatusCode();
+    if (status / 100 != 2) {
+      throw new AssertionError(method + " " + path + " failed: HTTP " + status + ", body: " + body);
+    }
+    return body;
   }
 
   /** Records outcomes by handle; fails on a second outcome for one handle. */

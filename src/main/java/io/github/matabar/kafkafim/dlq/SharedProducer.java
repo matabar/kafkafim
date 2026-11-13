@@ -12,8 +12,8 @@ import org.jspecify.annotations.Nullable;
  * <p>Before the first record to a topic, the topic is described: kafka-clients' producer always
  * asks the broker to auto-create a topic it sends to, so producing blind would create a missing DLQ
  * topic on a broker with {@code auto.create.topics.enable=true} (ADR-0021 forbids it), and would
- * otherwise only surface as a metadata timeout. A missing or forbidden topic is remembered for one
- * second, so that many sends blocked on it do not describe it once each.
+ * otherwise only surface as a metadata timeout. A missing, forbidden or unreachable topic is
+ * remembered for one second, so that many sends blocked on it do not describe it once each.
  */
 final class SharedProducer {
 
@@ -53,9 +53,17 @@ final class SharedProducer {
     return check(topic, timeout);
   }
 
-  /** Describes the topic now and remembers the result. */
+  /**
+   * Describes the topic now and remembers the result, unless the calling thread was interrupted:
+   * {@link DlqClient#describe} then answers {@link TopicStatus#UNREACHABLE} without any broker
+   * saying so, and other pipelines' sends on this shared producer must not see that for the
+   * negative TTL.
+   */
   TopicStatus check(String topic, Duration timeout) {
     TopicStatus status = client.describe(topic, timeout);
+    if (status == TopicStatus.UNREACHABLE && Thread.currentThread().isInterrupted()) {
+      return status;
+    }
     topics.put(topic, new Checked(status, System.nanoTime()));
     return status;
   }

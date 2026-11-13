@@ -104,7 +104,7 @@ public final class PipelineMapping {
     List<RouteSpec<RouteTarget>> specs = new ArrayList<>(pipeline.routes().size());
     for (int i = 0; i < pipeline.routes().size(); i++) {
       Pipeline.Route route = pipeline.routes().get(i);
-      String label = route.name() != null ? route.name() : Integer.toString(i);
+      String label = route.label(i);
       List<ConditionSpec> when = new ArrayList<>(route.when().size());
       for (Pipeline.Condition condition : route.when()) {
         when.add(condition(label, condition));

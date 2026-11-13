@@ -37,6 +37,13 @@ public final class ConfigValidator {
   private static final Pattern BOOTSTRAP_SERVER =
       Pattern.compile("(?:[A-Za-z_]+://)?(\\[[0-9A-Fa-f:.%]+]|[A-Za-z0-9._-]+):(\\d{1,5})");
 
+  /**
+   * Pessimistic bulk throughput of a loaded cluster, for the {@code max-bytes} versus {@code
+   * response-timeout} warning: 1MB per second, so the warning fires when {@code max-bytes} in MB
+   * exceeds {@code response-timeout} in seconds (the defaults, 5MB and 60s, leave a factor of 12).
+   */
+  private static final DataSize SLOW_BULK_BYTES_PER_SECOND = DataSize.ofMegabytes(1);
+
   private static final Set<String> TIMESTAMP_FORMATS =
       Set.of("iso-8601", "epoch-millis", "epoch-seconds");
 
@@ -206,6 +213,65 @@ public final class ConfigValidator {
     ElasticsearchCluster.Client client = cluster.client();
     checkPositive(path + ".client.connect-timeout", client.connectTimeout());
     checkPositive(path + ".client.response-timeout", client.responseTimeout());
+    checkBulkFitsResponseTimeout(path, bulk.maxBytes(), client.responseTimeout());
+  }
+
+  /**
+   * Warns when a full bulk request is unlikely to be answered within the response timeout: a
+   * timeout is a request-level failure that is retried forever (DESIGN §7), so every full batch
+   * would only produce lag. The heuristic assumes {@link #SLOW_BULK_BYTES_PER_SECOND}, a
+   * pessimistic rate for a loaded cluster, so it fires only for clearly mismatched settings.
+   */
+  private void checkBulkFitsResponseTimeout(String path, DataSize maxBytes, Duration timeout) {
+    if (maxBytes == null || timeout == null || maxBytes.toBytes() <= 0) {
+      return;
+    }
+    if (timeout.isZero() || timeout.isNegative()) {
+      return; // reported as an error
+    }
+    double seconds = (double) maxBytes.toBytes() / SLOW_BULK_BYTES_PER_SECOND.toBytes();
+    // In doubles throughout: no Duration.toMillis() overflow, no sub-millisecond truncation.
+    double timeoutSeconds = timeout.getSeconds() + timeout.getNano() / 1e9;
+    if (seconds > timeoutSeconds) {
+      warnings.add(
+          path
+              + ".bulk.max-bytes: "
+              + spelled(maxBytes)
+              + " takes about "
+              + (long) Math.ceil(seconds)
+              + "s at "
+              + spelled(SLOW_BULK_BYTES_PER_SECOND)
+              + "/s, longer than client.response-timeout ("
+              + spelled(timeout)
+              + "); a slow cluster may time out every full bulk request and retry it forever."
+              + " Lower bulk.max-bytes or raise client.response-timeout");
+    }
+  }
+
+  /** {@code size} as the configuration would spell it: whole MB, KB or bytes. */
+  private static String spelled(DataSize size) {
+    long bytes = size.toBytes();
+    if (bytes % DataSize.ofMegabytes(1).toBytes() == 0) {
+      return size.toMegabytes() + "MB";
+    }
+    if (bytes % DataSize.ofKilobytes(1).toBytes() == 0) {
+      return size.toKilobytes() + "KB";
+    }
+    return bytes + "B";
+  }
+
+  /**
+   * {@code duration} as the configuration would spell it: whole seconds or milliseconds, else the
+   * ISO-8601 form.
+   */
+  private static String spelled(Duration duration) {
+    if (duration.getNano() == 0) {
+      return duration.getSeconds() + "s";
+    }
+    if (duration.getNano() % 1_000_000 == 0 && duration.getSeconds() < Long.MAX_VALUE / 1000) {
+      return duration.toMillis() + "ms";
+    }
+    return duration.toString();
   }
 
   private void checkElasticsearchIdentity(
@@ -401,6 +467,7 @@ public final class ConfigValidator {
     boolean firstMode = pipeline.routeMode() == Pipeline.RouteMode.FIRST;
     int defaults = 0;
     int drops = 0;
+    List<String> unconditionalDrops = new ArrayList<>();
     Map<String, Integer> names = new HashMap<>();
     for (int i = 0; i < routes.size(); i++) {
       Route route = routes.get(i);
@@ -429,6 +496,9 @@ public final class ConfigValidator {
       }
       if (route.isDrop()) {
         drops++;
+        if (!firstMode && !route.isDefault() && route.when().isEmpty()) {
+          unconditionalDrops.add(routePath);
+        }
         checkDropRoute(routePath, route);
         continue;
       }
@@ -466,6 +536,17 @@ public final class ConfigValidator {
           path
               + ".routes: every route has drop: true; the pipeline consumes and commits its topics"
               + " without indexing anything");
+    } else {
+      // In all mode a selected drop route cancels every other copy (ADR-0037), so one without
+      // conditions cancels the other routes for every document. A drop default is not affected:
+      // it is taken only when nothing else matched (the allowlist).
+      for (String routePath : unconditionalDrops) {
+        warnings.add(
+            routePath
+                + ": a drop: true route without conditions in route-mode: all selects every"
+                + " document and cancels every other route; the pipeline consumes and commits its"
+                + " topics without indexing anything");
+      }
     }
   }
 
@@ -493,9 +574,9 @@ public final class ConfigValidator {
   }
 
   /**
-   * A route's name is its {@code route} label; an unnamed route is labelled by its position and a
-   * document that failed before routing by {@value Route#NO_ROUTE_LABEL}. Rejects every name that
-   * would make two of those labels collide.
+   * A route's name is its {@code route} label ({@link Route#label}); an unnamed route is labelled
+   * by its position and a document that failed before routing by {@value Route#NO_ROUTE_LABEL}.
+   * Rejects every name that would make two of those labels collide.
    */
   private void checkRouteName(String path, String name, int position, Map<String, Integer> names) {
     if (name == null) {
