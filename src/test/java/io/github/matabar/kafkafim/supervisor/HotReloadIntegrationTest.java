@@ -279,6 +279,59 @@ class HotReloadIntegrationTest {
     awaitRunning(supervisor, "e", "f");
   }
 
+  // ---- recovery ----
+
+  @Test
+  void failedPreflightPipelineRecoversOnNoOpReloadOnceItsTopicExists() throws Exception {
+    // The DLQ topic is missing at startup, so preflight fails (ADR-0021: never created by
+    // kafkafim).
+    KafkaTopics.create(admin, List.of(new NewTopic("ra.events", 3, (short) 1)));
+    createUser("kfm-ra", "ra-secret-1");
+    writeSecret("writer-a", "kfm-ra", "ra-secret-1");
+    writeSecret("writer-b", "kfm-ra", "ra-secret-1");
+    writeConfig(false, pipeline("r", "ra.events", "writer-a", "ra-1")); // only the endpoint reloads
+    ConfigurableApplicationContext app = start();
+    PipelineSupervisor supervisor = app.getBean(PipelineSupervisor.class);
+    final MeterRegistry meters = app.getBean(MeterRegistry.class);
+    awaitFailedPreflight(supervisor, "r");
+    assertThat(supervisor.failure("r"))
+        .contains("DLQ topic 'ra.events.kafkafim-dlq'")
+        .contains("does not exist");
+    assertThat(gauge(meters, "r", "failed_preflight")).isEqualTo(1);
+    assertThat(readiness(app)).isEqualTo(503); // the pod's only pipeline is not started
+    // Records that arrive while the pipeline is down wait in the topic.
+    sendDocs("ra.events", "r", 0, 20);
+
+    // A reload while the cause is still there retries the pipeline, which fails the same way.
+    HttpResponse<String> stillMissing = postReload(app);
+    assertThat(stillMissing.statusCode()).isEqualTo(200);
+    assertThat(JSON.readTree(stillMissing.body()).get("retried").toString()).isEqualTo("[\"r\"]");
+    // The retry put it in `starting` before the reload returned, so this waits for its outcome.
+    awaitFailedPreflight(supervisor, "r");
+    assertThat(supervisor.failure("r")).contains("does not exist");
+
+    // The operator fixes the cause and reloads; nothing in the configuration changed.
+    KafkaTopics.create(admin, List.of(new NewTopic("ra.events.kafkafim-dlq", 1, (short) 1)));
+    HttpResponse<String> reloaded = postReload(app);
+    assertThat(reloaded.statusCode()).isEqualTo(200);
+    JsonNode body = JSON.readTree(reloaded.body());
+    assertThat(body.get("result").asString()).isEqualTo("unchanged");
+    assertThat(body.get("generation").asLong()).isEqualTo(1);
+    assertThat(body.get("retried").toString()).isEqualTo("[\"r\"]");
+    assertThat(body.get("restarted").toString()).isEqualTo("[]");
+    assertThat(body.get("unchanged").toString()).isEqualTo("[]");
+
+    awaitRunning(supervisor, "r");
+    assertThat(supervisor.failure("r")).isNull();
+    assertThat(gauge(meters, "r", "failed_preflight")).isZero();
+    assertThat(gauge(meters, "r", "running")).isEqualTo(1);
+    assertThat(readiness(app)).isEqualTo(200);
+    // It runs for real: what waited is indexed and committed, and so is what comes next.
+    sendDocs("ra.events", "r", 20, 30);
+    awaitCommittedToEnd("kafkafim.r", "ra.events");
+    assertThat(count("ra-1")).isEqualTo(30);
+  }
+
   // ---- application and files ----
 
   private ConfigurableApplicationContext start() {
@@ -380,6 +433,18 @@ class HotReloadIntegrationTest {
         HttpResponse.BodyHandlers.ofString());
   }
 
+  private static int readiness(ConfigurableApplicationContext app)
+      throws IOException, InterruptedException {
+    String port = app.getEnvironment().getProperty("local.server.port");
+    return http.send(
+            HttpRequest.newBuilder(
+                    URI.create("http://localhost:" + port + "/actuator/health/readiness"))
+                .timeout(TIMEOUT)
+                .build(),
+            HttpResponse.BodyHandlers.discarding())
+        .statusCode();
+  }
+
   // ---- assertions ----
 
   private static void awaitRunning(PipelineSupervisor supervisor, String... pipelines) {
@@ -390,6 +455,13 @@ class HotReloadIntegrationTest {
             assertThat(supervisor.state(pipeline)).isEqualTo(PipelineState.RUNNING);
           }
         });
+  }
+
+  private static void awaitFailedPreflight(PipelineSupervisor supervisor, String pipeline) {
+    await()
+        .atMost(TIMEOUT)
+        .untilAsserted(
+            () -> assertThat(supervisor.state(pipeline)).isEqualTo(PipelineState.FAILED_PREFLIGHT));
   }
 
   private static double generation(MeterRegistry meters) {
