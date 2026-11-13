@@ -61,7 +61,7 @@ tests:
           - exp_labels: { severity: warning, pipeline: logs }
             exp_annotations:
               summary: "Pipeline logs paused for 5m"
-              description: "Paused for a supervisor reason: breaker open, identity rejected or DLQ blocked. The reason is in the pod's WARN \"Pipeline '<name>': pausing (<reason>)\" line."
+              description: "Paused for a supervisor reason: breaker open, identity rejected or DLQ blocked. kafkafim_pipeline_pause_reason says which kind; the cluster or identity is in the pod's WARN \"Pipeline '<name>': pausing (<reason>)\" line."
               runbook_url: https://github.com/matabar/kafkafim/blob/main/docs/RUNBOOK.md#31-pipeline-state
 
   - name: end-to-end p99 above target

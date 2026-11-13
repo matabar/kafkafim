@@ -86,6 +86,13 @@ public final class PipelineMeters {
     gauge(
         TelemetryNames.ASSIGNED_PARTITIONS, null, m -> m.probe.assignedPartitions(), Tags.empty());
     gauge(TelemetryNames.KAFKA_CONNECTED, null, m -> m.probe.connected() ? 1 : 0, Tags.empty());
+    for (PauseReason reason : PauseReason.values()) {
+      gauge(
+          TelemetryNames.PAUSE_REASON,
+          null,
+          m -> m.probe.pauseReasons().contains(reason) ? 1 : 0,
+          Tags.of("reason", reason.label()));
+    }
     for (String topic : spec.topics()) {
       counter(TelemetryNames.RECORDS_CONSUMED, topic(topic));
       counter(TelemetryNames.BYTES_CONSUMED, topic(topic));
