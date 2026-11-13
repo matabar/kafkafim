@@ -391,6 +391,55 @@ class ConfigValidationTest {
       assertThat(ConfigValidator.validate(properties).warnings())
           .anyMatch(w -> w.startsWith(ES + ".bulk.max-bytes: " + parts[2] + ";"));
     }
+
+    @Test
+    void warnsWhenMaxBytesIsAboveTheDefaultHttpMaxContentLength() {
+      // A response-timeout long enough that the timeout warning stays out of the way.
+      KafkafimProperties properties =
+          ConfigTestSupport.bind(
+              MINIMAL, ES + ".bulk.max-bytes=101MB", ES + ".client.response-timeout=10m");
+
+      assertThat(ConfigValidator.validate(properties).warnings())
+          .filteredOn(w -> w.contains(".bulk.max-bytes"))
+          .containsExactly(
+              ES
+                  + ".bulk.max-bytes: 101MB is above Elasticsearch's default"
+                  + " http.max_content_length (100MB); unless the cluster raises that limit, it"
+                  + " rejects every larger bulk request with 413 and kafkafim splits the request"
+                  + " in halves and sends it again. Lower bulk.max-bytes to 100MB or less");
+    }
+
+    @Test
+    void warnsAboutBothTheTimeoutAndTheContentLength() {
+      KafkafimProperties properties = ConfigTestSupport.bind(MINIMAL, ES + ".bulk.max-bytes=200MB");
+
+      assertThat(ConfigValidator.validate(properties).warnings())
+          .filteredOn(w -> w.contains(".bulk.max-bytes"))
+          .satisfiesExactlyInAnyOrder(
+              w -> assertThat(w).contains("200MB takes about 200s at 1MB/s"),
+              w -> assertThat(w).contains("200MB is above Elasticsearch's default"));
+    }
+
+    @Test
+    void doesNotWarnAtTheDefaultHttpMaxContentLength() {
+      // A sealed batch never exceeds max-bytes, so 100MB itself still fits the limit.
+      KafkafimProperties properties =
+          ConfigTestSupport.bind(
+              MINIMAL, ES + ".bulk.max-bytes=100MB", ES + ".client.response-timeout=10m");
+
+      assertThat(ConfigValidator.validate(properties).warnings())
+          .noneMatch(w -> w.contains(".bulk.max-bytes"));
+    }
+
+    @Test
+    void warnsOneByteAboveTheDefaultHttpMaxContentLength() {
+      KafkafimProperties properties =
+          ConfigTestSupport.bind(
+              MINIMAL, ES + ".bulk.max-bytes=104857601B", ES + ".client.response-timeout=10m");
+
+      assertThat(ConfigValidator.validate(properties).warnings())
+          .anyMatch(w -> w.startsWith(ES + ".bulk.max-bytes: 104857601B is above Elasticsearch's"));
+    }
   }
 
   @Nested
