@@ -345,11 +345,14 @@ spec:
 
 - Policies are additive, and this one lists only `Egress`, so it changes nothing
   about ingress: it works with `networkPolicy.enabled` on or off.
-- Once it selects the pods, every destination it does not list is denied. A missing
-  Kafka or Elasticsearch rule shows up as a pipeline that stays `starting`
-  ([RUNBOOK §5.3](RUNBOOK.md#53-kafka-unreachable),
-  [§5.12](RUNBOOK.md#512-pipeline-stuck-in-starting)); a missing OTLP rule only stops
-  telemetry, the pipelines keep running.
+- Once it selects the pods, every destination it does not list is denied. On a pod
+  that starts under the policy, a missing Kafka or Elasticsearch rule shows up as a
+  pipeline that stays `starting` ([RUNBOOK §5.3](RUNBOOK.md#53-kafka-unreachable),
+  [§5.12](RUNBOOK.md#512-pipeline-stuck-in-starting)). On a pod that was already
+  running, Kafka loss leaves the pipeline `running` with `kafkafim_kafka_connected == 0`
+  and Elasticsearch loss pauses it
+  ([§5.1](RUNBOOK.md#51-elasticsearch-outage-circuit-breaker-open)). A missing OTLP
+  rule only stops telemetry; the pipelines keep running.
 - A destination that runs in the same Kubernetes cluster (an in-cluster APM Server,
   or everything in a local demo) is selected with `namespaceSelector` / `podSelector`
   instead of `ipBlock`; `ipBlock` is meant for addresses outside the cluster.

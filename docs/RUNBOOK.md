@@ -314,11 +314,11 @@ Secrets reach the application as files through Spring's `configtree`
 
 **TLS files are the exception.** Truststores, keystores and `ssl.ca-certificate` are
 referenced by **path**; only their passwords are properties. When a certificate or
-keystore file changes but its path and password stay the same (for example
-cert-manager renewing a keystore), the reload sees an identical configuration and
-answers `unchanged`; running Kafka and Elasticsearch clients keep the old material,
-read when they were built. After rotating TLS files, restart the affected groups'
-pods ([§2.4](#24-restart-pods)). A rotation that also changes the file's path (the
+keystore file changes but its path, password and store type stay the same (for
+example cert-manager renewing a keystore), the reload sees an identical configuration
+and answers `unchanged`; running Kafka and Elasticsearch clients keep the old
+material, read when they were built. After rotating TLS files, restart the affected
+groups' pods ([§2.4](#24-restart-pods)). A rotation that also changes the file's path (the
 new file mounted under a new name), its password (a `configtree` property) or its
 store type reloads normally: the identity or cluster definition changed, so the
 restarted pipelines build new clients from the new files.
