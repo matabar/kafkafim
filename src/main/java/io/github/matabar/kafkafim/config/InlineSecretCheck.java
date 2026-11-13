@@ -12,7 +12,7 @@ import org.springframework.boot.context.properties.source.ConfigurationPropertyN
 import org.springframework.boot.context.properties.source.ConfigurationPropertySource;
 import org.springframework.boot.env.ConfigTreePropertySource;
 import org.springframework.boot.origin.Origin;
-import org.springframework.boot.origin.OriginLookup;
+import org.springframework.boot.origin.PropertySourceOrigin;
 import org.springframework.core.env.PropertySource;
 
 /**
@@ -114,14 +114,14 @@ final class InlineSecretCheck {
   }
 
   /**
-   * Follows {@code ${name}} to the value the binder would substitute. The binder asks Boot's
-   * attached {@code configurationProperties} source first, which takes the first source, in
-   * precedence order, that has the name under relaxed matching (another case, an environment
-   * variable's form); only when none has it, or the name is not a valid property name, do the
-   * sources answer by the exact name. Looking up in any other order could accept a mounted file
-   * while the binder substitutes a literal from a source that wins over it. In an environment
-   * without the attached source the binder resolves exact names only, so there this is stricter
-   * than the binder, never laxer.
+   * Follows {@code ${name}} to the value the binder would substitute. It requires what both real
+   * paths have: Boot's {@code configurationProperties} source attached first in the environment
+   * ({@code SpringApplication} at startup, {@link ConfigLoader#load} for a reload). The binder then
+   * asks that source first, which takes the first source, in precedence order, that has the name
+   * under relaxed matching (another case, an environment variable's form); only when none has it,
+   * or the name is not a valid property name, do the sources answer by the exact name. Looking up
+   * in any other order could accept a mounted file while the binder substitutes a literal from a
+   * source that wins over it.
    */
   private static Resolution follow(
       String name, Iterable<ConfigurationPropertySource> sources, int depth) {
@@ -148,13 +148,11 @@ final class InlineSecretCheck {
       if (value == null) {
         continue;
       }
-      Origin origin =
-          propertySource instanceof OriginLookup<?> lookup ? originOf(lookup, name) : null;
       return resolve(
           name,
           propertySource instanceof ConfigTreePropertySource,
           value,
-          origin != null ? origin.toString() : propertySource.getName(),
+          origin(PropertySourceOrigin.get(propertySource, name)),
           sources,
           depth);
     }
@@ -176,11 +174,6 @@ final class InlineSecretCheck {
       return follow(next.group(1), sources, depth + 1);
     }
     return new Resolution(Kind.LITERAL, name, origin);
-  }
-
-  @SuppressWarnings("unchecked")
-  private static Origin originOf(OriginLookup<?> lookup, String name) {
-    return ((OriginLookup<String>) lookup).getOrigin(name);
   }
 
   private static boolean isSecretFile(ConfigurationPropertySource source) {

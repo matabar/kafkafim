@@ -63,8 +63,15 @@ public final class ConfigLoader {
    * Binds and validates {@code kafkafim.*} from {@code environment}; never throws for an invalid
    * tree.
    *
-   * @param environment a fully loaded environment (config data processed)
+   * <p>Attaches Boot's {@code configurationProperties} source to {@code environment} when it is not
+   * attached yet, as {@code SpringApplication} does at startup: placeholders then resolve through
+   * relaxed names exactly as they do there, which is the resolution the inline-secret check
+   * mirrors.
+   *
+   * @param environment a fully loaded environment (config data processed); must be a {@code
+   *     ConfigurableEnvironment}
    * @return the tree, or every problem found
+   * @throws IllegalArgumentException if {@code environment} is not configurable
    */
   public static Result load(Environment environment) {
     try {
@@ -72,6 +79,7 @@ public final class ConfigLoader {
     } catch (IllegalStateException e) {
       return new Result(null, List.of(e.getMessage()));
     }
+    ConfigurationPropertySources.attach(environment);
     Iterable<ConfigurationPropertySource> sources = ConfigurationPropertySources.get(environment);
     Binder binder =
         new Binder(

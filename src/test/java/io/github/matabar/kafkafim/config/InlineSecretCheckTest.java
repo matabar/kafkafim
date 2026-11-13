@@ -322,12 +322,13 @@ class InlineSecretCheckTest {
     return password[0];
   }
 
-  private static List<String> dashedErrors(List<PropertySource<?>> sources) {
+  private static List<String> dashedErrors(List<PropertySource<?>> sources, String... overrides) {
     List<String> errors = new ArrayList<>();
     ConfigTestSupport.runner(MINIMAL, Map.of())
         .withInitializer(context -> addFirstAndAttach(context.getEnvironment(), sources))
         .withPropertyValues(SASL)
         .withPropertyValues(DASHED.split("\n"))
+        .withPropertyValues(overrides)
         .run(context -> {
           assertThat(context).hasFailed();
           for (Throwable t = context.getStartupFailure(); t != null; t = t.getCause()) {
@@ -368,6 +369,7 @@ class InlineSecretCheckTest {
 
   @Test
   void acceptsTheMountedFileThatWinsOverTheRelaxedEnvironmentVariable() {
+    // boundDashedPassword asserts that the context started, so the check accepted the tree.
     assertThat(
             boundDashedPassword(List.of(dashDroppedEnvironmentVariable(), mountedDashedSecret())))
         .isEqualTo("file");
@@ -376,6 +378,38 @@ class InlineSecretCheckTest {
   @Test
   void rejectsRelaxedEnvironmentVariableWithoutMountedFile() {
     assertThat(dashedErrors(List.of(dashDroppedEnvironmentVariable())))
+        .singleElement()
+        .asString()
+        .contains("placeholder ${kafka.k.reader-a.password} resolves to a literal value")
+        .doesNotContain("hunter2");
+  }
+
+  @Test
+  void rejectsEnvironmentVariableInCanonicalFormForLowerCasePlaceholder() {
+    SystemEnvironmentPropertySource environment =
+        new SystemEnvironmentPropertySource(
+            StandardEnvironment.SYSTEM_ENVIRONMENT_PROPERTY_SOURCE_NAME,
+            Map.of("KAFKA_K_READER_A_PASSWORD", "hunter2"));
+
+    assertThat(dashedErrors(List.of(mountedDashedSecret(), environment)))
+        .singleElement()
+        .asString()
+        .contains(
+            "placeholder ${kafka.k.reader-a.password} resolves to a literal value",
+            "KAFKA_K_READER_A_PASSWORD",
+            StandardEnvironment.SYSTEM_ENVIRONMENT_PROPERTY_SOURCE_NAME)
+        .doesNotContain("hunter2");
+  }
+
+  @Test
+  void rejectsAliasChainEndingInRelaxedEnvironmentVariable() {
+    MapPropertySource alias =
+        new MapPropertySource("alias", Map.of("my.alias", "${kafka.k.reader-a.password}"));
+
+    assertThat(
+            dashedErrors(
+                List.of(mountedDashedSecret(), alias, dashDroppedEnvironmentVariable()),
+                K + ".identities.reader-a.sasl.password=${my.alias}"))
         .singleElement()
         .asString()
         .contains("placeholder ${kafka.k.reader-a.password} resolves to a literal value")
