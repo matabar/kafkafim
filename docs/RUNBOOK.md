@@ -421,8 +421,9 @@ tooling shows it too (`kafka-consumer-groups.sh --describe --group kafkafim.<pip
   lag from the brokers' side.
 - **Check**: broker health, DNS, network policy/firewall from the pod's namespace to
   `bootstrap-servers`, TLS trust (an expired or rotated cluster CA shows up as an SSL
-  handshake failure in the logs; a rotated truststore file needs a pod restart,
-  [§4.3](#43-rotating-a-secret)).
+  handshake failure in the logs; running clients keep a truststore file replaced under
+  the same path and password until a pod restart, while a new path, password or type
+  reloads without one, [§4.3](#43-rotating-a-secret)).
 - **Action**: fix the path; kafkafim recovers by itself. Restart pods only if a
   pipeline stays wedged after Kafka is back (see [§5.7](#57-pipeline-shows-running-but-consumes-nothing)).
 
