@@ -118,6 +118,114 @@ class PipelineSupervisorTest {
   }
 
   @Test
+  void forcedOpenPausesAndDisabledOrMetricsOnlyResumes() {
+    esListener()
+        .onBreakerStateChange("es", CircuitBreaker.State.CLOSED, CircuitBreaker.State.FORCED_OPEN);
+    assertThat(supervisor.pauseReasons("to-es")).containsExactly("es-breaker:es");
+    esListener()
+        .onBreakerStateChange(
+            "es", CircuitBreaker.State.FORCED_OPEN, CircuitBreaker.State.DISABLED);
+    assertThat(supervisor.pauseReasons("to-es")).isEmpty();
+
+    esListener()
+        .onBreakerStateChange("es", CircuitBreaker.State.DISABLED, CircuitBreaker.State.OPEN);
+    assertThat(supervisor.pauseReasons("to-es")).containsExactly("es-breaker:es");
+    esListener()
+        .onBreakerStateChange("es", CircuitBreaker.State.OPEN, CircuitBreaker.State.METRICS_ONLY);
+    assertThat(supervisor.pauseReasons("to-es")).isEmpty();
+    // A repeated event changes nothing and reports nothing.
+    esListener()
+        .onBreakerStateChange("es", CircuitBreaker.State.OPEN, CircuitBreaker.State.METRICS_ONLY);
+    assertThat(events)
+        .containsExactly(
+            "to-es=[es-breaker:es]",
+            "to-both=[es-breaker:es]",
+            "to-es=[]",
+            "to-both=[]",
+            "to-es=[es-breaker:es]",
+            "to-both=[es-breaker:es]",
+            "to-es=[]",
+            "to-both=[]");
+  }
+
+  @Test
+  void eachClustersBreakerPausesAndResumesOnItsOwn() {
+    Object es2 = runtime("to-es2").context().sinks().get("es2");
+    SinkListener es2Listener = relay.sinkListener(() -> es2);
+
+    esListener().onBreakerStateChange("es", CircuitBreaker.State.CLOSED, CircuitBreaker.State.OPEN);
+    es2Listener.onBreakerStateChange("es2", CircuitBreaker.State.CLOSED, CircuitBreaker.State.OPEN);
+    assertThat(supervisor.pauseReasons("to-es")).containsExactly("es-breaker:es");
+    assertThat(supervisor.pauseReasons("to-both"))
+        .containsExactlyInAnyOrder("es-breaker:es", "es-breaker:es2");
+    assertThat(supervisor.pauseReasons("to-es2")).containsExactly("es-breaker:es2");
+
+    // es is back: a pipeline that also routes to es2 stays paused for es2.
+    esListener().onBreakerStateChange("es", CircuitBreaker.State.OPEN, CircuitBreaker.State.CLOSED);
+    assertThat(supervisor.pauseReasons("to-es")).isEmpty();
+    assertThat(supervisor.pauseReasons("to-both")).containsExactly("es-breaker:es2");
+    assertThat(supervisor.pauseReasons("to-es2")).containsExactly("es-breaker:es2");
+
+    es2Listener.onBreakerStateChange("es2", CircuitBreaker.State.OPEN, CircuitBreaker.State.CLOSED);
+    assertThat(supervisor.pauseReasons("to-both")).isEmpty();
+    assertThat(supervisor.pauseReasons("to-es2")).isEmpty();
+  }
+
+  @Test
+  void breakerEventsOfUnusedRegistriesAreIgnored() {
+    // A breaker of another registry (a configuration generation every pipeline left), an event
+    // without an owner, and es's registry reporting a cluster it does not own.
+    relay
+        .sinkListener(Object::new)
+        .onBreakerStateChange("es", CircuitBreaker.State.CLOSED, CircuitBreaker.State.OPEN);
+    relay
+        .sinkListener(() -> null)
+        .onBreakerStateChange("es", CircuitBreaker.State.CLOSED, CircuitBreaker.State.OPEN);
+    esListener()
+        .onBreakerStateChange("es2", CircuitBreaker.State.CLOSED, CircuitBreaker.State.OPEN);
+    assertThat(supervisor.pauseReasons("to-es")).isEmpty();
+    assertThat(supervisor.pauseReasons("to-both")).isEmpty();
+    assertThat(supervisor.pauseReasons("to-es2")).isEmpty();
+    assertThat(events).isEmpty();
+
+    // Nor does such an event resume what the pipelines' own registry paused.
+    esListener().onBreakerStateChange("es", CircuitBreaker.State.CLOSED, CircuitBreaker.State.OPEN);
+    relay
+        .sinkListener(Object::new)
+        .onBreakerStateChange("es", CircuitBreaker.State.OPEN, CircuitBreaker.State.CLOSED);
+    assertThat(supervisor.pauseReasons("to-es")).containsExactly("es-breaker:es");
+    assertThat(supervisor.pauseReasons("to-both")).containsExactly("es-breaker:es");
+  }
+
+  /**
+   * The wiring from a registry's own breaker to the pause, not just the supervisor's handler: the
+   * registry {@link PipelineResources} built reports its breaker's transitions with itself as
+   * owner. {@code breakerState} is what the breaker gauge shows.
+   */
+  @Test
+  void theRegistrysOwnBreakerOpeningPausesItsPipelinesAndClosingResumesThem() {
+    CircuitBreaker breaker = runtime("to-es").context().sinks().get("es").breaker("es");
+    assertThat(supervisor.breakerState("es")).isEqualTo(CircuitBreaker.State.CLOSED);
+    assertThat(supervisor.breakerState("nope")).isNull();
+
+    breaker.transitionToOpenState();
+    await().until(() -> supervisor.pauseReasons("to-es").equals(Set.of("es-breaker:es")));
+    assertThat(supervisor.pauseReasons("to-both")).containsExactly("es-breaker:es");
+    assertThat(supervisor.pauseReasons("to-es2")).isEmpty();
+    assertThat(supervisor.breakerState("es")).isEqualTo(CircuitBreaker.State.OPEN);
+    assertThat(supervisor.breakerState("es2")).isEqualTo(CircuitBreaker.State.CLOSED);
+
+    breaker.transitionToHalfOpenState();
+    await().until(() -> supervisor.breakerState("es") == CircuitBreaker.State.HALF_OPEN);
+    assertThat(supervisor.pauseReasons("to-es")).containsExactly("es-breaker:es");
+
+    breaker.transitionToClosedState();
+    await().until(() -> supervisor.pauseReasons("to-es").isEmpty());
+    assertThat(supervisor.pauseReasons("to-both")).isEmpty();
+    assertThat(supervisor.breakerState("es")).isEqualTo(CircuitBreaker.State.CLOSED);
+  }
+
+  @Test
   void authEventWithoutCurrentSinkLeavesNoPause() {
     // A late event from a sink of an earlier run (or of a pipeline that is not started) must not
     // pause a source that nothing would ever resume: the current sink's auth state decides.
