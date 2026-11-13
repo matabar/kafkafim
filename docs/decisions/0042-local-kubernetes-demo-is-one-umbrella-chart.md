@@ -9,9 +9,9 @@ The local Kubernetes demo was four steps hidden in `demo.sh`: create two Secrets
 export was switched off and neither dashboard could be shown.
 
 In production Kafka, Elasticsearch, Grafana and the APM Server that receives OTLP are all
-external; the chart deploys only kafkafim, and dashboards and alerts are uploaded by
-hand. Locally, the whole thing must come up with a single `helm install` (#180), with
-`grafana/otel-lgtm` as the observability stack, as in Compose.
+external; the chart deploys only kafkafim, and dashboards and alerts ship with each
+release and are uploaded by hand. Locally, the whole thing must come up with a single
+`helm install` (#180), with `grafana/otel-lgtm` as the observability stack, as in Compose.
 
 ## Decision
 - The demo is a demo-only umbrella chart, `deploy/local/kafkafim-demo`. Its templates are

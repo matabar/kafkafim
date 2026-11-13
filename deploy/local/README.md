@@ -14,6 +14,11 @@ receives OTLP are external, and `charts/kafkafim` deploys only kafkafim (ADR-001
 demo is a separate, demo-only chart, [kafkafim-demo](kafkafim-demo), which is never
 packaged or released
 ([ADR-0042](../../docs/decisions/0042-local-kubernetes-demo-is-one-umbrella-chart.md)).
+In production the dashboards and alert rules come from the release (its air-gap bundle
+or its assets) and are loaded by hand
+([deploy/grafana](../grafana/README.md#where-they-ship)); the demo loads the same
+dashboards from this checkout. It does not load the alert rules: otel-lgtm's Prometheus
+has no `rule_files`, as in the Compose demo.
 
 ## What it deploys
 
