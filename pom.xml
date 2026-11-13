@@ -30,7 +30,7 @@
 		<!-- CI-friendly version: releases pass -Drevision=<git tag> (docs/DELIVERY.md) -->
 		<revision>0.1.0-SNAPSHOT</revision>
 		<!-- Libraries not managed by the Spring Boot BOM -->
-		<resilience4j.version>2.3.0</resilience4j.version>
+		<resilience4j.version>2.4.0</resilience4j.version>
 		<archunit.version>1.5.1</archunit.version>
 		<!-- Not in the Boot, OpenTelemetry or Micrometer BOMs: keep equal to the version
 		     micrometer-registry-otlp ${micrometer.version} depends on (runtime scope).
