@@ -8,6 +8,7 @@ import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Profile;
 
 /**
  * The telemetry beans (DESIGN §10): the §10 meters, the batch span recorder and the sampler that
@@ -15,6 +16,7 @@ import org.springframework.context.annotation.Configuration;
  * are declared by it.
  */
 @Configuration(proxyBeanMethods = false)
+@Profile("!validate")
 public class TelemetryConfiguration {
 
   @Bean(destroyMethod = "close")
