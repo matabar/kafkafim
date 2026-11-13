@@ -38,12 +38,14 @@ public class KafkafimConfiguration {
   /**
    * Under the {@code validate} profile only: logs the summary of the configuration that just bound
    * and validated (DESIGN §5.6). Creating this bean needs the bound tree, so an invalid one fails
-   * startup before anything is logged here.
+   * startup before anything is logged here. A tree that defines nothing fails here too ({@link
+   * ValidateProfile#requireConfiguration}).
    */
   @Bean
   @Profile(ValidateProfile.NAME)
   ValidateProfile.Summary kafkafimValidationSummary(
       KafkafimProperties properties, Environment environment) {
+    ValidateProfile.requireConfiguration(properties);
     ValidateProfile.Summary summary =
         ValidateProfile.summary(properties, ConfigurationPropertySources.get(environment));
     LOG.info("{}", summary.text());

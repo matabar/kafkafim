@@ -74,6 +74,18 @@ class ValidateProfileIntegrationTest {
   }
 
   @Test
+  void missingConfigurationFailsStartup() {
+    // Only what the image itself carries (application.yaml and application-validate.yaml), as when
+    // application-kafkafim.yaml is not mounted where the image reads it.
+    SpringApplicationBuilder application =
+        new SpringApplicationBuilder(KafkafimApplication.class).profiles("validate", "kafkafim");
+
+    assertThatThrownBy(application::run)
+        .hasStackTraceContaining("No kafkafim configuration found")
+        .hasStackTraceContaining("/etc/kafkafim/config/");
+  }
+
+  @Test
   void literalSecretFailsStartup() {
     SpringApplicationBuilder application = application(K + ".identities.r.sasl.password=hunter2");
 
