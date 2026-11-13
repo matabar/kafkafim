@@ -5,10 +5,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 import io.github.matabar.kafkafim.config.KafkafimProperties;
 import io.github.matabar.kafkafim.config.Pipeline;
 import io.github.matabar.kafkafim.sink.es.SinkKey;
+import io.github.matabar.kafkafim.telemetry.BatchTracer;
 import io.github.matabar.kafkafim.telemetry.KafkafimMeters;
 import io.github.matabar.kafkafim.telemetry.TelemetryNames;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import io.micrometer.tracing.Tracer;
 import java.util.List;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -62,8 +64,9 @@ class TelemetryBinderTest {
 
     // An auth failure reported under the sink's key counts on the series registered at startup.
     Pipeline.Route route = properties.pipelines().get("orders").routes().get(0);
+    assertThat(route.identity()).isEqualTo("writer");
     SinkKey key = new SinkKey("orders", route.cluster(), route.identity());
-    meters.pipeline(key.pipeline()).authFailure(key.cluster(), key.identity());
+    new TelemetryListener(meters, new BatchTracer(Tracer.NOOP)).onAuthFailure(key, 401, "{}");
 
     assertThat(authFailureSeries()).containsExactlyInAnyOrder("es/writer", "es2/none");
     Counter writer =

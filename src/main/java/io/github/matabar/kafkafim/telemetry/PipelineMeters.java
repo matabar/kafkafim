@@ -181,7 +181,8 @@ public final class PipelineMeters {
     if (counter == null) {
       // Registered per outcome on first use, so route="none" only ever gets outcome="dlq".
       counter = counter(TelemetryNames.DOCS, Tags.of("route", route, "outcome", outcome.label()));
-      // A benign race: threads filling the same slot get the same Counter from the meter cache.
+      // A benign race: threads filling the same slot get the same Counter from the meter cache
+      // (after close(), no-op counters).
       counters[outcome.ordinal()] = counter;
     }
     counter.increment();
