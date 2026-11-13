@@ -669,7 +669,12 @@ A route matches when **all** of its `when` conditions hold. Condition types:
   objects, arrays, `null` and a missing field match nothing.
 - `prefix`/`matches` apply to string fields only; any other type does not match. A
   value long enough to overflow `java.util.regex`'s stack (constructs like `(a|b)*`
-  recurse per repetition) counts as no match instead of failing the record.
+  recurse per repetition) counts as no match instead of failing the record. That is
+  deliberately silent: no log line and no metric say that the guard was hit (decided
+  on #159; kafkafim stays light, and `route` cannot log, ADR-0003). The document is
+  then routed like any other that did not match: to a later route, the default route,
+  or the DLQ as `no_route`. Prefer patterns without such constructs (`[ab]*` instead
+  of `(a|b)*`) where values can be long.
 - `header` compares the UTF-8 bytes of `v` with the value of the **last** header of
   that name (Kafka allows repeats); a missing header or a null value does not match.
 
