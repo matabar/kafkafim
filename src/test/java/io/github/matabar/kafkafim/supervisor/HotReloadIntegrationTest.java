@@ -104,6 +104,23 @@ class HotReloadIntegrationTest {
             "admin",
             ClientSettings.DEFAULT);
     http = HttpClient.newHttpClient();
+    awaitSecurityReady();
+  }
+
+  /**
+   * The container's wait strategy returns on the node's "started" log line, when security can still
+   * be initialising: the admin's first request is then answered 401 (#198). Waits until the admin
+   * authenticates and the cluster is at least yellow.
+   */
+  private static void awaitSecurityReady() {
+    await()
+        .atMost(TIMEOUT)
+        .pollInterval(Duration.ofMillis(500))
+        .ignoreExceptions()
+        .untilAsserted(() -> {
+          call("GET", "/_security/_authenticate", null);
+          call("GET", "/_cluster/health?wait_for_status=yellow&timeout=5s", null);
+        });
   }
 
   @AfterAll
