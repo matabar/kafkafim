@@ -54,6 +54,7 @@ class KafkaClientSecurityTest {
     expected.put("ssl.keystore.location", "/k.p12");
     expected.put("ssl.keystore.password", "kp");
     expected.put("ssl.key.password", "kk");
+    expected.put("ssl.keystore.type", "PKCS12");
     expected.put("sasl.mechanism", "SCRAM-SHA-512");
     expected.put(
         "sasl.jaas.config",
@@ -68,7 +69,7 @@ class KafkaClientSecurityTest {
             identities:
               r:
                 sasl: { mechanism: SCRAM-SHA-512, username: 'u"1', password: 'p\\2' }
-                ssl: { keystore-location: /k.p12, keystore-password: kp, key-password: kk }
+                ssl: { keystore-location: /k.p12, keystore-password: kp, key-password: kk, keystore-type: PKCS12 }
             """);
 
     assertThat(KafkaClientSecurity.properties(cluster, cluster.identities().get("r")))
@@ -86,6 +87,23 @@ class KafkaClientSecurityTest {
 
     assertThat(KafkaClientSecurity.properties(cluster, null))
         .containsExactly(Map.entry("ssl.truststore.location", "/t.jks"));
+  }
+
+  @Test
+  void emptyPasswordsAndTypesContributeNoKey() {
+    KafkaCluster cluster =
+        cluster(
+            """
+            security-protocol: SSL
+            ssl: { truststore-location: /t.jks, truststore-password: "", truststore-type: "" }
+            default-identity: r
+            identities:
+              r:
+                ssl: { keystore-location: /k.jks, keystore-password: "", key-password: "" }
+            """);
+
+    assertThat(KafkaClientSecurity.properties(cluster, cluster.identities().get("r")))
+        .containsOnlyKeys("ssl.truststore.location", "ssl.keystore.location");
   }
 
   @Test
