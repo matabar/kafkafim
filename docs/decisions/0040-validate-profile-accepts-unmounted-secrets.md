@@ -1,6 +1,6 @@
 # ADR-0040: The `validate` profile accepts secrets that are not mounted
 
-Status: accepted; since #177 a tree that defines no cluster and no pipeline fails under the profile (DESIGN §5.6), while clusters without pipelines stay valid · Date: 2026-11-13 · Refines [ADR-0012](0012-spring-configuration-helm-configtree-hot-reload.md) and [ADR-0018](0018-no-cli-single-run-mode.md)
+Status: accepted; refined by [ADR-0043](0043-validate-profile-fails-on-an-empty-configuration.md): a tree that defines no cluster and no pipeline fails under the profile, while clusters without pipelines stay valid · Date: 2026-11-13 · Refines [ADR-0012](0012-spring-configuration-helm-configtree-hot-reload.md) and [ADR-0018](0018-no-cli-single-run-mode.md)
 
 ## Context
 ADR-0012 and ADR-0018 give the infrastructure repository's CI a `validate` profile: the

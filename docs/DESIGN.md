@@ -851,7 +851,7 @@ in `ConfigValidator`, whose messages never include values.
   5.7 run in the same pass), each as `<property path>: <problem>`; readiness never goes
   green. The `local` profile active, or `kafkafim.allow-inline-secrets=true` set, on
   `CloudPlatform.KUBERNETES` stops startup before binding (section 5.4).
-- **`validate` profile** (`config/ValidateProfile`, ADR-0040): started with
+- **`validate` profile** (`config/ValidateProfile`, ADR-0040, ADR-0043): started with
   `--spring.profiles.active=validate,kafkafim` and a rendered
   `application-kafkafim.yaml` mounted at `/etc/kafkafim/config/`, the application
   binds and validates, logs a summary, and exits 0; an invalid tree fails startup
