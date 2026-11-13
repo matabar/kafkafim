@@ -180,11 +180,13 @@ final class KafkaGroupCheck {
   /**
    * The verdict for an existing topic's authorized operations.
    *
-   * @param operations what the broker lists, or {@code null} when it lists nothing (an old broker)
+   * @param operations what the broker lists; {@code null} or empty when it lists nothing, as for
+   *     the group ({@link #classify})
    * @return OK when the identity may read the topic or the broker did not say
    */
   static Preflight.Status classifyTopic(@Nullable Set<AclOperation> operations) {
     if (operations == null
+        || operations.isEmpty()
         || operations.contains(AclOperation.READ)
         || operations.contains(AclOperation.ALL)) {
       return Preflight.Status.OK;

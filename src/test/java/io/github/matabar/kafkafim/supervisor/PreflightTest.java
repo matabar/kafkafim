@@ -244,6 +244,8 @@ class PreflightTest {
         .isEqualTo(Preflight.Status.OK);
     // An old broker lists nothing: it cannot say, so the first fetch is the check.
     assertThat(KafkaGroupCheck.classifyTopic(null)).isEqualTo(Preflight.Status.OK);
+    // Nor can one that answers an empty list instead of leaving it out (#176).
+    assertThat(KafkaGroupCheck.classifyTopic(Set.of())).isEqualTo(Preflight.Status.OK);
     assertThat(
             KafkaGroupCheck.classifyTopic(
                 Set.of(AclOperation.DESCRIBE, AclOperation.WRITE, AclOperation.DESCRIBE_CONFIGS)))
