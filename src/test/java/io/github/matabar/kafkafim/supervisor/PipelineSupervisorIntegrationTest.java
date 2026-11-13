@@ -278,12 +278,15 @@ class PipelineSupervisorIntegrationTest {
 
   /**
    * The outage of (c), seen from the supervisor: bulk requests that fail fast enough open the
-   * cluster's breaker, the pipeline pauses for {@code es-breaker:<cluster>} and stops fetching, and
-   * it resumes by itself once the breaker's probes are answered again.
+   * cluster's breaker, the pipeline pauses for {@code es-breaker:<cluster>} and commits nothing
+   * more, and it resumes by itself once the breaker's probes are answered again.
    */
   @Test
   void openBreakerPausesThePipelineUntilElasticsearchAnswersAgain() throws Exception {
     createTopics(2, "g.events", "g.events.kafkafim-dlq");
+    // Created up front: with the 1s response timeout below, a first bulk request that also has to
+    // create the index could time out on a slow node and count against the breaker early.
+    createIndex("g-docs", "{}");
     Map<String, Object> props =
         new PipelineProps("g").topic("g.events").defaultRoute("g-docs").map();
     // A paused node answers nothing: with the default 60s response timeout the breaker's ten
