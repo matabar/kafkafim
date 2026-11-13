@@ -22,21 +22,25 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 import org.apache.kafka.clients.admin.Admin;
 import org.apache.kafka.clients.admin.ConsumerGroupDescription;
 import org.apache.kafka.clients.admin.MemberDescription;
 import org.apache.kafka.clients.admin.NewTopic;
+import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.GroupState;
+import org.apache.kafka.common.KafkaException;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.errors.GroupIdNotFoundException;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import org.springframework.kafka.core.DefaultKafkaConsumerFactory;
 import org.springframework.util.unit.DataSize;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
@@ -354,6 +358,73 @@ class KafkaPipelineSourceIntegrationTest {
   }
 
   @Test
+  void startThatFailsPartWayStopsTheConsumersAlreadyStarted() throws Exception {
+    String topic = createTopic(2);
+    produce(topic, 0, 5, 10);
+    produce(topic, 1, 5, 10);
+    Pipeline.Source config = source(topic, 500, DataSize.ofMegabytes(1));
+    // The second of the two consumers cannot be created; the first exists by then, and would
+    // start polling as soon as the failed start returns.
+    AtomicBoolean failing = new AtomicBoolean(true);
+    List<String> created = new CopyOnWriteArrayList<>();
+    KafkaCluster local =
+        new KafkaCluster(List.of(KAFKA.getBootstrapServers()), null, null, null, null, null);
+    DefaultKafkaConsumerFactory<byte[], byte[]> factory =
+        new DefaultKafkaConsumerFactory<>(ConsumerSettings.forIdentity(local, null)) {
+          @Override
+          protected org.apache.kafka.clients.consumer.Consumer<byte[], byte[]> createRawConsumer(
+              Map<String, Object> configProps) {
+            String clientId = String.valueOf(configProps.get(ConsumerConfig.CLIENT_ID_CONFIG));
+            if (failing.get() && clientId.endsWith("-1")) {
+              throw new KafkaException("Failed to construct kafka consumer");
+            }
+            created.add(clientId);
+            return super.createRawConsumer(configProps);
+          }
+        };
+    Recorder recorder = new Recorder(SourceRecord::complete);
+    KafkaPipelineSource source =
+        new KafkaPipelineSource(
+            "it-" + topic,
+            config,
+            factory,
+            recorder,
+            SourceOptions.defaults()
+                .withDesiredConcurrency(2)
+                .withDrainTimeout(Duration.ofMillis(300)));
+    started.add(source);
+
+    assertThatThrownBy(source::start)
+        .isInstanceOf(KafkaException.class)
+        .hasMessage("Failed to construct kafka consumer");
+
+    assertThat(created)
+        .as("the first consumer was created")
+        .contains("kafkafim-it-" + topic + "-0");
+    assertThat(source.isRunning()).isFalse();
+    assertThat(source.assignedPartitions()).isEmpty();
+    assertThat(source.inFlightRecords()).isZero();
+    // The stop returns when the consumer's run has completed; its thread ends a moment later.
+    await().atMost(TIMEOUT).until(() -> liveConsumerThreads("it-" + topic).isEmpty());
+    // Nothing of this source consumes any more (the first consumer may have polled once).
+    int delivered = recorder.records.size();
+    Thread.sleep(1_500);
+    assertThat(recorder.records).hasSize(delivered);
+    assertThat(groupMembers(groupOf(topic))).as("the first consumer left the group").isZero();
+    assertThat(recorder.failures).as("the thrown exception is the report").isEmpty();
+
+    // The same source starts again once consumers can be created, and reads everything.
+    failing.set(false);
+    source.start();
+    assertThat(source.isRunning()).isTrue();
+    assertThat(source.concurrency()).isEqualTo(2);
+    await()
+        .atMost(TIMEOUT)
+        .until(() ->
+            committed(groupOf(topic), topic, 0) == 5 && committed(groupOf(topic), topic, 1) == 5);
+  }
+
+  @Test
   void twoSourcesInOneGroupSplitPartitionsAndRevokeSafely() throws Exception {
     String topic = createTopic(4);
     Pipeline.Source config = source(topic, 500, DataSize.ofMegabytes(1));
@@ -472,6 +543,27 @@ class KafkaPipelineSourceIntegrationTest {
         admin.listConsumerGroupOffsets(group).partitionsToOffsetAndMetadata().get();
     OffsetAndMetadata offset = offsets.get(new TopicPartition(topic, partition));
     return offset == null ? -1 : offset.offset();
+  }
+
+  /** Names of the live listener threads of a source's container (named after its client id). */
+  private static List<String> liveConsumerThreads(String pipeline) {
+    return Thread.getAllStackTraces().keySet().stream()
+        .filter(Thread::isAlive)
+        .map(Thread::getName)
+        .filter(name -> name.startsWith("kafkafim-" + pipeline + "-") && name.contains("-C-"))
+        .toList();
+  }
+
+  /** Members of a group; zero if the group does not exist. */
+  private static int groupMembers(String group) throws Exception {
+    try {
+      return admin.describeConsumerGroups(List.of(group)).all().get().get(group).members().size();
+    } catch (ExecutionException e) {
+      if (e.getCause() instanceof GroupIdNotFoundException) {
+        return 0;
+      }
+      throw e;
+    }
   }
 
   /**
