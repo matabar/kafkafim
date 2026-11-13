@@ -6,7 +6,7 @@ with the repo". Every query uses the metric names and labels of `/actuator/prome
 
 | File | What |
 |---|---|
-| [`dashboards/kafkafim-overview.json`](dashboards/kafkafim-overview.json) | Per pipeline: state, end-to-end latency, records/bytes/documents, dropped documents per route, DLQ, in-flight bytes and heap, assigned partitions, Kafka connectivity, config generation and reloads |
+| [`dashboards/kafkafim-overview.json`](dashboards/kafkafim-overview.json) | Per pipeline: state and pause reasons, end-to-end latency, records/bytes/documents, dropped documents per route, DLQ, in-flight bytes and heap, assigned partitions, Kafka connectivity, config generation and reloads |
 | [`dashboards/kafkafim-elasticsearch.json`](dashboards/kafkafim-elasticsearch.json) | Per Elasticsearch cluster: breaker state, bulk requests by status, 429 ratio, bulk latency, docs and bytes per request, flush reasons, retries, item errors, auth failures |
 | [`alerts/kafkafim-alerts.yaml`](alerts/kafkafim-alerts.yaml) | Prometheus alerting rules (below) |
 | [`alerts/kafkafim-alerts.test.yaml`](alerts/kafkafim-alerts.test.yaml) | `promtool test rules` unit tests for every alert |
