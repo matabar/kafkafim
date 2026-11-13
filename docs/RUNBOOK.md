@@ -681,7 +681,8 @@ tooling shows it too (`kafka-consumer-groups.sh --describe --group kafkafim.<pip
 [§4.2](#42-reading-the-result). Find the ERROR `Configuration reload (...) rejected`
 (or `... failed while applying generation`) line on any pod of the group for the violations, fix the values and upgrade again,
 or roll back. Until then the pods run the previous generation, and new pods fail on a rejected
-tree (a valid tree that only failed while it was applied starts on new pods).
+tree (a valid tree that only failed while it was applied usually starts on new pods, unless the
+cause in the ERROR line also applies at startup).
 
 ### 5.12 Pipeline stuck in `starting`
 

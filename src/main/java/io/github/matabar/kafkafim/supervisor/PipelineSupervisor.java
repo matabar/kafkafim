@@ -404,8 +404,8 @@ public final class PipelineSupervisor implements SmartLifecycle {
       }
     }
     LOG.warn(
-        "Applying the configuration failed; the running configuration stays in effect, and the"
-            + " pipelines stopped for the reload were started again: {}",
+        "Applying the configuration failed; the running configuration stays in effect."
+            + " Pipelines started again after their drain: {}",
         started);
   }
 
