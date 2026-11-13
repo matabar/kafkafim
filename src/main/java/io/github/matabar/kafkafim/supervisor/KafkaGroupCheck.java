@@ -98,11 +98,14 @@ final class KafkaGroupCheck {
   /**
    * The verdict for an existing group's authorized operations.
    *
-   * @param operations what the broker lists, or {@code null} when it lists nothing (an old broker)
+   * @param operations what the broker lists; {@code null} or empty when it lists nothing (an old
+   *     broker, or a proxy or other implementation that answers an empty list instead of leaving it
+   *     out: an authorizer that let the describe through lists at least {@code DESCRIBE})
    * @return OK when the identity may read the group or the broker did not say
    */
   static Preflight.Status classify(@Nullable Set<AclOperation> operations) {
     if (operations == null
+        || operations.isEmpty()
         || operations.contains(AclOperation.READ)
         || operations.contains(AclOperation.ALL)) {
       return Preflight.Status.OK;
