@@ -131,9 +131,9 @@ kubectl -n <ns> rollout restart deployment/kafkafim-<g>
 ```
 
 Needed for: a pipeline paused by a record-handler failure, an OTLP header Secret
-rotation, TLS certificate or keystore files rotated under the same path and password
-([§4.3](#43-rotating-a-secret); a new keystore or truststore password reloads without
-a restart).
+rotation, TLS certificate or keystore files rotated under the same path, password and
+store type ([§4.3](#43-rotating-a-secret); a new file path, password or store type
+reloads without a restart).
 A pipeline in `failed_preflight` does not need a restart: after fixing the cause, a
 no-op `POST /actuator/reload` retries it ([§5.5](#55-failed_preflight-pipelines)).
 Shutdown is graceful: each pipeline stops fetching, gives
@@ -314,13 +314,14 @@ Secrets reach the application as files through Spring's `configtree`
 
 **TLS files are the exception.** Truststores, keystores and `ssl.ca-certificate` are
 referenced by **path**; only their passwords are properties. When a certificate or
-keystore file changes but its path and password stay the same (for example
-cert-manager renewing a keystore), the reload sees an identical configuration and
-answers `unchanged`; running Kafka and Elasticsearch clients keep the old material,
-read when they were built. After rotating TLS files, restart the affected groups'
-pods ([§2.4](#24-restart-pods)). A rotation that also changes the file's password
-(a `configtree` property) reloads normally: the identity or cluster definition
-changed, so the restarted pipelines build new clients from the new files.
+keystore file changes but its path, password and store type stay the same (for
+example cert-manager renewing a keystore), the reload sees an identical configuration
+and answers `unchanged`; running Kafka and Elasticsearch clients keep the old
+material, read when they were built. After rotating TLS files, restart the affected
+groups' pods ([§2.4](#24-restart-pods)). A rotation that also changes the file's path (the
+new file mounted under a new name), its password (a `configtree` property) or its
+store type reloads normally: the identity or cluster definition changed, so the
+restarted pipelines build new clients from the new files.
 
 A secret file that disappears (key removed from the `Secret`) leaves its
 `${...}` placeholder unresolved and the reload is **rejected**; the pods keep the old
@@ -368,6 +369,10 @@ tooling shows it too (`kafka-consumer-groups.sh --describe --group kafkafim.<pip
   `client.response-timeout`: lower `bulk.max-bytes` or raise the timeout. Startup warns
   `bulk.max-bytes: ... longer than client.response-timeout` when `max-bytes` in MB
   exceeds `response-timeout` in seconds (DESIGN §5.7).
+  A steady `kafkafim_bulk_requests_total{status="413"}` with `413 for N actions ...
+  splitting` INFO lines means full bulks exceed the cluster's `http.max_content_length`
+  (default 100MB): lower `bulk.max-bytes`. Startup warns `bulk.max-bytes: ... is above
+  Elasticsearch's default http.max_content_length` above 100MB (DESIGN §5.7).
 - **Action**: none in kafkafim. Bulk requests are retried with the same documents
   forever (100ms doubling to 30s, ±50%). The breaker (per ES cluster, shared by
   identities and pipelines) opens at ≥50% failures over the last 20 requests (at
@@ -421,8 +426,9 @@ tooling shows it too (`kafka-consumer-groups.sh --describe --group kafkafim.<pip
   lag from the brokers' side.
 - **Check**: broker health, DNS, network policy/firewall from the pod's namespace to
   `bootstrap-servers`, TLS trust (an expired or rotated cluster CA shows up as an SSL
-  handshake failure in the logs; a rotated truststore file needs a pod restart,
-  [§4.3](#43-rotating-a-secret)).
+  handshake failure in the logs; after a truststore file is replaced under the same
+  path, password and type, running clients keep the old one until a pod restart, while
+  a new path, password or type reloads without one, [§4.3](#43-rotating-a-secret)).
 - **Action**: fix the path; kafkafim recovers by itself. Restart pods only if a
   pipeline stays wedged after Kafka is back (see [§5.7](#57-pipeline-shows-running-but-consumes-nothing)).
 
@@ -779,7 +785,7 @@ Current behaviour that this runbook works around; each is a follow-up, not a fea
   `Describe` but not `Read` on it. Preflight's group check cannot tell the two apart
   before the group exists (ADR-0038); the source retries the join every 10s.
 - **Rotated TLS files are not reloaded.** Certificate and keystore files are bound
-  by path, so a content change with an unchanged path and password is `unchanged` to
+  by path, so a content change with an unchanged path, password and type is `unchanged` to
   the reload; restart the pods ([§4.3](#43-rotating-a-secret)).
 - **Pause reasons are only in logs.** The metric and the health endpoint say `paused`
   without the reason; health details are hidden by `show-details: when-authorized`.

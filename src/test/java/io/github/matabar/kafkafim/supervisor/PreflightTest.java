@@ -273,6 +273,8 @@ class PreflightTest {
         .isEqualTo(Preflight.Kind.OK);
     // A broker that lists no operations cannot say: the first join is the check.
     assertThat(KafkaGroupCheck.classify(null).kind()).isEqualTo(Preflight.Kind.OK);
+    // Nor can one that answers an empty list instead of leaving it out (#176).
+    assertThat(KafkaGroupCheck.classify(Set.of()).kind()).isEqualTo(Preflight.Kind.OK);
     assertThat(KafkaGroupCheck.classify(Set.of(AclOperation.DESCRIBE)).kind())
         .isEqualTo(Preflight.Kind.CONFIGURATION);
   }

@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 
 import co.elastic.clients.transport.rest5_client.low_level.Request;
+import co.elastic.clients.transport.rest5_client.low_level.Response;
 import co.elastic.clients.transport.rest5_client.low_level.ResponseException;
 import co.elastic.clients.transport.rest5_client.low_level.Rest5Client;
 import io.github.matabar.kafkafim.KafkaTestContainers;
@@ -29,6 +30,7 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.apache.hc.core5.http.io.entity.EntityUtils;
 import org.apache.kafka.clients.admin.Admin;
@@ -36,10 +38,9 @@ import org.apache.kafka.clients.admin.NewTopic;
 import org.apache.kafka.clients.admin.OffsetSpec;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.clients.producer.KafkaProducer;
-import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
+import org.apache.kafka.clients.producer.RecordMetadata;
 import org.apache.kafka.common.TopicPartition;
-import org.apache.kafka.common.serialization.ByteArraySerializer;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
@@ -94,12 +95,7 @@ class HotReloadIntegrationTest {
     Startables.deepStart(KAFKA, ES).join();
     caFile = Files.write(shared.resolve("ca.crt"), ES.caCertAsBytes().orElseThrow());
     admin = Admin.create(Map.of("bootstrap.servers", KAFKA.getBootstrapServers()));
-    Map<String, Object> producerConfig = new HashMap<>();
-    producerConfig.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, KAFKA.getBootstrapServers());
-    producerConfig.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, ByteArraySerializer.class);
-    producerConfig.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, ByteArraySerializer.class);
-    producerConfig.put(ProducerConfig.LINGER_MS_CONFIG, 5);
-    producer = new KafkaProducer<>(producerConfig);
+    producer = new KafkaProducer<>(KafkaTopics.seedingProducerConfig(KAFKA.getBootstrapServers()));
     es =
         ElasticsearchClients.create(
             "it",
@@ -108,6 +104,23 @@ class HotReloadIntegrationTest {
             "admin",
             ClientSettings.DEFAULT);
     http = HttpClient.newHttpClient();
+    awaitSecurityReady();
+  }
+
+  /**
+   * The container's wait strategy returns on the node's "started" log line, when security can still
+   * be initialising: the admin's first request is then answered 401 (#198). Waits until the admin
+   * authenticates and the cluster is at least yellow.
+   */
+  private static void awaitSecurityReady() {
+    await()
+        .atMost(TIMEOUT)
+        .pollInterval(Duration.ofMillis(500))
+        .ignoreExceptions()
+        .untilAsserted(() -> {
+          call("GET", "/_security/_authenticate", null);
+          call("GET", "/_cluster/health?wait_for_status=yellow&timeout=5s", null);
+        });
   }
 
   @AfterAll
@@ -285,6 +298,131 @@ class HotReloadIntegrationTest {
     awaitRunning(supervisor, "e", "f");
   }
 
+  // ---- recovery ----
+
+  @Test
+  void failedPreflightPipelineRecoversOnNoOpReloadOnceItsTopicExists() throws Exception {
+    // The DLQ topic is missing at startup, so preflight fails (ADR-0021: never created by
+    // kafkafim).
+    KafkaTopics.create(admin, List.of(new NewTopic("ra.events", 3, (short) 1)));
+    createUser("kfm-ra", "ra-secret-1");
+    writeSecret("writer-a", "kfm-ra", "ra-secret-1");
+    writeSecret("writer-b", "kfm-ra", "ra-secret-1");
+    writeConfig(false, pipeline("r", "ra.events", "writer-a", "ra-1")); // only the endpoint reloads
+    ConfigurableApplicationContext app = start();
+    PipelineSupervisor supervisor = app.getBean(PipelineSupervisor.class);
+    final MeterRegistry meters = app.getBean(MeterRegistry.class);
+    awaitFailedPreflight(supervisor, "r");
+    assertThat(supervisor.failure("r"))
+        .contains("DLQ topic 'ra.events.kafkafim-dlq'")
+        .contains("does not exist");
+    assertThat(gauge(meters, "r", "failed_preflight")).isEqualTo(1);
+    assertThat(readiness(app)).isEqualTo(503); // the pod's only pipeline is not started
+    // Records that arrive while the pipeline is down wait in the topic.
+    sendDocs("ra.events", "r", 0, 20);
+
+    // A reload while the cause is still there retries the pipeline, which fails the same way.
+    HttpResponse<String> stillMissing = postReload(app);
+    assertThat(stillMissing.statusCode()).isEqualTo(200);
+    assertThat(JSON.readTree(stillMissing.body()).get("retried").toString()).isEqualTo("[\"r\"]");
+    // The retry put it in `starting` before the reload returned, so this waits for its outcome.
+    awaitFailedPreflight(supervisor, "r");
+    assertThat(supervisor.failure("r")).contains("does not exist");
+
+    // The operator fixes the cause and reloads; nothing in the configuration changed.
+    KafkaTopics.create(admin, List.of(new NewTopic("ra.events.kafkafim-dlq", 1, (short) 1)));
+    HttpResponse<String> reloaded = postReload(app);
+    assertThat(reloaded.statusCode()).isEqualTo(200);
+    JsonNode body = JSON.readTree(reloaded.body());
+    assertThat(body.get("result").asString()).isEqualTo("unchanged");
+    assertThat(body.get("generation").asLong()).isEqualTo(1);
+    assertThat(body.get("retried").toString()).isEqualTo("[\"r\"]");
+    assertThat(body.get("restarted").toString()).isEqualTo("[]");
+    assertThat(body.get("unchanged").toString()).isEqualTo("[]");
+
+    awaitRunning(supervisor, "r");
+    assertThat(supervisor.failure("r")).isNull();
+    assertThat(gauge(meters, "r", "failed_preflight")).isZero();
+    assertThat(gauge(meters, "r", "running")).isEqualTo(1);
+    // Readiness also wants the consumers connected, which follows `running` by a moment.
+    await().atMost(TIMEOUT).untilAsserted(() -> assertThat(readiness(app)).isEqualTo(200));
+    // It runs for real: what waited is indexed and committed, and so is what comes next.
+    sendDocs("ra.events", "r", 20, 30);
+    awaitCommittedToEnd("kafkafim.r", "ra.events");
+    assertThat(count("ra-1")).isEqualTo(30);
+  }
+
+  // ---- pausing ----
+
+  /**
+   * An identity that Elasticsearch stops accepting while its pipeline runs (its password changed
+   * there, the Secret did not follow): the pipeline pauses for {@code es-auth:<cluster>/<identity>}
+   * with nothing indexed, committed or dead-lettered, another identity's pipeline on the same
+   * cluster keeps running, and the paused one resumes by itself, without a reload or a restart,
+   * once Elasticsearch accepts the identity again.
+   */
+  @Test
+  void rejectedIdentityPausesItsPipelineUntilElasticsearchAcceptsItAgain() throws Exception {
+    createTopics("pa.events", "pb.events");
+    createUser("kfm-pa", "pa-secret-1");
+    createUser("kfm-pb", "pb-secret-1");
+    writeSecret("writer-a", "kfm-pa", "pa-secret-1");
+    writeSecret("writer-b", "kfm-pb", "pb-secret-1");
+    writeConfig(
+        false, // no reload takes part in this
+        pipeline("pa", "pa.events", "writer-a", "pa-docs")
+            + pipeline("pb", "pb.events", "writer-b", "pb-docs"));
+    ConfigurableApplicationContext app = start();
+    PipelineSupervisor supervisor = app.getBean(PipelineSupervisor.class);
+    final MeterRegistry meters = app.getBean(MeterRegistry.class);
+    awaitRunning(supervisor, "pa", "pb");
+    sendDocs("pa.events", "pa", 0, 10);
+    awaitCommittedToEnd("kafkafim.pa", "pa.events");
+    assertThat(count("pa-docs")).isEqualTo(10);
+    assertThat(supervisor.pauseReasons("pa")).isEmpty();
+    final KafkaPipelineSource source = supervisor.source("pa");
+
+    // Elasticsearch no longer accepts writer-a's password; the Secret still holds the old one.
+    changePassword("kfm-pa", "pa-secret-2");
+    sendDocs("pa.events", "pa", 10, 30);
+    sendDocs("pb.events", "pb", 0, 10);
+    await()
+        .atMost(TIMEOUT)
+        .untilAsserted(() ->
+            assertThat(supervisor.pauseReasons("pa")).containsExactly("es-auth:local/writer-a"));
+    assertThat(supervisor.state("pa")).isEqualTo(PipelineState.PAUSED);
+    assertThat(gauge(meters, "pa", "paused")).isEqualTo(1);
+    assertThat(gauge(meters, "pa", "running")).isZero();
+    // The same cluster through another identity is not affected.
+    awaitCommittedToEnd("kafkafim.pb", "pb.events");
+    assertThat(count("pb-docs")).isEqualTo(10);
+    assertThat(supervisor.state("pb")).isEqualTo(PipelineState.RUNNING);
+    assertThat(supervisor.pauseReasons("pb")).isEmpty();
+    // A rejected identity is a configuration failure: nothing is indexed, committed or
+    // dead-lettered, and the pause holds while the identity stays rejected.
+    await()
+        .during(Duration.ofSeconds(3))
+        .atMost(TIMEOUT)
+        .until(() -> supervisor.state("pa") == PipelineState.PAUSED);
+    assertThat(count("pa-docs")).isEqualTo(10);
+    assertThat(committedTotal("kafkafim.pa", "pa.events")).isEqualTo(10);
+    assertThat(endTotal("pa.events.kafkafim-dlq")).isZero();
+
+    // The password is put back in Elasticsearch: the sink's next retry is accepted.
+    changePassword("kfm-pa", "pa-secret-1");
+    await()
+        .atMost(TIMEOUT)
+        .untilAsserted(() -> assertThat(supervisor.pauseReasons("pa")).isEmpty());
+    awaitRunning(supervisor, "pa");
+    awaitCommittedToEnd("kafkafim.pa", "pa.events");
+    assertThat(count("pa-docs")).isEqualTo(30);
+    assertThat(endTotal("pa.events.kafkafim-dlq")).isZero();
+    assertThat(gauge(meters, "pa", "paused")).isZero();
+    // Resumed, not restarted or reloaded.
+    assertThat(supervisor.source("pa")).isSameAs(source);
+    assertThat(generation(meters)).isEqualTo(1);
+  }
+
   // ---- application and files ----
 
   private ConfigurableApplicationContext start() {
@@ -386,6 +524,18 @@ class HotReloadIntegrationTest {
         HttpResponse.BodyHandlers.ofString());
   }
 
+  private static int readiness(ConfigurableApplicationContext app)
+      throws IOException, InterruptedException {
+    String port = app.getEnvironment().getProperty("local.server.port");
+    return http.send(
+            HttpRequest.newBuilder(
+                    URI.create("http://localhost:" + port + "/actuator/health/readiness"))
+                .timeout(TIMEOUT)
+                .build(),
+            HttpResponse.BodyHandlers.discarding())
+        .statusCode();
+  }
+
   // ---- assertions ----
 
   private static void awaitRunning(PipelineSupervisor supervisor, String... pipelines) {
@@ -396,6 +546,13 @@ class HotReloadIntegrationTest {
             assertThat(supervisor.state(pipeline)).isEqualTo(PipelineState.RUNNING);
           }
         });
+  }
+
+  private static void awaitFailedPreflight(PipelineSupervisor supervisor, String pipeline) {
+    await()
+        .atMost(TIMEOUT)
+        .untilAsserted(
+            () -> assertThat(supervisor.state(pipeline)).isEqualTo(PipelineState.FAILED_PREFLIGHT));
   }
 
   private static double generation(MeterRegistry meters) {
@@ -423,16 +580,21 @@ class HotReloadIntegrationTest {
       newTopics.add(new NewTopic(topic, 3, (short) 1));
       newTopics.add(new NewTopic(topic + ".kafkafim-dlq", 1, (short) 1));
     }
-    admin.createTopics(newTopics).all().get();
+    KafkaTopics.create(admin, newTopics);
   }
 
-  private static void sendDocs(String topic, String prefix, int from, int to) {
+  private static void sendDocs(String topic, String prefix, int from, int to) throws Exception {
+    List<Future<RecordMetadata>> sent = new ArrayList<>();
     for (int i = from; i < to; i++) {
-      producer.send(
-          new ProducerRecord<>(
-              topic, bytes("k" + i), bytes("{\"id\":\"" + prefix + "-" + i + "\"}")));
+      sent.add(
+          producer.send(
+              new ProducerRecord<>(
+                  topic, bytes("k" + i), bytes("{\"id\":\"" + prefix + "-" + i + "\"}"))));
     }
     producer.flush();
+    for (Future<RecordMetadata> future : sent) {
+      future.get(); // every record acknowledged, or the test fails here with the cause
+    }
   }
 
   private static void awaitCommittedToEnd(String group, String topic) {
@@ -488,18 +650,37 @@ class HotReloadIntegrationTest {
     return response.get("count").asLong();
   }
 
+  /**
+   * Performs a request as the admin and returns the parsed body; fails on a non-2xx status.
+   *
+   * <p>{@link Rest5Client#performRequest} throws {@link ResponseException} only for 5xx and returns
+   * every status below 500 as a normal response (see {@code Rest5ClientStatusContractTest}), so the
+   * status is checked here, not left to the exception (#150).
+   */
   private static JsonNode call(String method, String path, String json) throws IOException {
     Request request = new Request(method, path);
     if (json != null) {
       request.setJsonEntity(json);
     }
+    Response response;
     try {
-      return JSON.readTree(
-          EntityUtils.toString(es.performRequest(request).getEntity(), StandardCharsets.UTF_8));
+      response = es.performRequest(request);
     } catch (ResponseException e) {
-      throw new AssertionError(method + " " + path + " failed: " + e.getMessage(), e);
+      response = e.getResponse();
+    }
+    String body;
+    try {
+      body =
+          response.getEntity() == null
+              ? ""
+              : EntityUtils.toString(response.getEntity(), StandardCharsets.UTF_8);
     } catch (org.apache.hc.core5.http.ParseException e) {
       throw new IOException(e);
     }
+    int status = response.getStatusCode();
+    if (status / 100 != 2) {
+      throw new AssertionError(method + " " + path + " failed: HTTP " + status + ", body: " + body);
+    }
+    return JSON.readTree(body);
   }
 }
