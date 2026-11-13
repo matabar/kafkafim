@@ -337,7 +337,8 @@ identities the pipeline references:
 
 - source topics exist and are readable (`Describe` on topics, metadata fetch);
 - the DLQ topic exists (`Describe`); kafkafim never relies on auto-create;
-- the consumer group is permitted (first join is the check);
+- the source identity may read the consumer group (`DescribeGroups` with its
+  authorized operations; ADR-0038);
 - for each route's ES cluster, the identity authenticates (one lightweight
   authenticated request); index templates, ingest pipelines and roles are assumed
   present and any gap surfaces as a classified bulk error at runtime.
@@ -356,7 +357,8 @@ provisioning systems by creating the `local` profile's `demo` topics
 How the supervisor runs it (`supervisor/Preflight`, `PipelineRuntime`): every pipeline
 starts on its own thread, so one slow check never delays another pipeline or the
 application context. The DLQ topic is described with the DLQ identity
-(`DlqProducers.checkTopic`); each `(cluster, identity)` sends one `GET
+(`DlqProducers.checkTopic`); the consumer group is described with the source identity
+(`KafkaGroupCheck`, below); each `(cluster, identity)` sends one `GET
 /_security/_authenticate` (no privilege needed) through a client built like the sink's;
 then the source starts, which fails for a missing source topic. All DLQ and
 Elasticsearch checks run before a verdict, so one ERROR line names every problem.
@@ -368,11 +370,23 @@ retries (1s doubling to 30s), so a pod that starts during a short outage needs n
 restart. A stop (shutdown, or a reload that restarts or removes the pipeline)
 cancels a start in progress: it interrupts any check still waiting for an answer and
 discards the verdict, and the pipeline ends `stopped`. A stop therefore never waits out
-the checks' timeouts (10s for the DLQ describe, up to 15s per Elasticsearch identity);
-an Elasticsearch request in flight is cancelled. Elasticsearch answers 405 on that
-path when security is disabled; any status other than 401, 403 and 5xx passes. The
-consumer group's permission is not checked before the first join; a denied join is
-retried by the source every 10s and logged.
+the checks' timeouts (10s for the DLQ describe, the source's metadata timeout, 30s by
+default, for the group check, up to 15s per Elasticsearch identity); an Elasticsearch request in flight
+is cancelled. Elasticsearch answers 405 on that path when security is disabled; any
+status other than 401, 403 and 5xx passes.
+
+The group check exists because a denied join is otherwise invisible: the listener
+container retries it every 10s and never stops, so the pipeline would show `running`.
+One `DescribeGroups` with `includeAuthorizedOperations` answers it. It goes through a
+short-lived admin client built from the source identity's consumer settings (all except
+the consumer-only keys) and is bounded by the source's metadata timeout. An
+authorization or authentication error (no group ACL, or one on another group name:
+`FindCoordinator` needs `Describe`) is a configuration failure. So is an existing group
+whose authorized operations lack `READ`, and a group id another protocol already uses.
+`READ` or `ALL` listed, no operations listed, or a broker that does not support the
+request passes. So does a group that has never been joined: the broker answers
+`GroupIdNotFoundException` and cannot tell `Read` from `Describe`, so the first join
+stays the check for `Describe` without `Read` on a new group (ADR-0038).
 
 After a successful start, a pipeline whose source cannot go on (the record handler
 threw, or a consumer of the listener container stopped on its own: any

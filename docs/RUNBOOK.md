@@ -435,10 +435,14 @@ tooling shows it too (`kafka-consumer-groups.sh --describe --group kafkafim.<pip
 - **`Read` missing on a source topic** (but `Describe` present): not checked at start.
   The pipeline shows **`running`**; its fetches fail with a topic authorization error,
   retried every 10s and logged; nothing is consumed.
-- **Consumer group not permitted** (missing `Read` on the group): not checked before
-  the first join. The pipeline shows **`running`**, but its consumers retry the join
-  every 10s and log the group authorization error; it never gets partitions.
-  `kafkafim_assigned_partitions == 0` on every pod and lag grows.
+- **Consumer group not permitted** (no ACL on the group, an ACL on another group name
+  or prefix, or `Describe` without `Read` on a group that has joined before): the
+  pipeline goes `failed_preflight`. The ERROR line names the group, the identity and the
+  cluster (see [§5.5](#55-failed_preflight-pipelines)).
+- **`Describe` without `Read` on a group that has never been joined**: preflight cannot
+  tell it from `Read` (ADR-0038). The pipeline shows **`running`**, but its consumers
+  retry the join every 10s and log the group authorization error; it never gets
+  partitions. `kafkafim_assigned_partitions == 0` on every pod and lag grows.
 - **Auth or ACL revoked after start**: consumers retry every 10s instead of stopping;
   state stays `running`, consumption stops.
 - **DLQ producer** (missing `Write` on the DLQ topic, which the idempotent producer
@@ -463,6 +467,7 @@ tooling shows it too (`kafka-consumer-groups.sh --describe --group kafkafim.<pip
   |---|---|---|
   | `source topics [...] do not exist or are not visible to identity '<id>'` | Topic missing, or no `Describe` for the consumer identity | Create the topic / add the ACL |
   | `identity '<id>' on Kafka cluster '<c>' rejected reading [...]` | SASL credentials wrong, or authorization denied | Fix the Secret or ACL |
+  | `consumer group '<g>' (identity '<id>' on Kafka cluster '<c>'): identity may not use the group` or `...: identity may describe the group but not read it` | No ACL on the group (or on another group name or prefix), or `Describe` without `Read` | Add `Read` on the group for the consumer identity |
   | `DLQ topic '<t>' (identity '<id>' on Kafka cluster '<c>') does not exist` or `...: identity may not describe it` | DLQ topic (default `<first topic>.kafkafim-dlq`) not provisioned, or no `Describe` for the DLQ identity | Create it / add the ACL; kafkafim never auto-creates it |
   | `Elasticsearch identity '<id>' on cluster '<es>' rejected: HTTP 401 from _security/_authenticate` (or 403) | Bad ES credential | Fix the Secret or the ES user/API key |
   | `Elasticsearch identity ... rejected: TLS handshake failed: ...` | Wrong or expired cluster CA (`ssl.ca-certificate`) or hostname mismatch | Fix the CA Secret (then restart the pods, [§4.3](#43-rotating-a-secret)) or `uris` |
@@ -754,8 +759,9 @@ Current behaviour that this runbook works around; each is a follow-up, not a fea
 
 - **A missing topic `Read` ACL shows `running`.** The start check fetches metadata
   only (`Describe`); fetches then fail and are retried every 10s.
-- **A denied consumer-group join shows `running`.** The group permission is not part
-  of preflight; the source retries the join every 10s.
+- **A denied join to a never-joined group shows `running`** when the identity has
+  `Describe` but not `Read` on it. Preflight's group check cannot tell the two apart
+  before the group exists (ADR-0038); the source retries the join every 10s.
 - **Rotated TLS files are not reloaded.** Certificate and keystore files are bound
   by path, so a content change with an unchanged path and password is `unchanged` to
   the reload; restart the pods ([§4.3](#43-rotating-a-secret)).
