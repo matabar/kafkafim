@@ -9,6 +9,7 @@ import co.elastic.clients.transport.rest5_client.low_level.Rest5Client;
 import io.github.matabar.kafkafim.config.ElasticsearchCluster;
 import io.github.matabar.kafkafim.sink.es.ClientSettings;
 import io.github.matabar.kafkafim.sink.es.ElasticsearchClients;
+import java.io.Closeable;
 import java.io.IOException;
 import java.time.Duration;
 import java.util.Map;
@@ -53,7 +54,11 @@ final class ElasticsearchAuthCheck implements Preflight.AuthCheck {
     } catch (RuntimeException e) {
       return failure(e);
     } finally {
-      close(client);
+      if (Thread.currentThread().isInterrupted()) {
+        closeAfterInterrupt(client);
+      } else {
+        close(client);
+      }
     }
   }
 
@@ -61,9 +66,9 @@ final class ElasticsearchAuthCheck implements Preflight.AuthCheck {
    * Sends the request, waits for its answer and classifies its status: the client hands back every
    * status below 500 as an ordinary response, 401 and 403 included, and reports only 5xx as a
    * {@link ResponseException}. A stop interrupts a check in progress (DESIGN §4.6): the request is
-   * then cancelled, so that closing the client finds no exchange open (a graceful close would wait
-   * for it, a forced one makes every I/O thread log a {@code ClosedSelectorException} at ERROR),
-   * and the check answers unreachable at once.
+   * then cancelled, so that closing the client usually finds no exchange open, and the check
+   * answers unreachable at once ({@link #closeAfterInterrupt} covers the cancel that has not taken
+   * effect yet).
    */
   private static Preflight.Status authenticate(Rest5Client client) {
     CompletableFuture<Response> answer = new CompletableFuture<>();
@@ -104,22 +109,38 @@ final class ElasticsearchAuthCheck implements Preflight.AuthCheck {
     return Preflight.Status.unreachable(e.toString());
   }
 
-  /**
-   * Closes the client with the thread's interrupt flag cleared, then restores it: with the flag
-   * set, the I/O reactor's shutdown would be cut short and its threads would log a {@code
-   * ClosedSelectorException} at ERROR.
-   */
+  /** Closes the client of a check that ran to its end. */
   private static void close(Rest5Client client) {
-    boolean interrupted = Thread.interrupted();
     try {
       client.close();
     } catch (IOException e) {
       // Nothing to do; the client held one connection at most.
-    } finally {
-      if (interrupted) {
-        Thread.currentThread().interrupt();
-      }
     }
+  }
+
+  /**
+   * Closes the client of an interrupted check on a thread of its own, so the stop that interrupted
+   * it does not wait for the close. The client only closes gracefully: it waits up to 5s for its
+   * I/O reactor to shut down, and that takes the whole 5s when the cancelled request has not been
+   * torn down yet (an interrupt within milliseconds of the check's start, on a busy machine; #181).
+   * The new thread also starts with its interrupt flag clear: with the flag set, the reactor's
+   * shutdown would be cut short at once and forced. A close that does wait out the 5s is forced
+   * too, and a forced shutdown can make an I/O thread log a {@code ClosedSelectorException} at
+   * ERROR; that line is harmless, and rare.
+   *
+   * @param client the client to close
+   * @return the closing thread, for tests
+   */
+  static Thread closeAfterInterrupt(Closeable client) {
+    return Thread.ofVirtual()
+        .name("kafkafim-preflight-close")
+        .start(() -> {
+          try {
+            client.close();
+          } catch (IOException e) {
+            // Nothing to do; the client held one connection at most.
+          }
+        });
   }
 
   static boolean isTlsRejection(Throwable error) {
