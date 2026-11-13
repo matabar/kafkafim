@@ -274,6 +274,86 @@ against the real application.
 - Chart version and appVersion are set at release time from the git tag; in the repo
   they are `0.0.0-dev`.
 
+## Egress the pods need
+
+The chart's `NetworkPolicy` is ingress-only and the chart ships no egress policy
+(decided on [#83](https://github.com/matabar/kafkafim/issues/83)). Egress rules need
+IP ranges: a `NetworkPolicy` cannot match the host names in `bootstrap-servers`,
+`uris` or `otel.endpoint`, and only the infrastructure repository knows the ranges
+behind them. A cluster with default-deny egress therefore writes its own policy
+there. It must allow, for every kafkafim pod:
+
+| Destination | Port (from the values) | Notes |
+|---|---|---|
+| Kafka brokers | the ports in `config.kafkafim.kafka.clusters.*.bootstrap-servers` and in each broker's advertised listener | Every broker, not only the bootstrap ones: after the first metadata response the clients (consumer, DLQ producer, preflight admin client) connect to each broker's **advertised** host and port for the listener they bootstrapped on. |
+| Elasticsearch | the ports in `config.kafkafim.elasticsearch.clusters.*.uris` (usually 9200) | Every node or load balancer listed in `uris`; the client does not discover other nodes. |
+| OTLP endpoint | the port in `otel.endpoint` (chart default `http://apm-server.observability:8200`) | OTLP over HTTP; every signal the pod exports goes to this one endpoint. |
+| Cluster DNS | UDP and TCP 53 | All of the above are host names. With NodeLocal DNSCache, also allow its link-local address (commonly `169.254.20.10/32`). |
+
+Add what the Kafka `properties` passthrough brings in, if used: the Kerberos KDC for
+`GSSAPI` (TCP/UDP 88) or the token endpoint for `OAUTHBEARER`. kafkafim itself calls
+nothing else: no Kubernetes API (the `ServiceAccount` token is not mounted), no
+schema registry, and the image is pulled by the node, not the pod.
+
+Sample policy. The `podSelector` is the chart's release-wide selector
+(`kafkafim.selectorLabels`): `app.kubernetes.io/name` is the chart name (or
+`nameOverride`) and `app.kubernetes.io/instance` is the release name. Add
+`app.kubernetes.io/component: <group>` to write a narrower policy for one group.
+The CIDRs and ports below are placeholders:
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: kafkafim-egress
+  namespace: kafkafim # the release namespace
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: kafkafim
+      app.kubernetes.io/instance: kafkafim # the Helm release name
+  policyTypes:
+    - Egress
+  egress:
+    # Cluster DNS
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+    # Kafka: every broker's advertised listener
+    - to:
+        - ipBlock: { cidr: 10.20.0.0/24 }
+      ports:
+        - { protocol: TCP, port: 9093 }
+    # Elasticsearch
+    - to:
+        - ipBlock: { cidr: 10.30.0.0/24 }
+      ports:
+        - { protocol: TCP, port: 9200 }
+    # OTLP endpoint (APM Server)
+    - to:
+        - ipBlock: { cidr: 10.40.0.10/32 }
+      ports:
+        - { protocol: TCP, port: 8200 }
+```
+
+- Policies are additive, and this one lists only `Egress`, so it changes nothing
+  about ingress: it works with `networkPolicy.enabled` on or off.
+- Once it selects the pods, every destination it does not list is denied. A missing
+  Kafka or Elasticsearch rule shows up as a pipeline that stays `starting`
+  ([RUNBOOK §5.3](RUNBOOK.md#53-kafka-unreachable),
+  [§5.12](RUNBOOK.md#512-pipeline-stuck-in-starting)); a missing OTLP rule only stops
+  telemetry, the pipelines keep running.
+- A destination that runs in the same Kubernetes cluster (an in-cluster APM Server,
+  or everything in a local demo) is selected with `namespaceSelector` / `podSelector`
+  instead of `ipBlock`; `ipBlock` is meant for addresses outside the cluster.
+
 ## Operating notes
 
 - A per-cluster values file is the single place to add a pipeline: add it under
