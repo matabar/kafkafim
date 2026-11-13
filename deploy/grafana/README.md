@@ -56,10 +56,21 @@ Notes:
   tells dropped from lost.
 - `KafkafimNoAssignedPartitions` is expected on pods beyond a pipeline's partition
   count; silence it for such groups (severity `info`).
-- `kafkafim_auth_failures_total` and `kafkafim_dlq_records_total` appear with their
-  first event, so `increase()` alone misses the first increment; the auth alert has a
-  second clause for a series that is new in the window. The DLQ alert needs a sustained
-  rate and does not.
+- Some counters appear with their first event instead of at 0: DLQ records, item
+  errors, retries, bulk requests by status and flushes by reason. `rate()` and
+  `increase()` need two samples, so they miss that first increment.
+  `kafkafim_auth_failures_total` exists from startup with 0 for every Elasticsearch
+  cluster and identity a pipeline's routes write with, so `increase()` sees a 401/403
+  once the pod has been scraped. The auth alert and the "Auth failures" panel still add
+  the starting value of a series that is new in the window, for a 401/403 before a pod's
+  first scrape: a single one matters, and nothing else shows it. The panel is
+  approximate (`increase()` extrapolates), and a scrape gap longer than the window plus
+  5m makes an old series look new, so the panel then shows its total once; a single
+  failed scrape does not. "DLQ ratio" shows the first DLQ'd document, because
+  `kafkafim_docs_total` starts at 0 for every configured route and outcome and for
+  `route="none"`, `outcome="dlq"` (failed before a route was chosen). The other
+  counters come in streams, where one missed event doesn't matter. The DLQ alert needs a
+  sustained rate, so it has no such term.
 - Rules group by `job`/`instance` where a per-pod answer matters; relabel to your own
   pod label if your scrape config uses another one.
 - Each alert carries a `runbook_url` annotation to the matching RUNBOOK section.

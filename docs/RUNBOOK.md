@@ -362,7 +362,12 @@ tooling shows it too (`kafka-consumer-groups.sh --describe --group kafkafim.<pip
   `kafkafim_bulk_requests_total{status=~"5..|429|io_error"}` rising.
 - **Check**: the ES cluster itself (its own monitoring; kafkafim never calls cluster
   health). Is it down, overloaded (429s, `es_rejected_execution_exception`), or is
-  the network path broken? Pipelines writing to other ES clusters are unaffected.
+  the network path broken? Pipelines writing to other ES clusters are unaffected. If
+  the failures are timeouts (`transport error: ...Timeout...`) on a cluster that is
+  otherwise healthy, a full bulk may simply take longer than the cluster's
+  `client.response-timeout`: lower `bulk.max-bytes` or raise the timeout. Startup warns
+  `bulk.max-bytes: ... longer than client.response-timeout` when `max-bytes` in MB
+  exceeds `response-timeout` in seconds (DESIGN §5.7).
 - **Action**: none in kafkafim. Bulk requests are retried with the same documents
   forever (100ms doubling to 30s, ±50%). The breaker (per ES cluster, shared by
   identities and pipelines) opens at ≥50% failures over the last 20 requests (at
@@ -694,7 +699,7 @@ or roll back. Until then the pods run the previous generation and new pods fail.
   | `<cause>` | Before it | Meaning |
   |---|---|---|
   | `record handler failed: <exception>` | `Pipeline '<p>': record handler failed; pausing until the pipeline is restarted` | Decoding, routing or submitting a batch threw: a kafkafim bug. The batch's records were not committed, so whoever reads them next (a retry, or another pod) may hit it again. |
-  | `Kafka consumer stopped (<reason>)` | Spring Kafka's ERROR from the listener container, such as `Stopping container due to an Error` | A consumer hit an error the container does not retry. Authentication and authorization errors are retried every 10s instead ([§5.4](#54-kafka-authentication-or-acl-missing)), so they do not end here. |
+  | `Kafka consumer stopped (<reason>)` | Spring Kafka's ERROR from the listener container, such as `Stopping container due to an Error` | A consumer hit an error the container does not retry. Authentication and authorization errors are retried every 10s instead ([§5.4](#54-kafka-authentication-or-acl-missing)), so they do not end here. After an `Error`, Spring Kafka logs a second ERROR for the same failure, `Error while stopping the container`, just after the pipeline's `failed while running` line, with a `CompletionException` wrapping that `Error`. The container stopped itself, and that ERROR reports its consumer thread ending with the `Error`. It is not a second failure. |
 
 - **Action**: collect the ERROR lines ([§6](#6-escalation-data-to-collect)), fix the
   cause if it is outside kafkafim, then run a no-op `POST /actuator/reload` on the pod
@@ -713,7 +718,8 @@ or roll back. Until then the pods run the previous generation and new pods fail.
 - **Check**:
   1. Does the pipeline have drop routes? Look for `drop: true` in its `routes`
      (`/actuator/configprops`, or the chart values). The startup log warns
-     `every route has drop: true` for a pipeline that indexes nothing.
+     `every route has drop: true` for a pipeline that indexes nothing, and
+     `cancels every other route` for a `route-mode: all` drop route without `when`.
   2. `sum by (route) (rate(kafkafim_docs_total{pipeline="<p>",outcome="dropped"}[5m]))`.
      Every dropped document is counted once, under the label of the drop route that
      selected it (in `route-mode: all`, the first matching drop route). The dashboard's

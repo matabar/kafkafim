@@ -2,6 +2,7 @@ package io.github.matabar.kafkafim.supervisor;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.awaitility.Awaitility.await;
 
 import io.github.matabar.kafkafim.config.KafkafimProperties;
 import io.github.matabar.kafkafim.dlq.DlqListener;
@@ -12,11 +13,16 @@ import io.github.matabar.kafkafim.sink.es.SinkKey;
 import io.github.matabar.kafkafim.sink.es.SinkListener;
 import io.github.matabar.kafkafim.source.kafka.SourceOptions;
 import io.github.resilience4j.circuitbreaker.CircuitBreaker;
+import java.io.IOException;
+import java.net.InetAddress;
+import java.net.ServerSocket;
+import java.net.Socket;
 import java.time.Clock;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.CopyOnWriteArrayList;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.health.contributor.Status;
@@ -276,5 +282,80 @@ class PipelineSupervisorTest {
     failing.stop();
     assertThat(failing.state("bad")).isEqualTo(PipelineState.FAILED_PREFLIGHT);
     brokenResources.close();
+  }
+
+  @Test
+  void stopInterruptsPreflightChecksWaitingForServersThatNeverAnswer() throws Exception {
+    // Both the broker and the Elasticsearch cluster accept connections and never answer, so the
+    // DLQ describe and the _security/_authenticate request would each wait out a 10s timeout.
+    try (ServerSocket silent = new ServerSocket(0, 50, InetAddress.getLoopbackAddress())) {
+      List<Socket> accepted = new CopyOnWriteArrayList<>();
+      Thread acceptor =
+          Thread.ofVirtual()
+              .start(() -> {
+                try {
+                  while (true) {
+                    accepted.add(silent.accept());
+                  }
+                } catch (IOException e) {
+                  // closed
+                }
+              });
+      String address = "127.0.0.1:" + silent.getLocalPort();
+      KafkafimProperties unanswered =
+          TestConfigs.bind(
+              """
+              kafkafim:
+                kafka:
+                  clusters:
+                    k: { bootstrap-servers: ["%1$s"] }
+                elasticsearch:
+                  clusters:
+                    es: { uris: ["http://%1$s"] }
+                pipelines:
+                  slow:
+                    source: { cluster: k, topics: [a] }
+                    routes: [ { default: true, cluster: es, index: a } ]
+              """
+                  .formatted(address));
+      PipelineResources slowResources =
+          new PipelineResources(
+              relay,
+              p -> new ElasticsearchAuthCheck(p.elasticsearch().clusters()),
+              new PipelineResources.Settings(
+                  SourceOptions.defaults(),
+                  Duration.ofSeconds(1),
+                  new DlqOptions(
+                      Duration.ofMillis(100),
+                      Duration.ofSeconds(1),
+                      Duration.ofSeconds(10),
+                      Duration.ofMillis(200)),
+                  ClientSettings.DEFAULT,
+                  BreakerSettings.DEFAULT,
+                  Clock.systemUTC()));
+      PipelineSupervisor slow = new PipelineSupervisor(unanswered, slowResources, List.of());
+      try {
+        slow.startPipeline("slow");
+        PipelineRuntime runtime = slow.runtimes().iterator().next();
+        await().atMost(Duration.ofSeconds(10)).until(runtime::inPreflight);
+        Thread.sleep(300); // well into the DLQ describe
+
+        long began = System.nanoTime();
+        slow.stop();
+        Duration took = Duration.ofNanos(System.nanoTime() - began);
+
+        assertThat(took).isLessThan(Duration.ofSeconds(5));
+        assertThat(slow.state("slow")).isEqualTo(PipelineState.STOPPED);
+        assertThat(slow.failure("slow")).isNull();
+      } finally {
+        // Hang up first: a producer closing against a silent broker waits out its request timeout.
+        silent.close();
+        acceptor.join();
+        for (Socket socket : accepted) {
+          socket.close();
+        }
+        slowResources.close();
+      }
+    }
   }
 }

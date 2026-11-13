@@ -51,7 +51,8 @@ import org.springframework.kafka.core.ConsumerFactory;
  * in {@link PipelineState#FAILED_PREFLIGHT}; an unreachable broker or cluster is retried with
  * backoff (1s doubling to 30s) in {@link PipelineState#STARTING}.
  *
- * <p><b>Stop</b> (graceful, DESIGN §7): the source pauses, drains its in-flight records (whose
+ * <p><b>Stop</b> (graceful, DESIGN §7): a start in progress is cancelled, its preflight checks
+ * interrupted rather than waited for; the source pauses, drains its in-flight records (whose
  * outcomes still need the sinks and the DLQ writer) and leaves the group, committing what
  * completed; then the sinks close. The DLQ writer is shared and closes with {@link DlqProducers}.
  *
@@ -121,6 +122,7 @@ final class PipelineRuntime {
   private @Nullable String failure; // guarded by lock
   private final Set<String> pauseReasons = new TreeSet<>(); // guarded by lock
   private @Nullable Thread starter; // guarded by lock
+  private @Nullable Thread preflighting; // the starter while in preflight, guarded by lock
   private @Nullable Thread failer; // stops a pipeline that failed while running, guarded by lock
   private int stops; // stops in progress, guarded by lock
   private @Nullable CountDownLatch stopSignal; // guarded by lock
@@ -251,6 +253,13 @@ final class PipelineRuntime {
     }
   }
 
+  /** Whether the start in progress is running its preflight checks; for tests. */
+  boolean inPreflight() {
+    synchronized (lock) {
+      return preflighting != null;
+    }
+  }
+
   /** The running source, for tests and telemetry. */
   @Nullable KafkaPipelineSource source() {
     synchronized (lock) {
@@ -356,17 +365,34 @@ final class PipelineRuntime {
     } catch (IllegalArgumentException | KafkaException e) {
       return failed(List.of("configuration cannot run: " + e.getMessage()));
     }
-    Preflight.Result result =
-        Preflight.run(
-            compiled,
-            () -> context.dlqProducers().checkTopic(name),
-            () ->
-                KafkaGroupCheck.check(
-                    consumers,
-                    config.source().groupId(),
-                    "kafkafim-" + name + "-preflight",
-                    context.sourceOptions().metadataTimeout()),
-            context.authCheck());
+    synchronized (lock) {
+      if (signal.getCount() == 0) {
+        return Attempt.CANCELLED;
+      }
+      preflighting = Thread.currentThread();
+    }
+    Preflight.Result result;
+    try {
+      result =
+          Preflight.run(
+              compiled,
+              () -> context.dlqProducers().checkTopic(name),
+              () ->
+                  KafkaGroupCheck.check(
+                      consumers,
+                      config.source().groupId(),
+                      "kafkafim-" + name + "-preflight",
+                      context.sourceOptions().metadataTimeout()),
+              context.authCheck());
+    } finally {
+      synchronized (lock) {
+        preflighting = null;
+      }
+    }
+    if (signal.getCount() == 0) {
+      // Stopped during preflight, which may have been interrupted: its verdict means nothing.
+      return Attempt.CANCELLED;
+    }
     if (!result.configuration().isEmpty()) {
       return failed(result.configuration());
     }
@@ -565,9 +591,10 @@ final class PipelineRuntime {
   }
 
   /**
-   * Stops the pipeline gracefully and waits for it: cancels a pending start, drains and stops the
-   * source, then closes the sinks; also waits for a stop after a failure that is in progress.
-   * Idempotent. A failed pipeline keeps its failed state.
+   * Stops the pipeline gracefully and waits for it: cancels a pending start (interrupting its
+   * preflight checks, so a stop does not wait out their timeouts), drains and stops the source,
+   * then closes the sinks; also waits for a stop after a failure that is in progress. Idempotent. A
+   * failed pipeline keeps its failed state.
    */
   void stop() {
     Thread pending;
@@ -579,6 +606,11 @@ final class PipelineRuntime {
       }
       pending = starter;
       failing = failer;
+      if (preflighting != null) {
+        // Its checks may each wait out a timeout against an unreachable broker or cluster; the
+        // interrupt makes them answer "unreachable" at once, and the starter sees the signal.
+        preflighting.interrupt();
+      }
     }
     drainAndStop(pending, failing);
   }
