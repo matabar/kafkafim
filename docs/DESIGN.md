@@ -353,7 +353,8 @@ kafkafim creates nothing in Kafka or Elasticsearch. At pipeline start it verifie
 what the external provisioning systems should already have created, using only the
 identities the pipeline references:
 
-- source topics exist and are readable (`Describe` on topics, metadata fetch);
+- source topics exist (`Describe` on topics, metadata fetch) and the source identity
+  may read them (`describeTopics` with its authorized operations; ADR-0039);
 - the DLQ topic exists (`Describe`); kafkafim never relies on auto-create;
 - the source identity may read the consumer group (`DescribeGroups` with its
   authorized operations; ADR-0038);
@@ -375,14 +376,15 @@ provisioning systems by creating the `local` profile's `demo` topics
 How the supervisor runs it (`supervisor/Preflight`, `PipelineRuntime`): every pipeline
 starts on its own thread, so one slow check never delays another pipeline or the
 application context. The DLQ topic is described with the DLQ identity
-(`DlqProducers.checkTopic`); the consumer group is described with the source identity
-(`KafkaGroupCheck`, below); each `(cluster, identity)` sends one `GET
-/_security/_authenticate` (no privilege needed) through a client built like the sink's;
+(`DlqProducers.checkTopic`); the consumer group and the source topics are described
+with the source identity (`KafkaGroupCheck`, below); each `(cluster, identity)` sends
+one `GET /_security/_authenticate` (no privilege needed) through a client built like
+the sink's;
 then the source starts, which fails for a missing source topic. A source whose start
 fails after some of its consumers were created (they are created one after another)
 stops those consumers before it reports the failure, so they leave the group and a
-pipeline that did not start does not keep consuming. All DLQ and
-Elasticsearch checks run before a verdict, so one ERROR line names every problem.
+pipeline that did not start does not keep consuming. All DLQ, group, topic
+and Elasticsearch checks run before a verdict, so one ERROR line names every problem.
 Missing or undescribable topics, a 401/403, an unknown identity or unreadable trust
 material, and a Kafka authentication or authorization error are **configuration**
 failures (`failed_preflight` until the next accepted reload or a restart, §5.6). An unreachable broker or cluster
@@ -392,7 +394,7 @@ restart. A stop (shutdown, or a reload that restarts or removes the pipeline)
 cancels a start in progress: it interrupts any check still waiting for an answer and
 discards the verdict, and the pipeline ends `stopped`. A stop therefore never waits out
 the checks' timeouts (10s for the DLQ describe, the source's metadata timeout, 30s by
-default, for the group check, up to 15s per Elasticsearch identity); an Elasticsearch request in flight
+default, for the group and topic check, up to 15s per Elasticsearch identity); an Elasticsearch request in flight
 is cancelled, and its client is closed on a thread of its own, because the client's
 graceful close can take 5s. Elasticsearch answers 405 on that path when security is disabled; any
 status other than 401, 403 and 5xx passes.
@@ -409,6 +411,17 @@ whose authorized operations lack `READ`, and a group id another protocol already
 request passes. So does a group that has never been joined: the broker answers
 `GroupIdNotFoundException` and cannot tell `Read` from `Describe`, so the first join
 stays the check for `Describe` without `Read` on a new group (ADR-0038).
+
+The same admin client asks for the authorized operations on the source topics, with
+both requests in flight together under the one timeout (ADR-0039). The source's own
+start check is a metadata fetch, which `Describe` alone satisfies; without `Read` every
+fetch is denied and retried every 10s, and the pipeline would show `running`. An
+existing topic whose authorized operations lack `READ` is a configuration failure; no
+operations listed passes, as for the group.
+Any failure of the topic request passes this check and is left to the source's start:
+a topic that does not exist or that the identity cannot see fails it, and so does a
+broker that answers nothing. If only the topic request fails and the source's metadata
+fetch then succeeds, a topic without `Read` still shows `running`.
 
 After a successful start, a pipeline whose source cannot go on (the record handler
 threw, or a consumer of the listener container stopped on its own: any
@@ -817,7 +830,8 @@ every secret (passwords, API keys, keystore and key passwords, secret passthroug
 `properties` values) as `******` in `toString()`, while usernames stay readable. A
 literal in YAML, an environment variable or a system property is rejected, also when
 reached through a placeholder. A credential
-placeholder (secret or username) that nothing defines always fails startup, even with
+placeholder (secret or username) that nothing defines fails startup (except under the
+`validate` profile, which lists it instead, §5.6), even with
 inline secrets allowed: Spring leaves unresolvable placeholders as literal text, so a
 missing secret file would otherwise become the password. A value with a placeholder embedded in
 other text (for example a `sasl.jaas.config` string containing `password="${...}"`)
@@ -835,12 +849,27 @@ in `ConfigValidator`, whose messages never include values.
   5.7 run in the same pass), each as `<property path>: <problem>`; readiness never goes
   green. The `local` profile active, or `kafkafim.allow-inline-secrets=true` set, on
   `CloudPlatform.KUBERNETES` stops startup before binding (section 5.4).
-- **`validate` profile** (application feature, roadmap 0.2): started with
-  `--spring.profiles.active=validate,kafkafim` and a rendered ConfigMap mounted, the
-  application binds and validates, logs the pipeline summary, and exits 0/1 without
-  connecting anywhere. It is meant for the infrastructure repository's CI, where the
-  per-cluster values live. This repository's CI does not use it; it builds the image
-  and smoke-tests it with a liveness probe ([DELIVERY.md](DELIVERY.md)).
+- **`validate` profile** (`config/ValidateProfile`, ADR-0040): started with
+  `--spring.profiles.active=validate,kafkafim` and a rendered
+  `application-kafkafim.yaml` mounted at `/etc/kafkafim/config/`, the application
+  binds and validates, logs a summary, and exits 0; an invalid tree fails startup
+  with every violation and exits 1. It connects nowhere and listens on no port: the
+  pipeline supervisor and kafkafim's telemetry beans are not created, there is no web
+  server, and metric, trace and log export are off (`application-validate.yaml`). The
+  checks are those of a normal start with one exception: a credential placeholder
+  that nothing defines is accepted, because where the profile runs the Secrets are
+  usually not mounted. Literal secrets are still rejected (§5.5). The summary is one
+  INFO line: the totals, each pipeline (Kafka cluster, identity, topics, group, DLQ
+  topic, routes with their Elasticsearch cluster, identity and index) and the secret
+  names the tree expects from mounted files, each marked `(not mounted)` when it is
+  missing. It never prints a secret value. So a misnamed secret passes validation and
+  is found when the pod starts; compare the list with the chart's `secrets[]`. Trust
+  and keystore files are not opened, and preflight (§4.6) does not run. A tree without
+  pipelines is valid, as at startup (it warns), so a wrong mount path shows as
+  `0 pipeline(s)` in the summary, not as a failure. It is meant for the infrastructure
+  repository's CI, where the per-cluster values live. This repository's CI does not
+  use it; it builds the image and smoke-tests it with a liveness probe
+  ([DELIVERY.md](DELIVERY.md)).
 - **Reload** (ADR-0028): a watcher on the config and secret directories (Java
   `WatchService` + 10s hash poll, because kubelet updates volumes by symlink swap with
   up to ~1 min delay) plus `POST /actuator/reload`. The new tree is loaded with
