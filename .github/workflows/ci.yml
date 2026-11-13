@@ -178,7 +178,8 @@ jobs:
           cid=$(docker run -d --read-only --tmpfs /tmp -p 8080:8080 kafkafim:ci \
             --spring.docker.compose.enabled=false \
             --management.otlp.metrics.export.enabled=false \
-            --management.tracing.export.otlp.enabled=false)
+            --management.tracing.export.otlp.enabled=false \
+            --management.logging.export.otlp.enabled=false)
           for _ in $(seq 1 30); do
             if curl -sf localhost:8080/actuator/health/liveness; then
               echo; docker rm -f "$cid" >/dev/null; exit 0
