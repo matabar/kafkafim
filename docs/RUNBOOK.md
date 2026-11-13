@@ -368,6 +368,10 @@ tooling shows it too (`kafka-consumer-groups.sh --describe --group kafkafim.<pip
   `client.response-timeout`: lower `bulk.max-bytes` or raise the timeout. Startup warns
   `bulk.max-bytes: ... longer than client.response-timeout` when `max-bytes` in MB
   exceeds `response-timeout` in seconds (DESIGN §5.7).
+  A steady `kafkafim_bulk_requests_total{status="413"}` with `413 for N actions ...
+  splitting` INFO lines means full bulks exceed the cluster's `http.max_content_length`
+  (default 100MB): lower `bulk.max-bytes`. Startup warns `bulk.max-bytes: ... is above
+  Elasticsearch's default http.max_content_length` above 100MB (DESIGN §5.7).
 - **Action**: none in kafkafim. Bulk requests are retried with the same documents
   forever (100ms doubling to 30s, ±50%). The breaker (per ES cluster, shared by
   identities and pipelines) opens at ≥50% failures over the last 20 requests (at

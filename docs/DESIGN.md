@@ -1015,9 +1015,9 @@ are reported together:
   clearly mismatched settings only; it never rejects (§7, ADR-0031). Likewise a
   `bulk.max-bytes` above 100MB, Elasticsearch's default `http.max_content_length`: the
   limit applies to the body before compression, which is what `max-bytes` counts, so
-  unless the cluster raises it every full bulk request is rejected with 413, split in
-  halves and sent again (§7). A batch never exceeds `max-bytes`, so 100MB itself does
-  not warn.
+  unless the cluster raises it a full bulk request can exceed it, and is then rejected
+  with 413, split in halves and sent again (§7). A batch never exceeds `max-bytes`, so
+  100MB itself does not warn.
 
 ## 6. Scaling
 

@@ -410,6 +410,17 @@ class ConfigValidationTest {
     }
 
     @Test
+    void warnsAboutBothTheTimeoutAndTheContentLength() {
+      KafkafimProperties properties = ConfigTestSupport.bind(MINIMAL, ES + ".bulk.max-bytes=200MB");
+
+      assertThat(ConfigValidator.validate(properties).warnings())
+          .filteredOn(w -> w.contains(".bulk.max-bytes"))
+          .satisfiesExactlyInAnyOrder(
+              w -> assertThat(w).contains("200MB takes about 200s at 1MB/s"),
+              w -> assertThat(w).contains("200MB is above Elasticsearch's default"));
+    }
+
+    @Test
     void doesNotWarnAtTheDefaultHttpMaxContentLength() {
       // A sealed batch never exceeds max-bytes, so 100MB itself still fits the limit.
       KafkafimProperties properties =

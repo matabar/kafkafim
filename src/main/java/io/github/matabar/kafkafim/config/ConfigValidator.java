@@ -225,10 +225,10 @@ public final class ConfigValidator {
   }
 
   /**
-   * Warns when a full bulk request would exceed {@link #ES_DEFAULT_MAX_CONTENT_LENGTH}: unless the
+   * Warns when a full bulk request can exceed {@link #ES_DEFAULT_MAX_CONTENT_LENGTH}: unless the
    * cluster raises the limit, it answers such a request with 413, which the sink splits in halves
-   * and sends again (DESIGN §7), so every full batch is uploaded more than once. A warning only,
-   * because a cluster may raise the limit.
+   * and sends again (DESIGN §7), so that batch is uploaded more than once. A warning only, because
+   * a cluster may raise the limit.
    */
   private void checkBulkFitsDefaultContentLength(String path, DataSize maxBytes) {
     if (maxBytes == null || maxBytes.compareTo(ES_DEFAULT_MAX_CONTENT_LENGTH) <= 0) {
