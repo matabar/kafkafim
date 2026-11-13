@@ -55,7 +55,7 @@ jobs:
               *) docs_only=false ;;
             esac
             case "$f" in
-              charts/* | .github/workflows/ci.yml | .github/keys/*) helm=true ;;
+              charts/* | deploy/local/* | .github/workflows/ci.yml | .github/keys/*) helm=true ;;
             esac
             case "$f" in
               deploy/grafana/* | .github/workflows/ci.yml) grafana=true ;;
@@ -233,6 +233,22 @@ jobs:
           for v in "${files[@]}"; do
             helm template kafkafim charts/kafkafim -f "$v" | "$TOOLS/bin/kubeconform" -strict -summary
           done
+      # The local demo's umbrella chart (deploy/local/kafkafim-demo): charts/kafkafim as a
+      # subchart plus Kafka, Elasticsearch and Grafana LGTM. Its symlinks into charts/ and
+      # deploy/grafana must resolve in a plain checkout; the template fails without the dashboards.
+      - if: steps.chart.outputs.exists == 'true'
+        name: Demo chart lint, template and validate
+        shell: bash
+        env:
+          TOOLS: ${{ runner.temp }}/chart-tools
+        run: |
+          helm lint deploy/local/kafkafim-demo
+          helm template kafkafim deploy/local/kafkafim-demo -n kafkafim-demo > "$RUNNER_TEMP/demo.yaml"
+          "$TOOLS/bin/kubeconform" -strict -summary "$RUNNER_TEMP/demo.yaml"
+          for f in deploy/grafana/dashboards/*.json; do
+            grep -q "^  $(basename "$f"): " "$RUNNER_TEMP/demo.yaml" || { echo "$f is not in the demo's dashboards ConfigMap" >&2; exit 1; }
+          done
+          grep -q 'value: "http://lgtm:4318"' "$RUNNER_TEMP/demo.yaml" || { echo "kafkafim's OTLP endpoint does not point at the lgtm Service" >&2; exit 1; }
       - if: steps.chart.outputs.exists == 'true'
         name: Chart unit tests
         shell: bash
