@@ -362,7 +362,12 @@ tooling shows it too (`kafka-consumer-groups.sh --describe --group kafkafim.<pip
   `kafkafim_bulk_requests_total{status=~"5..|429|io_error"}` rising.
 - **Check**: the ES cluster itself (its own monitoring; kafkafim never calls cluster
   health). Is it down, overloaded (429s, `es_rejected_execution_exception`), or is
-  the network path broken? Pipelines writing to other ES clusters are unaffected.
+  the network path broken? Pipelines writing to other ES clusters are unaffected. If
+  the failures are timeouts (`transport error: ...Timeout...`) on a cluster that is
+  otherwise healthy, a full bulk may simply take longer than the cluster's
+  `client.response-timeout`: lower `bulk.max-bytes` or raise the timeout. Startup warns
+  `bulk.max-bytes: ... longer than client.response-timeout` when `max-bytes` in MB
+  exceeds `response-timeout` in seconds (DESIGN §5.7).
 - **Action**: none in kafkafim. Bulk requests are retried with the same documents
   forever (100ms doubling to 30s, ±50%). The breaker (per ES cluster, shared by
   identities and pipelines) opens at ≥50% failures over the last 20 requests (at
@@ -708,7 +713,8 @@ or roll back. Until then the pods run the previous generation and new pods fail.
 - **Check**:
   1. Does the pipeline have drop routes? Look for `drop: true` in its `routes`
      (`/actuator/configprops`, or the chart values). The startup log warns
-     `every route has drop: true` for a pipeline that indexes nothing.
+     `every route has drop: true` for a pipeline that indexes nothing, and
+     `cancels every other route` for a `route-mode: all` drop route without `when`.
   2. `sum by (route) (rate(kafkafim_docs_total{pipeline="<p>",outcome="dropped"}[5m]))`.
      Every dropped document is counted once, under the label of the drop route that
      selected it (in `route-mode: all`, the first matching drop route). The dashboard's

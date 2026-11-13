@@ -663,7 +663,10 @@ routes:
 - In `route-mode: first`, order decides: a drop route after an indexing route that
   also matches never sees the document.
 - In `route-mode: all`, a selected drop route **cancels every other copy**: the
-  document goes nowhere, and it is counted under the first matching drop route.
+  document goes nowhere, and it is counted under the first matching drop route. A drop
+  route without `when` therefore cancels every other route for every document; startup
+  warns about it (a drop default is taken only when nothing else matched, and does not
+  warn).
 - `default: true, drop: true` turns the routes into an allowlist: whatever no other
   route selected is dropped. A pipeline whose routes all drop is valid but logs a
   startup warning.
@@ -971,7 +974,13 @@ are reported together:
 - **Warnings** (bind, log at `WARN`): no pipelines, `id-missing: auto`, an http route
   without identity, an index name starting with `.`, week-based year, a timestamp
   `pattern:` without an offset or zone, using `k` or failing its self-check,
-  `allow-inline-secrets=true`, a pipeline whose routes all have `drop: true`.
+  `allow-inline-secrets=true`, a pipeline whose routes all have `drop: true`, a drop
+  route without `when` in `route-mode: all` (it cancels every other route), an
+  Elasticsearch cluster whose `bulk.max-bytes` would take longer than its
+  `client.response-timeout` at 1MB/s (that is, `max-bytes` in MB above
+  `response-timeout` in seconds; the defaults leave a factor of 12). 1MB/s is a
+  deliberately pessimistic bulk rate for a loaded cluster, so the warning catches
+  clearly mismatched settings only; it never rejects (§7, ADR-0031).
 
 ## 6. Scaling
 
@@ -1017,7 +1026,8 @@ it decides data loss versus stall. The retry loop around it is the sink's own
 **HTTP client settings** (per `(cluster, identity)` client; ADR-0031): the cluster's
 `client.connect-timeout` (default 5s) and `client.response-timeout` (socket inactivity,
 default 60s), so a `max-bytes` bulk must be answered within it, and a timeout is a
-request-level retry. The pool is a code default: 30s to lease a pooled connection; 32
+request-level retry. Startup warns when the two look mismatched (§5.7). The pool is a
+code default: 30s to lease a pooled connection; 32
 connections per node, 128 per client. The breaker's half-open safety net (a half-open
 breaker whose probes never report back reopens) is its open time plus twice the
 response timeout. Bulk requests carry
