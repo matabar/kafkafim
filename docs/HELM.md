@@ -215,6 +215,31 @@ holds the per-cluster values can run the image with the `validate` profile again
 each rendered ConfigMap in its own CI; this repository's CI only lints and templates
 the chart.
 
+Each group's ConfigMap holds one `application-kafkafim.yaml`. Write it to a directory
+and mount that directory where the pod mounts it:
+
+```bash
+docker run --rm -v "$PWD/rendered/default:/etc/kafkafim/config:ro" registry.internal/kafkafim:1.2.3 --spring.profiles.active=validate,kafkafim
+```
+
+Exit code 0 means the configuration is valid, and an INFO line from
+`...config.KafkafimConfiguration` holds a summary: the pipelines with their clusters,
+identities, topics and indices, and the secret names the configuration expects under
+`/etc/kafkafim/secrets/`. The image logs ECS JSON, one object per line, so the
+summary's line breaks are `\n` inside `message`; append
+`| jq -r 'select(.log.logger | endswith("KafkafimConfiguration")).message'` to read
+it. Exit code 1 means it is invalid, and the log lists every violation as
+`<property path>: <problem>`. Nothing is contacted, so the check needs no network and
+no Secrets: a secret that is not mounted is listed as `(not mounted)`, not rejected.
+Compare that list with `secrets[]`; a misnamed secret is otherwise found only when the
+pod starts. With the command above every secret shows as `(not mounted)`: the image
+does not import secret files by itself (the chart's Deployment does), so to check
+mounted ones also pass `-v <dir>:/etc/kafkafim/secrets:ro` and
+`-e SPRING_CONFIG_IMPORT=configtree:/etc/kafkafim/secrets/`. A literal secret in the
+values is rejected as in production. Check that the summary's pipeline count is what
+you expect: a directory without the file is a valid configuration with
+`0 pipeline(s)`.
+
 ## Secrets and configtree naming
 
 A `Secret` mounted at `/etc/kafkafim/secrets/kafka/prod-a.orders-reader/` with keys

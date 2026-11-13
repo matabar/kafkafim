@@ -24,15 +24,20 @@ public final class KafkafimPropertiesValidator implements Validator {
   private static final Logger LOG = LoggerFactory.getLogger(KafkafimPropertiesValidator.class);
 
   private final Supplier<Iterable<ConfigurationPropertySource>> sources;
+  private final boolean allowUnmountedSecrets;
 
   /**
    * Creates a validator.
    *
    * @param sources the property sources the tree was bound from, consulted for raw (unresolved)
    *     secret values
+   * @param allowUnmountedSecrets accept credential placeholders that nothing defines; {@code true}
+   *     only under the {@code validate} profile ({@link ValidateProfile#isActive})
    */
-  public KafkafimPropertiesValidator(Supplier<Iterable<ConfigurationPropertySource>> sources) {
+  public KafkafimPropertiesValidator(
+      Supplier<Iterable<ConfigurationPropertySource>> sources, boolean allowUnmountedSecrets) {
     this.sources = sources;
+    this.allowUnmountedSecrets = allowUnmountedSecrets;
   }
 
   @Override
@@ -53,7 +58,8 @@ public final class KafkafimPropertiesValidator implements Validator {
     result.warnings().forEach(warning -> LOG.warn("kafkafim configuration: {}", warning));
     List<String> problems = new ArrayList<>(result.errors());
     problems.addAll(
-        InlineSecretCheck.errors(properties, sources.get(), properties.allowInlineSecrets()));
+        InlineSecretCheck.errors(
+            properties, sources.get(), properties.allowInlineSecrets(), allowUnmountedSecrets));
     return problems;
   }
 }
