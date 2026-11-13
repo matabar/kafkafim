@@ -270,13 +270,10 @@ class KafkaPipelineSourceIntegrationTest {
     KafkaPipelineSource source = start(source(topic, 500, DataSize.ofMegabytes(1)), recorder, 1);
 
     await().atMost(TIMEOUT).until(() -> !recorder.failures.isEmpty());
-    assertThat(recorder.failures.getFirst()).startsWith("Kafka consumer stopped (");
     await().atMost(TIMEOUT).until(() -> source.assignedPartitions().isEmpty());
-
-    // A normal stop reports nothing.
-    int reported = recorder.failures.size();
-    source.stop();
-    assertThat(recorder.failures).hasSize(reported);
+    // Reported once, with the container's reason for an Error thrown by the handler. (A normal
+    // stop with a live consumer is covered by normalStopReportsNoFailure.)
+    assertThat(recorder.failures).containsExactly("Kafka consumer stopped (ERROR)");
   }
 
   @Test

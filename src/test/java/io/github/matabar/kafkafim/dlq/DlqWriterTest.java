@@ -488,6 +488,28 @@ class DlqWriterTest {
   }
 
   @Test
+  void topicCheckOnAnInterruptedThreadIsNotRememberedForOtherSends() throws Exception {
+    final DlqWriter writer = ordersWriter();
+    final FakeClient client = clients.get(0);
+
+    Thread.currentThread().interrupt();
+    TopicStatus interrupted;
+    try {
+      interrupted = producers.checkTopic("orders");
+    } finally {
+      Thread.interrupted();
+    }
+    assertThat(interrupted).isEqualTo(TopicStatus.UNREACHABLE);
+
+    CompletableFuture<RecordMetadata> result = writer.send(request());
+    client.next().ack(3);
+
+    assertThat(result.get(10, TimeUnit.SECONDS).offset()).isEqualTo(3);
+    assertThat(events.failures).as("the send described the topic itself").isEmpty();
+    assertThat(client.describes.get()).isEqualTo(2);
+  }
+
+  @Test
   void throwingListenerDoesNotStopTheSend() throws Exception {
     producers =
         new DlqProducers(
@@ -663,7 +685,8 @@ class DlqWriterTest {
       if (failure != null) {
         throw failure;
       }
-      return topic.get();
+      // As KafkaDlqClient: an interrupted wait for the broker is no answer.
+      return Thread.currentThread().isInterrupted() ? TopicStatus.UNREACHABLE : topic.get();
     }
 
     @Override
