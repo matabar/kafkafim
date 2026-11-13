@@ -1286,7 +1286,8 @@ Every log event goes to two places (ADR-0041):
   carry: a pod that fails before the SDK exists (invalid configuration), the last lines
   of a shutdown, and everything while the endpoint is unreachable.
 
-Pipeline lines name their pipeline in the message (`Pipeline '<name>': …`). One WARN line per bulk response with failed items, naming the first 5 by
+Pipeline lines name their pipeline in the message (`Pipeline '<name>': …`). One WARN
+line per bulk response with failed items, naming the first 5 by
 position, status and error type (not Elasticsearch's reason, which quotes field values
 of the document; it travels in the DLQ record), written before that response's outcomes;
 one WARN line per request-level retry (429, 5xx, 401/403, unexpected status) with the

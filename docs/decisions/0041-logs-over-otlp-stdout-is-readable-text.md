@@ -50,7 +50,9 @@ mapping). It does not connect Logback to it.
 - Lines logged while the process shuts down, after the logger provider closed, are on
   stdout only.
 - With the APM Server unreachable, logs of that period exist only on stdout, and only
-  until the pod is gone. The exporter reports the failure on stdout (throttled).
+  until the pod is gone. The exporter reports the failure on stdout (throttled). That
+  line passes through the appender like any other and is queued for export too; the
+  SDK's throttling and the drop-on-full queue keep this from feeding itself.
 - Anything that used to parse stdout JSON must read the OTLP records instead. Nothing in
   the repository did (no runbook step, alert or test).
 - The appender is not managed by the Spring Boot or OpenTelemetry BOMs. `pom.xml` pins it
@@ -58,6 +60,8 @@ mapping). It does not connect Logback to it.
   ignores it so that it moves with the Boot upgrade that moves the SDK.
 - MDC capture includes Micrometer Tracing's `traceId` and `spanId` entries, so a record
   repeats them as attributes beside its native trace and span id.
+- kafkafim sets no MDC entries or key-value pairs today. Any added later is exported
+  automatically, so it must never hold a secret or document content (DESIGN §10).
 
 ## Alternatives
 - **Keep ECS JSON on stdout and let a node agent ship it.** Rejected: production has no
