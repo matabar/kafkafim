@@ -106,13 +106,15 @@ test scope and removing these guards in that upgrade.
 4. SBOM (SPDX JSON, via Syft) generated from the pushed digest and attached to the
    release.
 5. The **exact pushed digest** is saved with `cosign save` into an OCI layout
-   directory. This carries every platform manifest plus the Cosign signature and
-   attestations, so the bundle contains precisely the bytes that were signed. There
-   is no second build.
+   directory. This carries the image index (every platform manifest, plus the
+   BuildKit provenance stored inside the index) and the Cosign signature, so the
+   bundle contains precisely the bytes that were signed. The release attaches no
+   Cosign attestation (`cosign attest`), so the layout holds none. There is no
+   second build.
 6. Chart packaged with `--version <ver> --app-version <ver>`, pushed to
    `oci://ghcr.io/matabar/charts`, signed with Cosign.
 7. **Air-gap bundle** `kafkafim-<ver>-airgap.tar.gz` attached to the GitHub Release:
-   - `kafkafim-<ver>-image/` (OCI layout from `cosign save`: image, signature, attestations)
+   - `kafkafim-<ver>-image/` (OCI layout from `cosign save`: image index with its BuildKit provenance, signature)
    - `kafkafim-<ver>-image.digest` (the `ghcr.io/...@sha256:...` reference that was signed)
    - `kafkafim-<ver>.tgz` (the chart)
    - `kafkafim-<ver>.sbom.spdx.json`
@@ -132,8 +134,25 @@ gh release download v1.2.3 --repo matabar/kafkafim --pattern 'kafkafim-1.2.3-air
 cosign verify ghcr.io/matabar/kafkafim:1.2.3 --certificate-identity-regexp 'https://github.com/matabar/kafkafim/' --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
 
-Keyless verification needs the Sigstore transparency log, so the authoritative check
-happens here, before transfer. Then carry the bundle across and, inside the air gap:
+This is the authoritative check: online, `cosign` refreshes the Sigstore trusted root
+(Fulcio and Rekor keys) from Sigstore's TUF repository. To re-check the signature
+inside the air gap later, take that trusted root across with the bundle. `cosign
+initialize` refreshes the TUF cache; copy the `trusted_root.json` it verified out of
+the cache (under `$TUF_ROOT` instead of `~/.sigstore/root` when that is set):
+
+```bash
+cosign initialize
+```
+
+```bash
+cp ~/.sigstore/root/tuf-repo-cdn.sigstore.dev/targets/trusted_root.json .
+```
+
+Sigstore rotates these keys, so fetch a fresh copy for each import. `SHA256SUMS`
+does not cover `trusted_root.json`, and it is the trust anchor for the check inside
+the air gap, so carry it on the same trusted medium as the bundle (or note its
+`sha256sum` here and compare it there). Then carry both across and, inside the air
+gap, in the directory that holds the extracted bundle and `trusted_root.json`:
 
 ```bash
 sha256sum -c SHA256SUMS
@@ -143,14 +162,26 @@ sha256sum -c SHA256SUMS
 cosign load --dir kafkafim-1.2.3-image registry.internal/kafkafim/kafkafim:1.2.3
 ```
 
-`cosign load` pushes the image and its signature and attestations together, so the
-internal registry holds the same signed artifact as GHCR. To re-check the signature
-inside the air gap, the importing machine needs `cosign` and a Sigstore trusted
-root obtained on the internet side (`cosign initialize`, then carry its
-`~/.sigstore` cache across, or pass `--trusted-root`); then
-`cosign verify --offline` on the internal reference works without network access.
-Without that, the checksum file is the integrity check inside the air gap. The SBOM
-describes the `linux/amd64` image, which is what production runs.
+`cosign load` pushes the image index and its signature together, so the internal
+registry holds the same signed artifact as GHCR. To re-check the signature inside
+the air gap, pass the carried trusted root:
+
+```bash
+cosign verify registry.internal/kafkafim/kafkafim:1.2.3 --trusted-root trusted_root.json --certificate-identity-regexp 'https://github.com/matabar/kafkafim/' --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+This needs no network access: the signature manifest carries the signing
+certificate and its Rekor inclusion proof, which `cosign` checks against the keys in
+`trusted_root.json` (it reports the transparency-log claim as "verified offline").
+`--trusted-root` is what makes it work: without it, `cosign` tries to refresh TUF
+metadata and fails, even with a `~/.sigstore` cache carried across. Don't add
+`--offline`, which cosign 3.1 deprecates; it only turns a missing inclusion proof
+into an error instead of an online lookup. The same command with `--local-image
+kafkafim-1.2.3-image` in place of the registry reference checks the layout before
+it is pushed. (Checked with cosign 3.1.3 against a local registry with outbound
+network blocked, on a public image signed keyless in the same classic format.)
+Without `cosign` inside the air gap, the checksum file is the integrity check there.
+The SBOM describes the `linux/amd64` image, which is what production runs.
 
 ```bash
 helm push kafkafim-1.2.3.tgz oci://registry.internal/charts
@@ -226,8 +257,8 @@ the signature manifest; check that
 `jq -r '.manifests[1].annotations.kind' kafkafim-1.2.3-image/index.json` prints
 `dev.cosignproject.cosign/sigs`. Skip the second copy and the internal registry holds
 the image unsigned: `cosign verify` there fails with `no signatures found`. With both
-copies, `cosign verify --offline` works on the internal reference as after
-`cosign load`, given the trusted root described above. A release has no Cosign
+copies, `cosign verify --trusted-root trusted_root.json` works on the internal
+reference as after `cosign load`. A release has no Cosign
 attestation; a layout that has one (a third entry, kind
 `dev.cosignproject.cosign/atts`) takes a third copy, `:@2` to `sha256-<hex>.att`.
 (Checked with cosign 3.1.3 and skopeo 1.24.1 against a local registry, signing with

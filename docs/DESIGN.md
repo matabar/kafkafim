@@ -337,7 +337,8 @@ identities the pipeline references:
 
 - source topics exist and are readable (`Describe` on topics, metadata fetch);
 - the DLQ topic exists (`Describe`); kafkafim never relies on auto-create;
-- the consumer group is permitted (first join is the check);
+- the source identity may read the consumer group (`DescribeGroups` with its
+  authorized operations; ADR-0038);
 - for each route's ES cluster, the identity authenticates (one lightweight
   authenticated request); index templates, ingest pipelines and roles are assumed
   present and any gap surfaces as a classified bulk error at runtime.
@@ -356,7 +357,8 @@ provisioning systems by creating the `local` profile's `demo` topics
 How the supervisor runs it (`supervisor/Preflight`, `PipelineRuntime`): every pipeline
 starts on its own thread, so one slow check never delays another pipeline or the
 application context. The DLQ topic is described with the DLQ identity
-(`DlqProducers.checkTopic`); each `(cluster, identity)` sends one `GET
+(`DlqProducers.checkTopic`); the consumer group is described with the source identity
+(`KafkaGroupCheck`, below); each `(cluster, identity)` sends one `GET
 /_security/_authenticate` (no privilege needed) through a client built like the sink's;
 then the source starts, which fails for a missing source topic. All DLQ and
 Elasticsearch checks run before a verdict, so one ERROR line names every problem.
@@ -365,9 +367,26 @@ material, and a Kafka authentication or authorization error are **configuration*
 failures (`failed_preflight` until the next accepted reload or a restart, §5.6). An unreachable broker or cluster
 (timeout, connection error, 5xx) is **transient**: the pipeline stays `starting` and
 retries (1s doubling to 30s), so a pod that starts during a short outage needs no
-restart. Elasticsearch answers 405 on that path when security is disabled; any status
-other than 401, 403 and 5xx passes. The consumer group's permission is not checked
-before the first join; a denied join is retried by the source every 10s and logged.
+restart. A stop (shutdown, or a reload that restarts or removes the pipeline)
+cancels a start in progress: it interrupts any check still waiting for an answer and
+discards the verdict, and the pipeline ends `stopped`. A stop therefore never waits out
+the checks' timeouts (10s for the DLQ describe, the source's metadata timeout, 30s by
+default, for the group check, up to 15s per Elasticsearch identity); an Elasticsearch request in flight
+is cancelled. Elasticsearch answers 405 on that path when security is disabled; any
+status other than 401, 403 and 5xx passes.
+
+The group check exists because a denied join is otherwise invisible: the listener
+container retries it every 10s and never stops, so the pipeline would show `running`.
+One `DescribeGroups` with `includeAuthorizedOperations` answers it. It goes through a
+short-lived admin client built from the source identity's consumer settings (all except
+the consumer-only keys) and is bounded by the source's metadata timeout. An
+authorization or authentication error (no group ACL, or one on another group name:
+`FindCoordinator` needs `Describe`) is a configuration failure. So is an existing group
+whose authorized operations lack `READ`, and a group id another protocol already uses.
+`READ` or `ALL` listed, no operations listed, or a broker that does not support the
+request passes. So does a group that has never been joined: the broker answers
+`GroupIdNotFoundException` and cannot tell `Read` from `Describe`, so the first join
+stays the check for `Describe` without `Read` on a new group (ADR-0038).
 
 After a successful start, a pipeline whose source cannot go on (the record handler
 threw, or a consumer of the listener container stopped on its own: any
@@ -658,7 +677,10 @@ routes:
 - In `route-mode: first`, order decides: a drop route after an indexing route that
   also matches never sees the document.
 - In `route-mode: all`, a selected drop route **cancels every other copy**: the
-  document goes nowhere, and it is counted under the first matching drop route.
+  document goes nowhere, and it is counted under the first matching drop route. A drop
+  route without `when` therefore cancels every other route for every document; startup
+  warns about it (a drop default is taken only when nothing else matched, and does not
+  warn).
 - `default: true, drop: true` turns the routes into an allowlist: whatever no other
   route selected is dropped. A pipeline whose routes all drop is valid but logs a
   startup warning.
@@ -861,7 +883,11 @@ in `ConfigValidator`, whose messages never include values.
   - **`POST /actuator/reload`** returns `{result, generation, added, removed,
     restarted: [{pipeline, reasons}], retried, unchanged, errors}`: 200 for `applied` or
     `unchanged`, 400 with every violation for `rejected`, 503 while the supervisor is
-    not running. Names and violations only, never configuration values. It is
+    not running. `applied` means the valid tree differs from the running one, even
+    when no pipeline restarts (a change to a cluster or identity no pipeline uses, or to
+    `kafkafim.reload.*`): the new tree is in effect and gets a new generation, which is
+    how an operator sees a config-only change land on every pod. `unchanged` means it is
+    equal to the running tree. Names and violations only, never configuration values. It is
     defined in `supervisor` (nothing depends on `supervisor`, so it cannot create a
     `telemetry` ↔ `supervisor` cycle).
   - **Metrics and logs**: `kafkafim_config_reload_total{result=success|failure}`
@@ -872,7 +898,9 @@ in `ConfigValidator`, whose messages never include values.
   - **Settings**: `kafkafim.reload.enabled` (default `true`), `poll-interval` (10s),
     `debounce` (2s), read at startup only. The watched paths are the file and
     `configtree:` locations of the three properties above; `classpath:` locations are
-    not watched. `POST /actuator/reload` works with the watcher disabled.
+    not watched. `POST /actuator/reload` works with the watcher disabled. A reload
+    that changes them is still `applied` and logs a WARN that the watcher settings
+    apply after a restart.
   - Not reloaded: the `KafkafimProperties` bean stays the startup tree (the supervisor
     holds the one in effect); OTLP export headers (§10) and everything outside
     `kafkafim.*` need a restart.
@@ -960,7 +988,13 @@ are reported together:
 - **Warnings** (bind, log at `WARN`): no pipelines, `id-missing: auto`, an http route
   without identity, an index name starting with `.`, week-based year, a timestamp
   `pattern:` without an offset or zone, using `k` or failing its self-check,
-  `allow-inline-secrets=true`, a pipeline whose routes all have `drop: true`.
+  `allow-inline-secrets=true`, a pipeline whose routes all have `drop: true`, a drop
+  route without `when` in `route-mode: all` (it cancels every other route), an
+  Elasticsearch cluster whose `bulk.max-bytes` would take longer than its
+  `client.response-timeout` at 1MB/s (that is, `max-bytes` in MB above
+  `response-timeout` in seconds; the defaults leave a factor of 12). 1MB/s is a
+  deliberately pessimistic bulk rate for a loaded cluster, so the warning catches
+  clearly mismatched settings only; it never rejects (§7, ADR-0031).
 
 ## 6. Scaling
 
@@ -1006,7 +1040,8 @@ it decides data loss versus stall. The retry loop around it is the sink's own
 **HTTP client settings** (per `(cluster, identity)` client; ADR-0031): the cluster's
 `client.connect-timeout` (default 5s) and `client.response-timeout` (socket inactivity,
 default 60s), so a `max-bytes` bulk must be answered within it, and a timeout is a
-request-level retry. The pool is a code default: 30s to lease a pooled connection; 32
+request-level retry. Startup warns when the two look mismatched (§5.7). The pool is a
+code default: 30s to lease a pooled connection; 32
 connections per node, 128 per client. The breaker's half-open safety net (a half-open
 breaker whose probes never report back reopens) is its open time plus twice the
 response timeout. Bulk requests carry
