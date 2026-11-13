@@ -1379,7 +1379,8 @@ Actions CI runs unit, integration (Testcontainers), architecture (ArchUnit), ima
 and chart checks on every PR; a `v*` tag publishes a signed multi-arch image to
 `ghcr.io/matabar/kafkafim`, a signed OCI chart to `ghcr.io/matabar/charts/kafkafim`
 and an air-gap bundle (the signed multi-arch image saved by digest with `cosign
-save`, its digest file, chart, SBOM, checksums, import instructions) on the GitHub
+save`, its digest file, chart, SBOM, the alert rules and dashboards of
+`deploy/grafana`, checksums, import instructions) on the GitHub
 Release. Production is air-gapped; the team imports the
 bundle into the internal registry and applies one Helm release per Kubernetes
 cluster with plain `helm upgrade --install`, run from the infrastructure repository's
