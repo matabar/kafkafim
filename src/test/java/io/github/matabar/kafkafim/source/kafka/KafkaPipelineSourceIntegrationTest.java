@@ -41,6 +41,10 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.springframework.kafka.core.DefaultKafkaConsumerFactory;
+import org.springframework.kafka.listener.BatchMessageListener;
+import org.springframework.kafka.listener.ConcurrentMessageListenerContainer;
+import org.springframework.kafka.listener.ConsumerAwareRebalanceListener;
+import org.springframework.kafka.listener.ContainerProperties;
 import org.springframework.util.unit.DataSize;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
@@ -422,6 +426,70 @@ class KafkaPipelineSourceIntegrationTest {
         .atMost(TIMEOUT)
         .until(() ->
             committed(groupOf(topic), topic, 0) == 5 && committed(groupOf(topic), topic, 1) == 5);
+  }
+
+  @Test
+  void containerThatStoppedItselfRanUntilItsConsumerHasReportedStopped() throws Exception {
+    String topic = createTopic(1);
+    produce(topic, 0, 1, 10);
+    Pipeline.Source config = source(topic, 500, DataSize.ofMegabytes(1));
+    // The consumer hits an Error on its first record and stops the container itself; closing its
+    // Kafka consumer then revokes the partition, which is held here: the thread is wrapping up.
+    CountDownLatch revoking = new CountDownLatch(1);
+    CountDownLatch releaseRevoke = new CountDownLatch(1);
+    ContainerProperties properties = new ContainerProperties(topic);
+    properties.setGroupId(groupOf(topic));
+    properties.setKafkaConsumerProperties(ConsumerSettings.forPipeline(config));
+    properties.setMessageListener(
+        (BatchMessageListener<byte[], byte[]>)
+            records -> {
+              throw new LinkageError("fatal");
+            });
+    properties.setConsumerRebalanceListener(
+        new ConsumerAwareRebalanceListener() {
+          @Override
+          public void onPartitionsRevokedBeforeCommit(
+              org.apache.kafka.clients.consumer.Consumer<?, ?> consumer,
+              Collection<TopicPartition> partitions) {
+            hold();
+          }
+
+          // The client reports a loss instead if it closes without a valid generation.
+          @Override
+          public void onPartitionsLost(
+              org.apache.kafka.clients.consumer.Consumer<?, ?> consumer,
+              Collection<TopicPartition> partitions) {
+            hold();
+          }
+
+          private void hold() {
+            revoking.countDown();
+            try {
+              releaseRevoke.await();
+            } catch (InterruptedException e) {
+              Thread.currentThread().interrupt();
+            }
+          }
+        });
+    ConcurrentMessageListenerContainer<byte[], byte[]> container =
+        new ConcurrentMessageListenerContainer<>(factories.get("local", null), properties);
+    container.setApplicationEventPublisher(event -> {});
+    container.setBeanName("self-stopped-" + topic);
+    try {
+      assertThat(KafkaPipelineSource.neverRan(container)).as("before the start").isTrue();
+      container.start();
+      assertThat(KafkaPipelineSource.neverRan(container)).as("running").isFalse();
+
+      assertThat(revoking.await(TIMEOUT.toSeconds(), TimeUnit.SECONDS)).isTrue();
+      assertThat(container.isRunning()).as("stopped itself").isFalse();
+      assertThat(KafkaPipelineSource.neverRan(container))
+          .as("its consumer thread is still wrapping up")
+          .isFalse();
+    } finally {
+      releaseRevoke.countDown();
+      container.stop();
+    }
+    await().atMost(TIMEOUT).until(() -> KafkaPipelineSource.neverRan(container));
   }
 
   @Test
