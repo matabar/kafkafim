@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 
 import co.elastic.clients.transport.rest5_client.low_level.Request;
+import co.elastic.clients.transport.rest5_client.low_level.Response;
 import co.elastic.clients.transport.rest5_client.low_level.ResponseException;
 import co.elastic.clients.transport.rest5_client.low_level.Rest5Client;
 import io.github.matabar.kafkafim.KafkaTestContainers;
@@ -481,18 +482,37 @@ class HotReloadIntegrationTest {
     return response.get("count").asLong();
   }
 
+  /**
+   * Performs a request as the admin and returns the parsed body; fails on a non-2xx status.
+   *
+   * <p>{@link Rest5Client#performRequest} throws {@link ResponseException} only for 5xx and returns
+   * every status below 500 as a normal response (see {@code Rest5ClientStatusContractTest}), so the
+   * status is checked here, not left to the exception (#150).
+   */
   private static JsonNode call(String method, String path, String json) throws IOException {
     Request request = new Request(method, path);
     if (json != null) {
       request.setJsonEntity(json);
     }
+    Response response;
     try {
-      return JSON.readTree(
-          EntityUtils.toString(es.performRequest(request).getEntity(), StandardCharsets.UTF_8));
+      response = es.performRequest(request);
     } catch (ResponseException e) {
-      throw new AssertionError(method + " " + path + " failed: " + e.getMessage(), e);
+      response = e.getResponse();
+    }
+    String body;
+    try {
+      body =
+          response.getEntity() == null
+              ? ""
+              : EntityUtils.toString(response.getEntity(), StandardCharsets.UTF_8);
     } catch (org.apache.hc.core5.http.ParseException e) {
       throw new IOException(e);
     }
+    int status = response.getStatusCode();
+    if (status / 100 != 2) {
+      throw new AssertionError(method + " " + path + " failed: HTTP " + status + ", body: " + body);
+    }
+    return JSON.readTree(body);
   }
 }
