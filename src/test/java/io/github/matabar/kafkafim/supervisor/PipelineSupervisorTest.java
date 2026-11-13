@@ -56,6 +56,31 @@ class PipelineSupervisorTest {
           BreakerSettings.DEFAULT,
           Clock.systemUTC());
 
+  /**
+   * Short Kafka timeouts, for pipelines started against a dead broker: a 1s metadata timeout bounds
+   * the consumer group check, 500ms the DLQ topic check.
+   */
+  static final PipelineResources.Settings FAST_SETTINGS =
+      new PipelineResources.Settings(
+          new SourceOptions(
+              1,
+              0.5,
+              Duration.ofSeconds(1),
+              Duration.ofSeconds(1),
+              Duration.ofSeconds(1),
+              Duration.ofSeconds(1),
+              Duration.ofSeconds(1),
+              Duration.ofSeconds(1)),
+          Duration.ofSeconds(1),
+          new DlqOptions(
+              Duration.ofMillis(100),
+              Duration.ofSeconds(1),
+              Duration.ofMillis(500),
+              Duration.ofSeconds(1)),
+          ClientSettings.DEFAULT,
+          BreakerSettings.DEFAULT,
+          Clock.systemUTC());
+
   private final List<String> events = new ArrayList<>();
   private final ListenerRelay relay = new ListenerRelay(List.of(), List.of());
   private final PipelineResources resources =
@@ -300,28 +325,7 @@ class PipelineSupervisorTest {
             """);
     PipelineResources brokenResources =
         new PipelineResources(
-            relay,
-            p -> new ElasticsearchAuthCheck(p.elasticsearch().clusters()),
-            new PipelineResources.Settings(
-                // A 1s metadata timeout bounds the consumer group check against the dead broker.
-                new SourceOptions(
-                    1,
-                    0.5,
-                    Duration.ofSeconds(1),
-                    Duration.ofSeconds(1),
-                    Duration.ofSeconds(1),
-                    Duration.ofSeconds(1),
-                    Duration.ofSeconds(1),
-                    Duration.ofSeconds(1)),
-                Duration.ofSeconds(1),
-                new DlqOptions(
-                    Duration.ofMillis(100),
-                    Duration.ofSeconds(1),
-                    Duration.ofMillis(500),
-                    Duration.ofSeconds(1)),
-                ClientSettings.DEFAULT,
-                BreakerSettings.DEFAULT,
-                Clock.systemUTC()));
+            relay, p -> new ElasticsearchAuthCheck(p.elasticsearch().clusters()), FAST_SETTINGS);
     PipelineSupervisor failing = new PipelineSupervisor(broken, brokenResources, List.of());
     failing.startPipeline("bad");
     long deadline = System.nanoTime() + Duration.ofSeconds(30).toNanos();
@@ -357,28 +361,7 @@ class PipelineSupervisorTest {
             """);
     PipelineResources brokenResources =
         new PipelineResources(
-            relay,
-            p -> new ElasticsearchAuthCheck(p.elasticsearch().clusters()),
-            new PipelineResources.Settings(
-                // A 1s metadata timeout bounds the consumer group check against the dead broker.
-                new SourceOptions(
-                    1,
-                    0.5,
-                    Duration.ofSeconds(1),
-                    Duration.ofSeconds(1),
-                    Duration.ofSeconds(1),
-                    Duration.ofSeconds(1),
-                    Duration.ofSeconds(1),
-                    Duration.ofSeconds(1)),
-                Duration.ofSeconds(1),
-                new DlqOptions(
-                    Duration.ofMillis(100),
-                    Duration.ofSeconds(1),
-                    Duration.ofMillis(500),
-                    Duration.ofSeconds(1)),
-                ClientSettings.DEFAULT,
-                BreakerSettings.DEFAULT,
-                Clock.systemUTC()));
+            relay, p -> new ElasticsearchAuthCheck(p.elasticsearch().clusters()), FAST_SETTINGS);
     PipelineSupervisor failing = new PipelineSupervisor(broken, brokenResources, List.of());
     failing.startPipeline("bad");
     long deadline = System.nanoTime() + Duration.ofSeconds(30).toNanos();
