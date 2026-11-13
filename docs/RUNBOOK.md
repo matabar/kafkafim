@@ -159,7 +159,8 @@ Each pipeline on each pod is in one `PipelineState`
 | `stopped` | Not started yet, or stopped by a reload or shutdown. | Only transiently. |
 
 **Alerts**: [`KafkafimPipelinePaused`](../deploy/grafana/alerts/kafkafim-alerts.yaml) (a pipeline `paused` for 5m; the
-reason is in the log lines below, and §5 has a section per reason).
+kind of reason is in `kafkafim_pipeline_pause_reason`, the cluster or identity it names in
+the log lines below, and §5 has a section per reason).
 
 Where to read it:
 
@@ -181,8 +182,12 @@ Where to read it:
 
 - **Logs**: every transition is logged at INFO as `Pipeline '<name>': <from> -> <to>`;
   a pause as WARN `Pipeline '<name>': pausing (<reason>)` and its end as INFO
-  `Pipeline '<name>': <reason> cleared`. The **reason** of a pause is only in these log
-  lines (the metric says `paused`, not why).
+  `Pipeline '<name>': <reason> cleared`.
+- **Why it is paused**: `kafkafim_pipeline_pause_reason{pipeline,reason} == 1`, with
+  `reason` one of `es_breaker` ([§5.1](#51-elasticsearch-outage-circuit-breaker-open)),
+  `es_auth` ([§5.2](#52-elasticsearch-authentication-failure-pipeline-paused)) and
+  `dlq_blocked` ([§5.6](#56-dlq-filling-or-dlq-blocked)); more than one can be 1. It is 1
+  only while the state is `paused`. Which cluster or identity is in the log lines above.
 - **Health**: `/actuator/health/readiness` includes the `pipelines` component. With
   the packaged `show-details: when-authorized` and no authentication, the response
   shows component statuses only, not the per-pipeline states, so use the metric.
@@ -215,6 +220,7 @@ neither (`kafkafim_config_reload_total` has `result`) ([DESIGN §10](DESIGN.md#1
 | What is going to the DLQ? | `kafkafim_dlq_records_total{error_type}`, `kafkafim_item_errors_total{es_cluster,error_type,retryable}` |
 | What are drop routes discarding? | `rate(kafkafim_docs_total{outcome="dropped"}[5m])` by `route` ([§5.14](#514-documents-missing-from-elasticsearch-dropped-or-lost)) |
 | Backpressure / memory? | `kafkafim_in_flight_bytes` against the pipeline's `source.max-in-flight-bytes`; `jvm_memory_used_bytes{area="heap"}` |
+| Why is a pipeline paused? | `kafkafim_pipeline_pause_reason{reason}` (1/0 per kind: `es_breaker`, `es_auth`, `dlq_blocked`) |
 | Does this pod own partitions? Is Kafka connected? | `kafkafim_assigned_partitions`, `kafkafim_kafka_connected` (1/0) |
 
 Dashboards and alert rules for these metrics ship in `deploy/grafana/`
@@ -438,9 +444,9 @@ tooling shows it too (`kafka-consumer-groups.sh --describe --group kafkafim.<pip
   consumer identity, SASL rejected): the pipeline goes `failed_preflight` (see
   [§5.5](#55-failed_preflight-pipelines)). The start check is a metadata fetch, which
   needs only `Describe`.
-- **`Read` missing on a source topic** (but `Describe` present): not checked at start.
-  The pipeline shows **`running`**; its fetches fail with a topic authorization error,
-  retried every 10s and logged; nothing is consumed.
+- **`Read` missing on a source topic** (but `Describe` present): the pipeline goes
+  `failed_preflight`. The ERROR line names the topic, the identity and the cluster
+  (ADR-0039; see [§5.5](#55-failed_preflight-pipelines)).
 - **Consumer group not permitted** (no ACL on the group, an ACL on another group name
   or prefix, or `Describe` without `Read` on a group that has joined before): the
   pipeline goes `failed_preflight`. The ERROR line names the group, the identity and the
@@ -473,6 +479,7 @@ tooling shows it too (`kafka-consumer-groups.sh --describe --group kafkafim.<pip
   |---|---|---|
   | `source topics [...] do not exist or are not visible to identity '<id>'` | Topic missing, or no `Describe` for the consumer identity | Create the topic / add the ACL |
   | `identity '<id>' on Kafka cluster '<c>' rejected reading [...]` | SASL credentials wrong, or authorization denied | Fix the Secret or ACL |
+  | `source topic '<t>' (identity '<id>' on Kafka cluster '<c>'): identity may describe the topic but not read it` | `Describe` without `Read` on a source topic | Add `Read` on the topic for the consumer identity |
   | `consumer group '<g>' (identity '<id>' on Kafka cluster '<c>'): identity may not use the group` or `...: identity may describe the group but not read it` | No ACL on the group (or on another group name or prefix), or `Describe` without `Read` | Add `Read` on the group for the consumer identity |
   | `DLQ topic '<t>' (identity '<id>' on Kafka cluster '<c>') does not exist` or `...: identity may not describe it` | DLQ topic (default `<first topic>.kafkafim-dlq`) not provisioned, or no `Describe` for the DLQ identity | Create it / add the ACL; kafkafim never auto-creates it |
   | `Elasticsearch identity '<id>' on cluster '<es>' rejected: HTTP 401 from _security/_authenticate` (or 403) | Bad ES credential | Fix the Secret or the ES user/API key |
@@ -780,16 +787,18 @@ Logs never contain document bodies or secret values; they are safe to attach.
 
 Current behaviour that this runbook works around; each is a follow-up, not a feature:
 
-- **A missing topic `Read` ACL shows `running`.** The start check fetches metadata
-  only (`Describe`); fetches then fail and are retried every 10s.
 - **A denied join to a never-joined group shows `running`** when the identity has
   `Describe` but not `Read` on it. Preflight's group check cannot tell the two apart
   before the group exists (ADR-0038); the source retries the join every 10s.
 - **Rotated TLS files are not reloaded.** Certificate and keystore files are bound
   by path, so a content change with an unchanged path, password and type is `unchanged` to
   the reload; restart the pods ([§4.3](#43-rotating-a-secret)).
-- **Pause reasons are only in logs.** The metric and the health endpoint say `paused`
-  without the reason; health details are hidden by `show-details: when-authorized`.
-- **No `validate` profile yet** ([DESIGN §5.6](DESIGN.md#56-validation-and-hot-reload),
-  roadmap 0.2): an invalid configuration is found only by a running pod's reload or a
-  new pod's startup.
+- **A pause reason's cluster and identity are only in logs.**
+  `kafkafim_pipeline_pause_reason` gives the kind (`es_breaker`, `es_auth`,
+  `dlq_blocked`); the health endpoint says `paused` without a reason, and its details
+  are hidden by `show-details: when-authorized`.
+- **The `validate` profile does not check secrets or connectivity**
+  ([DESIGN §5.6](DESIGN.md#56-validation-and-hot-reload), [HELM.md](HELM.md)): it
+  accepts a secret that is not mounted and only lists its name, opens no trust or
+  keystore file and runs no preflight. A misnamed secret, a missing topic or a wrong
+  credential is still found only by a new pod's startup or a running pod's reload.
