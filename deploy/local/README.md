@@ -128,11 +128,13 @@ Docker Desktop for Mac (7.7 GiB):
   `starting`, and went to `running` on its own.
 - `demo.sh smoke`, ten times: each record indexed in `demo-eu-<date>`.
 - Grafana 11.6.0 through the port-forward: *kafkafim / Overview* and *kafkafim /
-  Elasticsearch* are in the *kafkafim* folder. Overview: all 21 panels have data
+  Elasticsearch* are in the *kafkafim* folder. Overview: all 21 panels it had at that commit have data
   (`running` = 1 for pipeline `demo`, end-to-end latency, records, documents by route,
   one DLQ record from a deliberately bad timestamp). Elasticsearch: 9 of 11 panels have
   data (breaker `closed`, bulk requests with status 200, bulk latency); *Retries by
   scope* and *Item errors by type* are empty because the demo had no retry or item error.
+- Not covered by that run: the Overview panel for pause reasons, added to the dashboard
+  afterwards (#185).
 - Tempo: a `pipeline.batch` trace of service `kafkafim` with its `es.bulk` child span
   (`http.response.status_code` 200, `kafkafim.pipeline` `demo`).
 - Loki has no kafkafim logs yet: the application does not export logs over OTLP before
