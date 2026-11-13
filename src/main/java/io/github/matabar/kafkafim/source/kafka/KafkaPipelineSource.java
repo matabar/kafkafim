@@ -294,8 +294,9 @@ public final class KafkaPipelineSource implements SmartLifecycle {
    * Whether a container whose start threw never had a consumer. "Not running" alone does not say
    * so: a first consumer that hits an {@link Error} or a fatal error as soon as the failed start
    * returns stops the container itself, and its thread may still be wrapping up. The container
-   * keeps its consumers listed until the last of them has reported stopped, so one that is not
-   * running and lists none has nothing left to wait for.
+   * keeps its consumers listed until the last of those that registered with it has reported
+   * stopped, so one that is not running and lists none has nothing left to wait for. (A consumer
+   * that had not registered yet never polled; see the early signal in {@link #awaitConsumers}.)
    *
    * @param created a container whose start threw
    * @return {@code true} if there is neither a consumer to stop nor one to wait for
