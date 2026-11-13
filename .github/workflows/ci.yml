@@ -55,7 +55,8 @@ jobs:
               *) docs_only=false ;;
             esac
             case "$f" in
-              charts/* | deploy/local/* | .github/workflows/ci.yml | .github/keys/*) helm=true ;;
+              # deploy/grafana too: the demo chart renders the dashboards and their provider.
+              charts/* | deploy/local/* | deploy/grafana/* | .github/workflows/ci.yml | .github/keys/*) helm=true ;;
             esac
             case "$f" in
               deploy/grafana/* | .github/workflows/ci.yml) grafana=true ;;
