@@ -13,7 +13,7 @@ import org.springframework.boot.context.properties.source.ConfigurationPropertyN
 import org.springframework.boot.context.properties.source.ConfigurationPropertySource;
 import org.springframework.boot.env.ConfigTreePropertySource;
 import org.springframework.boot.origin.Origin;
-import org.springframework.boot.origin.OriginLookup;
+import org.springframework.boot.origin.PropertySourceOrigin;
 import org.springframework.core.env.PropertySource;
 
 /**
@@ -26,7 +26,7 @@ import org.springframework.core.env.PropertySource;
  * <p>Detection reads <em>unresolved</em> values: the {@code Binder} resolves placeholders while
  * binding, so the {@link ConfigurationPropertySource} that wins for a name (the binder's own
  * precedence) still returns the raw text with its origin. Each {@code ${name}} is then followed to
- * the property source that wins for {@code name}.
+ * the property source the binder takes {@code name} from, relaxed names included.
  *
  * <p>Independently of {@code allow-inline-secrets}, a placeholder in a credential (secrets and
  * usernames) that nothing defines is always an error: the binder leaves unresolvable placeholders
@@ -162,8 +162,33 @@ final class InlineSecretCheck {
     return secrets;
   }
 
+  /**
+   * Follows {@code ${name}} to the value the binder would substitute. It requires what both real
+   * paths have: Boot's {@code configurationProperties} source attached first in the environment
+   * ({@code SpringApplication} at startup, {@link ConfigLoader#load} for a reload). The binder then
+   * asks that source first, which takes the first source, in precedence order, that has the name
+   * under relaxed matching (another case, an environment variable's form); only when none has it,
+   * or the name is not a valid property name, do the sources answer by the exact name. Looking up
+   * in any other order could accept a mounted file while the binder substitutes a literal from a
+   * source that wins over it.
+   */
   private static Resolution follow(
       String name, Iterable<ConfigurationPropertySource> sources, int depth) {
+    ConfigurationPropertyName relaxed = ConfigurationPropertyName.ofIfValid(name);
+    if (relaxed != null) {
+      for (ConfigurationPropertySource source : sources) {
+        ConfigurationProperty property = source.getConfigurationProperty(relaxed);
+        if (property != null) {
+          return resolve(
+              name,
+              isSecretFile(source),
+              property.getValue(),
+              origin(property.getOrigin()),
+              sources,
+              depth);
+        }
+      }
+    }
     for (ConfigurationPropertySource source : sources) {
       if (!(source.getUnderlyingSource() instanceof PropertySource<?> propertySource)) {
         continue;
@@ -172,43 +197,32 @@ final class InlineSecretCheck {
       if (value == null) {
         continue;
       }
-      if (propertySource instanceof ConfigTreePropertySource) {
-        return new Resolution(Kind.SECRET_FILE, name, null);
-      }
-      Matcher next = placeholder(value);
-      if (next != null && depth < MAX_DEPTH) {
-        return follow(next.group(1), sources, depth + 1);
-      }
-      Origin origin =
-          propertySource instanceof OriginLookup<?> lookup ? originOf(lookup, name) : null;
-      return new Resolution(
-          Kind.LITERAL, name, origin != null ? origin.toString() : propertySource.getName());
-    }
-    // The binder resolves ${name} through relaxed names too (another case, an environment
-    // variable's form), which the exact lookup above misses. Such a value is not unresolved.
-    ConfigurationPropertyName relaxed = ConfigurationPropertyName.ofIfValid(name);
-    if (relaxed != null) {
-      for (ConfigurationPropertySource source : sources) {
-        ConfigurationProperty property = source.getConfigurationProperty(relaxed);
-        if (property == null) {
-          continue;
-        }
-        if (isSecretFile(source)) {
-          return new Resolution(Kind.SECRET_FILE, name, null);
-        }
-        Matcher next = placeholder(property.getValue());
-        if (next != null && depth < MAX_DEPTH) {
-          return follow(next.group(1), sources, depth + 1);
-        }
-        return new Resolution(Kind.LITERAL, name, origin(property.getOrigin()));
-      }
+      return resolve(
+          name,
+          propertySource instanceof ConfigTreePropertySource,
+          value,
+          origin(PropertySourceOrigin.get(propertySource, name)),
+          sources,
+          depth);
     }
     return new Resolution(Kind.UNRESOLVED, name, null);
   }
 
-  @SuppressWarnings("unchecked")
-  private static Origin originOf(OriginLookup<?> lookup, String name) {
-    return ((OriginLookup<String>) lookup).getOrigin(name);
+  private static Resolution resolve(
+      String name,
+      boolean secretFile,
+      Object value,
+      String origin,
+      Iterable<ConfigurationPropertySource> sources,
+      int depth) {
+    if (secretFile) {
+      return new Resolution(Kind.SECRET_FILE, name, null);
+    }
+    Matcher next = placeholder(value);
+    if (next != null && depth < MAX_DEPTH) {
+      return follow(next.group(1), sources, depth + 1);
+    }
+    return new Resolution(Kind.LITERAL, name, origin);
   }
 
   private static boolean isSecretFile(ConfigurationPropertySource source) {
