@@ -902,7 +902,8 @@ in `ConfigValidator`, whose messages never include values.
     phase, after which Spring moves on: records not yet committed are re-delivered
     after the restart, nothing is lost.
   - **A reload that fails while it is applied** (ADR-0041): a valid tree can still fail
-    in the supervisor, when a client or producer for it cannot be built. The reload is
+    in the supervisor, when a client or producer for it cannot be built or a drained
+    pipeline was started again before it got its new context. The reload is
     then rolled back as a whole: the building blocks acquired for the new tree are
     released, the ones the running tree uses stay the current ones, and the pipelines
     drained for the reload (those that were running, paused or starting, including the

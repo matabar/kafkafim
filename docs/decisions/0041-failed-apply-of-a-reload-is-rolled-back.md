@@ -34,9 +34,12 @@ stopped for the reload stayed stopped until a later reload succeeded.
     stays as it was.
 - **`acquire` itself takes nothing when it throws**: instances it created are closed and
   the ones they replaced are current again.
-- If a pipeline cannot get its previous context back, because something started it
-  again during the rollback, it keeps the new context, that context stays in use, and
-  one WARN line names the pipeline. The next reload that is applied corrects it.
+- If a pipeline cannot get its previous context back, because something started or
+  stopped it during the rollback, it keeps the new context, that context stays in use,
+  and one WARN line names the pipeline. It stays so until a reload restarts that
+  pipeline or the pod restarts: the next diff is taken against the running tree, so a
+  reload that leaves the pipeline unchanged does not correct it. No production code
+  starts or stops single pipelines today.
 - Nothing is started again when a shutdown began during the drains.
 
 ## Alternatives
@@ -56,4 +59,12 @@ stopped for the reload stayed stopped until a later reload succeeded.
 - `kafkafim_config_reload_total{result=failure}` and the ERROR line are unchanged; the
   generation does not move. One WARN line lists the pipelines started again.
 - A reload holds the old and the new building blocks of all its restarted pipelines at
-  once for the time of the reconfigure, a little longer than before.
+  once for the time of the reconfigure, a little longer than before. One effect: when
+  the last pipeline of an Elasticsearch registry restarts away from it and another
+  pipeline of the same reload joins that cluster with the same definition, the registry
+  (and its breaker state) is now shared instead of closed and built again.
+- Known limit: a pipeline that had moved to new DLQ producers before a later
+  reconfigure failed, and whose previous writer was blocked, comes back without its
+  `dlq-blocked` pause, because the writer reports only the change to blocked. This
+  needs the same concurrent start or stop as above (#207).
+- An `Error` (not a `RuntimeException`) while a client is built is not rolled back (#208).

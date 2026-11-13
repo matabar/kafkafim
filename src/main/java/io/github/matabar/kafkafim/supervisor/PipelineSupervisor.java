@@ -296,7 +296,8 @@ public final class PipelineSupervisor implements SmartLifecycle {
       for (String name : diff.restarted().keySet()) {
         toStop.add(current.get(name));
       }
-      // What the drains stop while it runs or starts: a failed apply starts those again.
+      // What the drains stop while it runs or starts: a failed apply starts those again. Read
+      // before the drains, so a pipeline that fails in between is started again too (a retry).
       List<PipelineRuntime> active = new ArrayList<>();
       for (PipelineRuntime runtime : toStop) {
         PipelineState state = runtime.state();
@@ -376,13 +377,14 @@ public final class PipelineSupervisor implements SmartLifecycle {
       try {
         runtime.reconfigure(previous);
       } catch (RuntimeException e) {
-        // Something started it meanwhile: it runs on the new context, so that one stays in use.
+        // Something started or is stopping it meanwhile (startPipeline and stopPipeline do not
+        // take the lifecycle lock): it has the new context, so that one stays in use.
         PipelineRuntime.Context kept = runtime.context();
         toRelease.removeIf(context -> context == kept); // by identity: contexts are records
         toRelease.add(previous);
         LOG.warn(
-            "Pipeline '{}' was started while a failed reload was undone; it keeps the new"
-                + " configuration until the next reload",
+            "Pipeline '{}' was started or stopped while a failed reload was undone; it keeps"
+                + " the new configuration until a reload restarts it or the pod restarts",
             runtime.name(),
             e);
       }
