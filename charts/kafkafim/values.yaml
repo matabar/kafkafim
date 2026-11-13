@@ -91,17 +91,18 @@ affinity: {}
 
 otel:
   # OTLP/HTTP endpoint (Elastic APM Server today; a Collector later is just a new URL).
+  # Metrics, traces and logs all go there; stdout keeps the logs for `kubectl logs`.
   endpoint: http://apm-server.observability:8200
   # Non-secret headers (header name -> value), rendered as OTEL_EXPORTER_OTLP_HEADERS
-  # (k=v,k2=v2, with "%" and "," percent-encoded). Spring Boot applies them to both
-  # the OTLP metrics and the OTLP trace exporter.
+  # (k=v,k2=v2, with "%" and "," percent-encoded). Spring Boot applies them to the
+  # OTLP metrics, trace and log exporters.
   #   x-tenant: kafkafim
   headers: {}
   # Secret headers (header name -> key of an existing Secret), e.g. the APM Server
   # secret token. The Secret value is the whole header value ("Bearer <token>" or
   # "ApiKey <base64 id:key>"). The chart renders only the Secret name and key: a
   # projected volume puts each value in a file named after the header, mounted under
-  # the configtree root where it binds to both exporters' headers
+  # the configtree root where it binds to the three exporters' headers
   # (/etc/kafkafim/secrets/management/..., which secrets[] must not use). Read at
   # startup: restart the pods after rotating the Secret.
   #   Authorization:
@@ -116,7 +117,7 @@ jvm:
 # otel.secretHeaders, not here). extraEnv must not redefine the variables the chart
 # sets (SPRING_PROFILES_ACTIVE, SPRING_CONFIG_ADDITIONAL_LOCATION, SPRING_CONFIG_IMPORT,
 # OTEL_EXPORTER_OTLP_ENDPOINT, JAVA_TOOL_OPTIONS, and OTEL_EXPORTER_OTLP_HEADERS plus its
-# _METRICS_/_TRACES_ variants when otel.headers or otel.secretHeaders is set).
+# _METRICS_/_TRACES_/_LOGS_ variants when otel.headers or otel.secretHeaders is set).
 extraEnv: []
 extraEnvFrom: []
 

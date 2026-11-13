@@ -189,13 +189,13 @@
       "properties": {
         "endpoint": { "type": "string", "minLength": 1 },
         "headers": {
-          "description": "Non-secret OTLP export headers, header name -> value.",
+          "description": "Non-secret OTLP export headers (metrics, traces and logs), header name -> value.",
           "type": "object",
           "propertyNames": { "$ref": "#/definitions/httpHeaderName" },
           "additionalProperties": { "type": "string" }
         },
         "secretHeaders": {
-          "description": "Secret OTLP export headers, header name -> key of an existing Secret.",
+          "description": "Secret OTLP export headers (metrics, traces and logs), header name -> key of an existing Secret.",
           "type": "object",
           "propertyNames": { "$ref": "#/definitions/httpHeaderName" },
           "additionalProperties": {
