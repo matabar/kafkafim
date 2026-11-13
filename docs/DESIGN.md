@@ -378,7 +378,10 @@ application context. The DLQ topic is described with the DLQ identity
 (`DlqProducers.checkTopic`); the consumer group is described with the source identity
 (`KafkaGroupCheck`, below); each `(cluster, identity)` sends one `GET
 /_security/_authenticate` (no privilege needed) through a client built like the sink's;
-then the source starts, which fails for a missing source topic. All DLQ and
+then the source starts, which fails for a missing source topic. A source whose start
+fails after some of its consumers were created (they are created one after another)
+stops those consumers before it reports the failure, so they leave the group and a
+pipeline that did not start does not keep consuming. All DLQ and
 Elasticsearch checks run before a verdict, so one ERROR line names every problem.
 Missing or undescribable topics, a 401/403, an unknown identity or unreadable trust
 material, and a Kafka authentication or authorization error are **configuration**
@@ -390,7 +393,8 @@ cancels a start in progress: it interrupts any check still waiting for an answer
 discards the verdict, and the pipeline ends `stopped`. A stop therefore never waits out
 the checks' timeouts (10s for the DLQ describe, the source's metadata timeout, 30s by
 default, for the group check, up to 15s per Elasticsearch identity); an Elasticsearch request in flight
-is cancelled. Elasticsearch answers 405 on that path when security is disabled; any
+is cancelled, and its client is closed on a thread of its own, because the client's
+graceful close can take 5s. Elasticsearch answers 405 on that path when security is disabled; any
 status other than 401, 403 and 5xx passes.
 
 The group check exists because a denied join is otherwise invisible: the listener
@@ -669,7 +673,15 @@ A route matches when **all** of its `when` conditions hold. Condition types:
   objects, arrays, `null` and a missing field match nothing.
 - `prefix`/`matches` apply to string fields only; any other type does not match. A
   value long enough to overflow `java.util.regex`'s stack (constructs like `(a|b)*`
-  recurse per repetition) counts as no match instead of failing the record.
+  recurse per repetition) counts as no match instead of failing the record. That is
+  deliberately silent: no log line and no metric say that the guard was hit
+  (kafkafim stays light, and `route` may depend only on the JDK and Jackson,
+  ADR-0003: no SLF4J, no Micrometer). The route is then treated as not matching, and
+  selection continues as described below: the document can miss that route's copy,
+  fall to the default route, or (in `all`, with no default) go to the DLQ as
+  `no_route`; a drop route guarded by such a condition does not drop it. Prefer
+  patterns without such constructs (`[ab]*` instead of `(a|b)*`) where values can be
+  long.
 - `header` compares the UTF-8 bytes of `v` with the value of the **last** header of
   that name (Kafka allows repeats); a missing header or a null value does not match.
 
@@ -1368,7 +1380,8 @@ Actions CI runs unit, integration (Testcontainers), architecture (ArchUnit), ima
 and chart checks on every PR; a `v*` tag publishes a signed multi-arch image to
 `ghcr.io/matabar/kafkafim`, a signed OCI chart to `ghcr.io/matabar/charts/kafkafim`
 and an air-gap bundle (the signed multi-arch image saved by digest with `cosign
-save`, its digest file, chart, SBOM, checksums, import instructions) on the GitHub
+save`, its digest file, chart, SBOM, the alert rules and dashboards of
+`deploy/grafana`, checksums, import instructions) on the GitHub
 Release. Production is air-gapped; the team imports the
 bundle into the internal registry and applies one Helm release per Kubernetes
 cluster with plain `helm upgrade --install`, run from the infrastructure repository's
