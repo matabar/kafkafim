@@ -12,7 +12,9 @@ import java.util.Map;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.springframework.boot.context.properties.bind.validation.BindValidationException;
+import org.springframework.boot.context.properties.source.ConfigurationPropertySources;
 import org.springframework.boot.env.ConfigTreePropertySource;
+import org.springframework.core.env.ConfigurableEnvironment;
 import org.springframework.core.env.MapPropertySource;
 import org.springframework.core.env.PropertySource;
 import org.springframework.core.env.StandardEnvironment;
@@ -261,6 +263,147 @@ class InlineSecretCheckTest {
         .asString()
         .contains("placeholder ${ORDERS_READER_PASSWORD} resolves to a literal value")
         .contains(StandardEnvironment.SYSTEM_ENVIRONMENT_PROPERTY_SOURCE_NAME);
+  }
+
+  /** Reader {@code reader-a}: its secret's environment form drops the dash. */
+  private static final String DASHED =
+      K
+          + ".identities.reader-a.sasl.mechanism=SCRAM-SHA-256\n"
+          + K
+          + ".identities.reader-a.sasl.username=u\n"
+          + K
+          + ".identities.reader-a.sasl.password=${kafka.k.reader-a.password}\n"
+          + K
+          + ".default-identity=reader-a";
+
+  private static SystemEnvironmentPropertySource dashDroppedEnvironmentVariable() {
+    return new SystemEnvironmentPropertySource(
+        StandardEnvironment.SYSTEM_ENVIRONMENT_PROPERTY_SOURCE_NAME,
+        Map.of("KAFKA_K_READERA_PASSWORD", "hunter2"));
+  }
+
+  private static ConfigTreePropertySource mountedDashedSecret() {
+    return new ConfigTreePropertySource(
+        "configtree", ConfigTestSupport.configTree(Map.of("kafka.k.reader-a.password", "file")));
+  }
+
+  /**
+   * Adds {@code sources} first, one by one (the last one wins), and attaches Boot's {@code
+   * configurationProperties} source as {@code SpringApplication} does; relaxed placeholder names
+   * resolve only through it.
+   */
+  private static void addFirstAndAttach(
+      ConfigurableEnvironment environment, List<PropertySource<?>> sources) {
+    sources.forEach(environment.getPropertySources()::addFirst);
+    ConfigurationPropertySources.attach(environment);
+  }
+
+  /** The password the binder gives {@code reader-a} with {@code sources} added first. */
+  private static String boundDashedPassword(List<PropertySource<?>> sources, String... overrides) {
+    String[] password = new String[1];
+    ConfigTestSupport.runner(MINIMAL, Map.of())
+        .withInitializer(context -> addFirstAndAttach(context.getEnvironment(), sources))
+        .withPropertyValues(SASL)
+        .withPropertyValues(DASHED.split("\n"))
+        .withPropertyValues(overrides)
+        .run(context -> {
+          assertThat(context).hasNotFailed();
+          password[0] =
+              context
+                  .getBean(KafkafimProperties.class)
+                  .kafka()
+                  .clusters()
+                  .get("k")
+                  .identities()
+                  .get("reader-a")
+                  .sasl()
+                  .password();
+        });
+    return password[0];
+  }
+
+  private static List<String> dashedErrors(List<PropertySource<?>> sources) {
+    List<String> errors = new ArrayList<>();
+    ConfigTestSupport.runner(MINIMAL, Map.of())
+        .withInitializer(context -> addFirstAndAttach(context.getEnvironment(), sources))
+        .withPropertyValues(SASL)
+        .withPropertyValues(DASHED.split("\n"))
+        .run(context -> {
+          assertThat(context).hasFailed();
+          for (Throwable t = context.getStartupFailure(); t != null; t = t.getCause()) {
+            if (t instanceof BindValidationException validation) {
+              validation.getValidationErrors().getAllErrors().stream()
+                  .map(ObjectError::getDefaultMessage)
+                  .forEach(errors::add);
+              return;
+            }
+          }
+          throw new AssertionError(context.getStartupFailure());
+        });
+    return errors;
+  }
+
+  @Test
+  void binderTakesTheDashDroppedEnvironmentVariableOverTheMountedFile() {
+    // What the check has to mirror: with inline secrets allowed the tree binds, and the value is
+    // the environment variable's, although a file with the exact name is mounted.
+    assertThat(
+            boundDashedPassword(
+                List.of(mountedDashedSecret(), dashDroppedEnvironmentVariable()),
+                "kafkafim.allow-inline-secrets=true"))
+        .isEqualTo("hunter2");
+  }
+
+  @Test
+  void rejectsRelaxedEnvironmentVariableThatWinsOverTheMountedFile() {
+    // Added first one by one, so the environment variable ends up before the secret file.
+    assertThat(dashedErrors(List.of(mountedDashedSecret(), dashDroppedEnvironmentVariable())))
+        .singleElement()
+        .asString()
+        .contains(
+            "sasl.password: placeholder ${kafka.k.reader-a.password} resolves to a literal value",
+            StandardEnvironment.SYSTEM_ENVIRONMENT_PROPERTY_SOURCE_NAME)
+        .doesNotContain("hunter2");
+  }
+
+  @Test
+  void acceptsTheMountedFileThatWinsOverTheRelaxedEnvironmentVariable() {
+    assertThat(
+            boundDashedPassword(List.of(dashDroppedEnvironmentVariable(), mountedDashedSecret())))
+        .isEqualTo("file");
+  }
+
+  @Test
+  void rejectsRelaxedEnvironmentVariableWithoutMountedFile() {
+    assertThat(dashedErrors(List.of(dashDroppedEnvironmentVariable())))
+        .singleElement()
+        .asString()
+        .contains("placeholder ${kafka.k.reader-a.password} resolves to a literal value")
+        .doesNotContain("hunter2");
+  }
+
+  @Test
+  void rejectsPlaceholderResolvedByKeyInAnotherCase() {
+    String yaml = yamlWithSaslPassword("${kafka.k.r.password}") + "Kafka.K.R.Password: hunter2\n";
+
+    assertThat(ConfigTestSupport.errors(yaml, SASL, READER))
+        .singleElement()
+        .asString()
+        .contains("placeholder ${kafka.k.r.password} resolves to a literal value")
+        .doesNotContain("hunter2");
+  }
+
+  @Test
+  void acceptsSecretFileNamedInAnotherCase() {
+    KafkafimProperties properties =
+        ConfigTestSupport.bind(
+            yamlWithSaslPassword("${kafka.k.r.password}"),
+            Map.of("Kafka.K.R.Password", "file"),
+            SASL,
+            READER);
+
+    assertThat(properties.kafka().clusters().get("k").identities().get("r").sasl().password())
+        .isEqualTo("file");
   }
 
   @Test

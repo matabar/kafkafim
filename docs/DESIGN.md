@@ -800,6 +800,9 @@ secret is accepted when it is read straight from a `configtree` file, or when it
 unresolved text is exactly one `${name}` placeholder (no `:default`, which would be an
 inline fallback) whose chain of references ends in a `configtree` file. The check looks
 at the property source that wins for each name, before placeholder resolution, and
+follows a placeholder to the source the binder takes it from, relaxed names included
+(an environment variable such as `KAFKA_PRODA_READER_PASSWORD` that wins over the
+mounted `kafka.prod-a.reader.password` file is a literal). It
 reports the origin but never the value; likewise the bound configuration records print
 every secret (passwords, API keys, keystore and key passwords, secret passthrough
 `properties` values) as `******` in `toString()`, while usernames stay readable. A
