@@ -11,8 +11,9 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 /**
- * Pause reasons of one {@link PipelineRuntime} against a change of its building blocks, without
- * starting it (no broker needed): events of the DLQ producers and registries a reload replaced.
+ * One {@link PipelineRuntime} without a broker: its pause reasons against a change of its building
+ * blocks (events of the DLQ producers and registries a reload replaced), and a start that fails
+ * unexpectedly.
  */
 class PipelineRuntimeTest {
 
