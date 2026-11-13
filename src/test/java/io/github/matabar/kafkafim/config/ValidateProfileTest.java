@@ -161,6 +161,34 @@ class ValidateProfileTest {
   }
 
   @Test
+  void placeholderResolvedOnlyByRelaxedNameIsStillLiteralUnderTheProfile() {
+    // The binder resolves ${kafka.k.r.password} from this key; an exact lookup would miss it.
+    assertThat(failures(WITH_IDENTITIES, Map.of(), VALIDATE, "Kafka.K.R.Password=hunter2"))
+        .singleElement()
+        .asString()
+        .contains("sasl.password: placeholder ${kafka.k.r.password} resolves to a literal value")
+        .doesNotContain("hunter2");
+  }
+
+  @Test
+  void sharedSecretIsListedOnceAndDirectSecretFileByItsPropertyName() {
+    String direct = "kafkafim.elasticsearch.clusters.es.identities.w.api-key";
+    String yaml =
+        WITH_IDENTITIES
+            .replace("${kafka.k.r.username}", "${kafka.k.r.password}")
+            .replace("w: { api-key: \"${elasticsearch.es.w.api-key}\" }", "");
+
+    ConfigTestSupport.runner(yaml, Map.of(direct, "file-value", "kafka.k.r.password", "x"))
+        .withPropertyValues(VALIDATE)
+        .run(context -> {
+          assertThat(context).hasNotFailed();
+          assertThat(context.getBean(ValidateProfile.Summary.class).text())
+              .endsWith("\n  expected secrets (2)\n    kafka.k.r.password\n    " + direct)
+              .doesNotContain("file-value");
+        });
+  }
+
+  @Test
   void otherViolationsStillFailUnderTheProfile() {
     assertThat(
             failures(

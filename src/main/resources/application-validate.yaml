@@ -17,6 +17,9 @@ management:
   tracing:
     export:
       enabled: false                # no OTLP span export
+  logging:
+    export:
+      enabled: false                # no OTLP log export, also when an endpoint is configured
   endpoint:
     health:
       validate-group-membership: false   # the probe groups name supervisor contributors that are absent here

@@ -184,6 +184,25 @@ final class InlineSecretCheck {
       return new Resolution(
           Kind.LITERAL, name, origin != null ? origin.toString() : propertySource.getName());
     }
+    // The binder resolves ${name} through relaxed names too (another case, an environment
+    // variable's form), which the exact lookup above misses. Such a value is not unresolved.
+    ConfigurationPropertyName relaxed = ConfigurationPropertyName.ofIfValid(name);
+    if (relaxed != null) {
+      for (ConfigurationPropertySource source : sources) {
+        ConfigurationProperty property = source.getConfigurationProperty(relaxed);
+        if (property == null) {
+          continue;
+        }
+        if (isSecretFile(source)) {
+          return new Resolution(Kind.SECRET_FILE, name, null);
+        }
+        Matcher next = placeholder(property.getValue());
+        if (next != null && depth < MAX_DEPTH) {
+          return follow(next.group(1), sources, depth + 1);
+        }
+        return new Resolution(Kind.LITERAL, name, origin(property.getOrigin()));
+      }
+    }
     return new Resolution(Kind.UNRESOLVED, name, null);
   }
 

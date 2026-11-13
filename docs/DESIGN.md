@@ -830,7 +830,7 @@ in `ConfigValidator`, whose messages never include values.
   binds and validates, logs a summary, and exits 0; an invalid tree fails startup
   with every violation and exits 1. It connects nowhere and listens on no port: the
   pipeline supervisor and kafkafim's telemetry beans are not created, there is no web
-  server, and metric and trace export are off (`application-validate.yaml`). The
+  server, and metric, trace and log export are off (`application-validate.yaml`). The
   checks are those of a normal start with one exception: a credential placeholder
   that nothing defines is accepted, because where the profile runs the Secrets are
   usually not mounted. Literal secrets are still rejected (§5.5). The summary is one

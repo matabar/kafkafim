@@ -24,7 +24,7 @@ validation there.
   marked `(not mounted)` when missing. It never contains a secret value.
 - The profile creates neither the pipeline supervisor nor kafkafim's telemetry beans
   (`@Profile("!validate")` on their configurations), runs without a web server and with
-  metric and trace export off (`application-validate.yaml`). `main` exits with the
+  metric, trace and log export off (`application-validate.yaml`). `main` exits with the
   context's exit code once the summary is logged; an invalid tree fails startup, which
   exits 1.
 - A tree without pipelines stays valid, as at startup.
@@ -42,5 +42,6 @@ validation there.
 - Keep the startup rule and have CI mount dummy secret files: no code, but CI must
   build a dummy tree per cluster, and it proves nothing about the real secrets.
 - The relaxed rule plus a strict switch for environments that do mount secrets: one
-  more setting for a case nobody has; mounting the secrets already marks them as
-  mounted in the summary.
+  more setting for a case nobody has; mounting the secrets (with
+  `SPRING_CONFIG_IMPORT=configtree:/etc/kafkafim/secrets/`, as the chart's Deployment
+  sets it) already marks them as mounted in the summary.

@@ -84,7 +84,8 @@ public final class ConfigLoader {
                 new IgnoreTopLevelConverterNotFoundBindHandler(),
                 new UnboundElementsSourceFilter()),
             new SpringValidatorAdapter(BEAN_VALIDATION.getValidator()),
-            new KafkafimPropertiesValidator(() -> sources, ValidateProfile.isActive(environment)));
+            // A reload never relaxes the secret rule: the validate profile has no reloader.
+            new KafkafimPropertiesValidator(() -> sources, false));
     try {
       KafkafimProperties properties =
           binder.bindOrCreate(
