@@ -178,11 +178,9 @@ class KafkaGroupCheckAclIntegrationTest {
     String describeOnly = "describe-only-" + UUID.randomUUID();
     String hidden = "hidden-" + UUID.randomUUID();
     String absent = "absent-" + UUID.randomUUID();
-    admin
-        .createTopics(
-            List.of(new NewTopic(describeOnly, 1, (short) 1), new NewTopic(hidden, 1, (short) 1)))
-        .all()
-        .get(TIMEOUT.toSeconds(), TimeUnit.SECONDS);
+    KafkaTopics.create(
+        admin,
+        List.of(new NewTopic(describeOnly, 1, (short) 1), new NewTopic(hidden, 1, (short) 1)));
     grant(ResourceType.TOPIC, describeOnly, AclOperation.DESCRIBE);
     grant(ResourceType.TOPIC, absent, AclOperation.READ);
     List<String> topics = List.of(TOPIC, describeOnly, hidden, absent);
