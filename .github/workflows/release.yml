@@ -22,6 +22,16 @@ jobs:
             echo "chart_repo=oci://ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/charts"
           } >> "$GITHUB_OUTPUT"
           mkdir -p dist
+      - name: Stage alert rules and dashboards
+        # First, so a missing file fails the release before anything is published. The air-gap
+        # bundle step packs everything under dist/ and lists it in SHA256SUMS.
+        env:
+          V: ${{ steps.ver.outputs.version }}
+        run: |
+          out="dist/kafkafim-${V}-grafana"
+          mkdir -p "$out/alerts" "$out/dashboards"
+          cp deploy/grafana/alerts/kafkafim-alerts.yaml "$out/alerts/"
+          cp deploy/grafana/dashboards/*.json "$out/dashboards/"
       - uses: actions/setup-java@v6
         with:
           distribution: temurin
@@ -123,7 +133,10 @@ jobs:
       - uses: softprops/action-gh-release@v3
         with:
           generate_release_notes: true
+          fail_on_unmatched_files: true   # the default only warns when a pattern below matches nothing
           files: |
             kafkafim-*-airgap.tar.gz
             dist/*.sbom.spdx.json
             dist/*.tgz
+            dist/kafkafim-*-grafana/alerts/kafkafim-alerts.yaml
+            dist/kafkafim-*-grafana/dashboards/*.json
