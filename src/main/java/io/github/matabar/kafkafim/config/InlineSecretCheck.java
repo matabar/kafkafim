@@ -4,6 +4,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.TreeMap;
 import java.util.function.BiConsumer;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -30,7 +31,9 @@ import org.springframework.core.env.PropertySource;
  * <p>Independently of {@code allow-inline-secrets}, a placeholder in a credential (secrets and
  * usernames) that nothing defines is always an error: the binder leaves unresolvable placeholders
  * as literal text, so a missing or misnamed secret file would otherwise start the pod with {@code
- * "${...}"} as its password.
+ * "${...}"} as its password. The one exception is the {@code validate} profile ({@link
+ * ValidateProfile}): it starts nothing, and where it runs the secrets are usually not mounted, so
+ * there such a placeholder is accepted and listed by {@link #expectedSecrets} instead.
  */
 final class InlineSecretCheck {
 
@@ -60,14 +63,25 @@ final class InlineSecretCheck {
   }
 
   /**
+   * A secret the configuration reads through a placeholder or straight from a secret file.
+   *
+   * @param name the property name a mounted secret file must provide
+   * @param mounted whether a {@code configtree} file provides it
+   */
+  record ExpectedSecret(String name, boolean mounted) {}
+
+  /**
    * {@code <property path>: <problem>} lines.
    *
    * @param allowInlineSecrets skip the literal-secret rule; unresolved placeholders still fail
+   * @param allowUnmountedSecrets accept a placeholder that nothing defines ({@code validate}
+   *     profile only); literal secrets are still rejected
    */
   static List<String> errors(
       KafkafimProperties properties,
       Iterable<ConfigurationPropertySource> sources,
-      boolean allowInlineSecrets) {
+      boolean allowInlineSecrets,
+      boolean allowUnmountedSecrets) {
     List<String> errors = new ArrayList<>();
     for (Candidate candidate : candidates(properties)) {
       boolean literalsMatter = candidate.secret() && !allowInlineSecrets;
@@ -90,6 +104,9 @@ final class InlineSecretCheck {
       if (placeholder != null) {
         Resolution resolution = follow(placeholder.group(1), sources, 0);
         if (resolution.kind() == Kind.UNRESOLVED) {
+          if (allowUnmountedSecrets) {
+            continue;
+          }
           errors.add(
               name
                   + ": placeholder ${"
@@ -111,6 +128,38 @@ final class InlineSecretCheck {
       }
     }
     return errors;
+  }
+
+  /**
+   * The secrets (and placeholder usernames) the bound tree expects from mounted files, by property
+   * name, sorted, each once: those a credential reads straight from a {@code configtree} file and
+   * those a {@code ${name}} placeholder chain ends in, mounted or not. Literal values are left out.
+   */
+  static List<ExpectedSecret> expectedSecrets(
+      KafkafimProperties properties, Iterable<ConfigurationPropertySource> sources) {
+    Map<String, Boolean> expected = new TreeMap<>();
+    for (Candidate candidate : candidates(properties)) {
+      ConfigurationProperty property = find(sources, candidate.path());
+      if (property == null) {
+        continue;
+      }
+      if (isSecretFile(property.getSource())) {
+        expected.put(property.getName().toString(), true);
+        continue;
+      }
+      Matcher placeholder = placeholder(property.getValue());
+      if (placeholder == null) {
+        continue;
+      }
+      Resolution resolution = follow(placeholder.group(1), sources, 0);
+      if (resolution.kind() != Kind.LITERAL) {
+        expected.merge(
+            resolution.placeholder(), resolution.kind() == Kind.SECRET_FILE, Boolean::logicalOr);
+      }
+    }
+    List<ExpectedSecret> secrets = new ArrayList<>();
+    expected.forEach((name, mounted) -> secrets.add(new ExpectedSecret(name, mounted)));
+    return secrets;
   }
 
   private static Resolution follow(

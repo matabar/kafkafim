@@ -84,7 +84,7 @@ public final class ConfigLoader {
                 new IgnoreTopLevelConverterNotFoundBindHandler(),
                 new UnboundElementsSourceFilter()),
             new SpringValidatorAdapter(BEAN_VALIDATION.getValidator()),
-            new KafkafimPropertiesValidator(() -> sources));
+            new KafkafimPropertiesValidator(() -> sources, ValidateProfile.isActive(environment)));
     try {
       KafkafimProperties properties =
           binder.bindOrCreate(

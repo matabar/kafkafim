@@ -785,6 +785,8 @@ Current behaviour that this runbook works around; each is a follow-up, not a fea
   the reload; restart the pods ([§4.3](#43-rotating-a-secret)).
 - **Pause reasons are only in logs.** The metric and the health endpoint say `paused`
   without the reason; health details are hidden by `show-details: when-authorized`.
-- **No `validate` profile yet** ([DESIGN §5.6](DESIGN.md#56-validation-and-hot-reload),
-  roadmap 0.2): an invalid configuration is found only by a running pod's reload or a
-  new pod's startup.
+- **The `validate` profile does not check secrets or connectivity**
+  ([DESIGN §5.6](DESIGN.md#56-validation-and-hot-reload), [HELM.md](HELM.md)): it
+  accepts a secret that is not mounted and only lists its name, opens no trust or
+  keystore file and runs no preflight. A misnamed secret, a missing topic or a wrong
+  credential is still found only by a new pod's startup or a running pod's reload.

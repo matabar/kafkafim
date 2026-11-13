@@ -215,6 +215,24 @@ holds the per-cluster values can run the image with the `validate` profile again
 each rendered ConfigMap in its own CI; this repository's CI only lints and templates
 the chart.
 
+Each group's ConfigMap holds one `application-kafkafim.yaml`. Write it to a directory
+and mount that directory where the pod mounts it:
+
+```bash
+docker run --rm -v "$PWD/rendered/default:/etc/kafkafim/config:ro" registry.internal/kafkafim:1.2.3 --spring.profiles.active=validate,kafkafim
+```
+
+Exit code 0 means the configuration is valid, and the last INFO line is a summary:
+the pipelines with their clusters, identities, topics and indices, and the secret
+names the configuration expects under `/etc/kafkafim/secrets/`. Exit code 1 means it is
+invalid, and the log lists every violation as `<property path>: <problem>`. Nothing is
+contacted, so the check needs no network and no Secrets: a secret that is not mounted
+is listed as `(not mounted)`, not rejected. Compare that list with `secrets[]`; a
+misnamed secret is otherwise found only when the pod starts. A literal secret in the
+values is rejected as in production. Check that the summary's pipeline count is what
+you expect: a directory without the file is a valid configuration with
+`0 pipeline(s)`.
+
 ## Secrets and configtree naming
 
 A `Secret` mounted at `/etc/kafkafim/secrets/kafka/prod-a.orders-reader/` with keys

@@ -805,7 +805,8 @@ every secret (passwords, API keys, keystore and key passwords, secret passthroug
 `properties` values) as `******` in `toString()`, while usernames stay readable. A
 literal in YAML, an environment variable or a system property is rejected, also when
 reached through a placeholder. A credential
-placeholder (secret or username) that nothing defines always fails startup, even with
+placeholder (secret or username) that nothing defines fails startup (except under the
+`validate` profile, which lists it instead, §5.6), even with
 inline secrets allowed: Spring leaves unresolvable placeholders as literal text, so a
 missing secret file would otherwise become the password. A value with a placeholder embedded in
 other text (for example a `sasl.jaas.config` string containing `password="${...}"`)
@@ -823,12 +824,27 @@ in `ConfigValidator`, whose messages never include values.
   5.7 run in the same pass), each as `<property path>: <problem>`; readiness never goes
   green. The `local` profile active, or `kafkafim.allow-inline-secrets=true` set, on
   `CloudPlatform.KUBERNETES` stops startup before binding (section 5.4).
-- **`validate` profile** (application feature, roadmap 0.2): started with
-  `--spring.profiles.active=validate,kafkafim` and a rendered ConfigMap mounted, the
-  application binds and validates, logs the pipeline summary, and exits 0/1 without
-  connecting anywhere. It is meant for the infrastructure repository's CI, where the
-  per-cluster values live. This repository's CI does not use it; it builds the image
-  and smoke-tests it with a liveness probe ([DELIVERY.md](DELIVERY.md)).
+- **`validate` profile** (`config/ValidateProfile`, ADR-0040): started with
+  `--spring.profiles.active=validate,kafkafim` and a rendered
+  `application-kafkafim.yaml` mounted at `/etc/kafkafim/config/`, the application
+  binds and validates, logs a summary, and exits 0; an invalid tree fails startup
+  with every violation and exits 1. It connects nowhere and listens on no port: the
+  pipeline supervisor and kafkafim's telemetry beans are not created, there is no web
+  server, and metric and trace export are off (`application-validate.yaml`). The
+  checks are those of a normal start with one exception: a credential placeholder
+  that nothing defines is accepted, because where the profile runs the Secrets are
+  usually not mounted. Literal secrets are still rejected (§5.5). The summary is one
+  INFO line: the totals, each pipeline (Kafka cluster, identity, topics, group, DLQ
+  topic, routes with their Elasticsearch cluster, identity and index) and the secret
+  names the tree expects from mounted files, each marked `(not mounted)` when it is
+  missing. It never prints a secret value. So a misnamed secret passes validation and
+  is found when the pod starts; compare the list with the chart's `secrets[]`. Trust
+  and keystore files are not opened, and preflight (§4.6) does not run. A tree without
+  pipelines is valid, as at startup (it warns), so a wrong mount path shows as
+  `0 pipeline(s)` in the summary, not as a failure. It is meant for the infrastructure
+  repository's CI, where the per-cluster values live. This repository's CI does not
+  use it; it builds the image and smoke-tests it with a liveness probe
+  ([DELIVERY.md](DELIVERY.md)).
 - **Reload** (ADR-0028): a watcher on the config and secret directories (Java
   `WatchService` + 10s hash poll, because kubelet updates volumes by symlink swap with
   up to ~1 min delay) plus `POST /actuator/reload`. The new tree is loaded with
