@@ -1,5 +1,7 @@
 package io.github.matabar.kafkafim.telemetry;
 
+import java.util.Set;
+
 /**
  * Read-only view of one pipeline's Kafka source for gauges and health (DESIGN §10). The supervisor
  * implements it over whatever source the pipeline currently runs; while no source runs every value
@@ -34,5 +36,13 @@ public interface SourceProbe {
    */
   default boolean started() {
     return false;
+  }
+
+  /**
+   * The kinds of supervisor reason the pipeline is paused for right now ({@code
+   * kafkafim_pipeline_pause_reason}); empty unless its state is {@code paused}.
+   */
+  default Set<PauseReason> pauseReasons() {
+    return Set.of();
   }
 }
