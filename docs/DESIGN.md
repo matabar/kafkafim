@@ -353,7 +353,8 @@ kafkafim creates nothing in Kafka or Elasticsearch. At pipeline start it verifie
 what the external provisioning systems should already have created, using only the
 identities the pipeline references:
 
-- source topics exist and are readable (`Describe` on topics, metadata fetch);
+- source topics exist (`Describe` on topics, metadata fetch) and the source identity
+  may read them (`describeTopics` with its authorized operations; ADR-0039);
 - the DLQ topic exists (`Describe`); kafkafim never relies on auto-create;
 - the source identity may read the consumer group (`DescribeGroups` with its
   authorized operations; ADR-0038);
@@ -375,11 +376,11 @@ provisioning systems by creating the `local` profile's `demo` topics
 How the supervisor runs it (`supervisor/Preflight`, `PipelineRuntime`): every pipeline
 starts on its own thread, so one slow check never delays another pipeline or the
 application context. The DLQ topic is described with the DLQ identity
-(`DlqProducers.checkTopic`); the consumer group is described with the source identity
-(`KafkaGroupCheck`, below); each `(cluster, identity)` sends one `GET
+(`DlqProducers.checkTopic`); the consumer group and the source topics are described
+with the source identity (`KafkaGroupCheck`, below); each `(cluster, identity)` sends one `GET
 /_security/_authenticate` (no privilege needed) through a client built like the sink's;
-then the source starts, which fails for a missing source topic. All DLQ and
-Elasticsearch checks run before a verdict, so one ERROR line names every problem.
+then the source starts, which fails for a missing source topic. All DLQ, group, topic
+and Elasticsearch checks run before a verdict, so one ERROR line names every problem.
 Missing or undescribable topics, a 401/403, an unknown identity or unreadable trust
 material, and a Kafka authentication or authorization error are **configuration**
 failures (`failed_preflight` until the next accepted reload or a restart, §5.6). An unreachable broker or cluster
@@ -405,6 +406,15 @@ whose authorized operations lack `READ`, and a group id another protocol already
 request passes. So does a group that has never been joined: the broker answers
 `GroupIdNotFoundException` and cannot tell `Read` from `Describe`, so the first join
 stays the check for `Describe` without `Read` on a new group (ADR-0038).
+
+The same admin client asks for the authorized operations on the source topics, with
+both requests in flight together under the one timeout (ADR-0039). The source's own
+start check is a metadata fetch, which `Describe` alone satisfies; without `Read` every
+fetch is denied and retried every 10s, and the pipeline would show `running`. An
+existing topic whose authorized operations lack `READ` is a configuration failure.
+Everything else about a topic passes this check, because the source's start already
+reports it: a topic that does not exist or that the identity cannot see, and a broker
+that does not answer the topic request.
 
 After a successful start, a pipeline whose source cannot go on (the record handler
 threw, or a consumer of the listener container stopped on its own: any

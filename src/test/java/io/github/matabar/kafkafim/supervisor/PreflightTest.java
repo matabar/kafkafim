@@ -21,7 +21,8 @@ import org.springframework.kafka.core.DefaultKafkaConsumerFactory;
 
 class PreflightTest {
 
-  private static final Supplier<Preflight.Status> GROUP_OK = () -> Preflight.Status.OK;
+  private static final Supplier<Preflight.SourceAccess> GROUP_OK =
+      () -> new Preflight.SourceAccess(Preflight.Status.OK, Map.of());
 
   private final CompiledPipeline compiled =
       PipelineMapping.compile(
@@ -160,7 +161,8 @@ class PreflightTest {
         Preflight.run(
             compiled,
             () -> TopicStatus.EXISTS,
-            () -> Preflight.Status.rejected("identity may describe the group but not read it"),
+            () ->
+                group(Preflight.Status.rejected("identity may describe the group but not read it")),
             (c, i) -> Preflight.Status.OK);
     assertThat(result.configuration())
         .containsExactly(
@@ -175,7 +177,7 @@ class PreflightTest {
         Preflight.run(
             compiled,
             () -> TopicStatus.EXISTS,
-            () -> Preflight.Status.unreachable("no answer within PT30S"),
+            () -> group(Preflight.Status.unreachable("no answer within PT30S")),
             (c, i) -> Preflight.Status.OK);
     assertThat(unreachable.configuration()).isEmpty();
     assertThat(unreachable.transientProblems())
@@ -194,6 +196,73 @@ class PreflightTest {
             (c, i) -> Preflight.Status.OK);
     assertThat(threw.configuration()).isEmpty();
     assertThat(threw.transientProblems()).singleElement().asString().contains("boom");
+  }
+
+  @Test
+  void topicWithoutReadIsConfigurationNamingTopicIdentityAndCluster() {
+    CompiledPipeline twoTopics =
+        PipelineMapping.compile(
+            "p",
+            TestConfigs.withPipelines(
+                """
+                p:
+                  source: { cluster: k, identity: reader, topics: [t, u, v] }
+                  routes: [ { default: true, drop: true } ]
+                """));
+    Preflight.Result result =
+        Preflight.run(
+            twoTopics,
+            () -> TopicStatus.EXISTS,
+            () ->
+                new Preflight.SourceAccess(
+                    Preflight.Status.OK,
+                    Map.of(
+                        "v",
+                            Preflight.Status.rejected(
+                                "identity may describe the topic but not read it"),
+                        "t",
+                            Preflight.Status.rejected(
+                                "identity may describe the topic but not read it"),
+                        "u", Preflight.Status.OK)),
+            (c, i) -> Preflight.Status.OK);
+
+    // In configuration order; a topic without a verdict is left to the source's start.
+    assertThat(result.configuration())
+        .containsExactly(
+            "source topic 't' (identity 'reader' on Kafka cluster 'k'): identity may describe the"
+                + " topic but not read it",
+            "source topic 'v' (identity 'reader' on Kafka cluster 'k'): identity may describe the"
+                + " topic but not read it");
+    assertThat(result.transientProblems()).isEmpty();
+  }
+
+  @Test
+  void topicOperationsClassification() {
+    assertThat(KafkaGroupCheck.classifyTopic(Set.of(AclOperation.READ, AclOperation.DESCRIBE)))
+        .isEqualTo(Preflight.Status.OK);
+    assertThat(KafkaGroupCheck.classifyTopic(Set.of(AclOperation.ALL)))
+        .isEqualTo(Preflight.Status.OK);
+    // An old broker lists nothing: it cannot say, so the first fetch is the check.
+    assertThat(KafkaGroupCheck.classifyTopic(null)).isEqualTo(Preflight.Status.OK);
+    assertThat(
+            KafkaGroupCheck.classifyTopic(
+                Set.of(AclOperation.DESCRIBE, AclOperation.WRITE, AclOperation.DESCRIBE_CONFIGS)))
+        .isEqualTo(Preflight.Status.rejected("identity may describe the topic but not read it"));
+  }
+
+  @Test
+  void unreachableBrokerLeavesTheTopicsToTheSource() {
+    Preflight.SourceAccess access =
+        KafkaGroupCheck.check(
+            new DefaultKafkaConsumerFactory<>(
+                Map.<String, Object>of("bootstrap.servers", "127.0.0.1:9")),
+            "kafkafim.p",
+            List.of("t", "u"),
+            "kafkafim-p-preflight",
+            Duration.ofSeconds(1));
+    assertThat(access.group().kind()).isEqualTo(Preflight.Kind.TRANSIENT);
+    assertThat(access.topics())
+        .containsOnly(entry("t", Preflight.Status.OK), entry("u", Preflight.Status.OK));
   }
 
   @Test
@@ -311,5 +380,9 @@ class PreflightTest {
                 .elasticsearch()
                 .clusters());
     assertThat(check.check("down", null).kind()).isEqualTo(Preflight.Kind.TRANSIENT);
+  }
+
+  private static Preflight.SourceAccess group(Preflight.Status status) {
+    return new Preflight.SourceAccess(status, Map.of());
   }
 }

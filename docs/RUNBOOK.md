@@ -432,9 +432,9 @@ tooling shows it too (`kafka-consumer-groups.sh --describe --group kafkafim.<pip
   consumer identity, SASL rejected): the pipeline goes `failed_preflight` (see
   [§5.5](#55-failed_preflight-pipelines)). The start check is a metadata fetch, which
   needs only `Describe`.
-- **`Read` missing on a source topic** (but `Describe` present): not checked at start.
-  The pipeline shows **`running`**; its fetches fail with a topic authorization error,
-  retried every 10s and logged; nothing is consumed.
+- **`Read` missing on a source topic** (but `Describe` present): the pipeline goes
+  `failed_preflight`. The ERROR line names the topic, the identity and the cluster
+  (ADR-0039; see [§5.5](#55-failed_preflight-pipelines)).
 - **Consumer group not permitted** (no ACL on the group, an ACL on another group name
   or prefix, or `Describe` without `Read` on a group that has joined before): the
   pipeline goes `failed_preflight`. The ERROR line names the group, the identity and the
@@ -467,6 +467,7 @@ tooling shows it too (`kafka-consumer-groups.sh --describe --group kafkafim.<pip
   |---|---|---|
   | `source topics [...] do not exist or are not visible to identity '<id>'` | Topic missing, or no `Describe` for the consumer identity | Create the topic / add the ACL |
   | `identity '<id>' on Kafka cluster '<c>' rejected reading [...]` | SASL credentials wrong, or authorization denied | Fix the Secret or ACL |
+  | `source topic '<t>' (identity '<id>' on Kafka cluster '<c>'): identity may describe the topic but not read it` | `Describe` without `Read` on a source topic | Add `Read` on the topic for the consumer identity |
   | `consumer group '<g>' (identity '<id>' on Kafka cluster '<c>'): identity may not use the group` or `...: identity may describe the group but not read it` | No ACL on the group (or on another group name or prefix), or `Describe` without `Read` | Add `Read` on the group for the consumer identity |
   | `DLQ topic '<t>' (identity '<id>' on Kafka cluster '<c>') does not exist` or `...: identity may not describe it` | DLQ topic (default `<first topic>.kafkafim-dlq`) not provisioned, or no `Describe` for the DLQ identity | Create it / add the ACL; kafkafim never auto-creates it |
   | `Elasticsearch identity '<id>' on cluster '<es>' rejected: HTTP 401 from _security/_authenticate` (or 403) | Bad ES credential | Fix the Secret or the ES user/API key |
@@ -774,8 +775,6 @@ Logs never contain document bodies or secret values; they are safe to attach.
 
 Current behaviour that this runbook works around; each is a follow-up, not a feature:
 
-- **A missing topic `Read` ACL shows `running`.** The start check fetches metadata
-  only (`Describe`); fetches then fail and are retried every 10s.
 - **A denied join to a never-joined group shows `running`** when the identity has
   `Describe` but not `Read` on it. Preflight's group check cannot tell the two apart
   before the group exists (ADR-0038); the source retries the join every 10s.

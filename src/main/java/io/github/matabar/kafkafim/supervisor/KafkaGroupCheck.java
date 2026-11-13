@@ -2,6 +2,8 @@ package io.github.matabar.kafkafim.supervisor;
 
 import java.time.Duration;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -12,7 +14,10 @@ import org.apache.kafka.clients.admin.Admin;
 import org.apache.kafka.clients.admin.AdminClientConfig;
 import org.apache.kafka.clients.admin.ConsumerGroupDescription;
 import org.apache.kafka.clients.admin.DescribeConsumerGroupsOptions;
+import org.apache.kafka.clients.admin.DescribeTopicsOptions;
+import org.apache.kafka.clients.admin.TopicDescription;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
+import org.apache.kafka.common.KafkaFuture;
 import org.apache.kafka.common.acl.AclOperation;
 import org.apache.kafka.common.errors.AuthenticationException;
 import org.apache.kafka.common.errors.AuthorizationException;
@@ -42,6 +47,13 @@ import org.springframework.kafka.core.ConsumerFactory;
  *
  * <p>A broker without an authorizer lists every operation. A timeout or connection error is
  * transient.
+ *
+ * <p>The same admin client asks, in parallel, for the identity's authorized operations on the
+ * source topics (ADR-0039): the source's own start check is a metadata fetch, which {@code
+ * Describe} alone satisfies, so a missing {@code Read} would leave the pipeline {@code running}
+ * with every fetch denied. A topic whose operations are listed without {@code READ} is rejected.
+ * Everything else about a topic passes here, because the source's start reports it: a topic that
+ * does not exist or is not visible, and a broker that does not answer.
  */
 final class KafkaGroupCheck {
 
@@ -58,6 +70,26 @@ final class KafkaGroupCheck {
    */
   static Preflight.Status check(
       ConsumerFactory<?, ?> factory, String groupId, String clientId, Duration timeout) {
+    return check(factory, groupId, List.of(), clientId, timeout).group();
+  }
+
+  /**
+   * Checks that the source identity may read its consumer group and its topics, with one admin
+   * client and both requests in flight together, so the topics add no waiting time.
+   *
+   * @param factory the consumer factory of the pipeline's {@code (cluster, identity)}
+   * @param groupId the pipeline's consumer group
+   * @param topics the pipeline's source topics
+   * @param clientId client id of the short-lived admin client
+   * @param timeout bound on both requests together
+   * @return the verdict for the group, and one per topic
+   */
+  static Preflight.SourceAccess check(
+      ConsumerFactory<?, ?> factory,
+      String groupId,
+      List<String> topics,
+      String clientId,
+      Duration timeout) {
     Map<String, Object> settings = adminSettings(factory.getConfigurationProperties(), clientId);
     settings.put(AdminClientConfig.DEFAULT_API_TIMEOUT_MS_CONFIG, (int) timeout.toMillis());
     settings.put(AdminClientConfig.REQUEST_TIMEOUT_MS_CONFIG, (int) timeout.toMillis());
@@ -67,32 +99,63 @@ final class KafkaGroupCheck {
     } catch (RuntimeException e) {
       // Bad settings, or no resolvable bootstrap host; the DLQ producer on the same cluster is
       // built first and already fails the same way.
-      return Preflight.Status.rejected(
-          "cannot create a Kafka admin client: "
-              + e
-              + (e.getCause() == null ? "" : " (" + e.getCause() + ")"));
+      return new Preflight.SourceAccess(
+          Preflight.Status.rejected(
+              "cannot create a Kafka admin client: "
+                  + e
+                  + (e.getCause() == null ? "" : " (" + e.getCause() + ")")),
+          Map.of());
     }
     try {
-      ConsumerGroupDescription description =
+      long deadline = System.nanoTime() + timeout.toNanos();
+      KafkaFuture<ConsumerGroupDescription> group =
           admin
               .describeConsumerGroups(
                   List.of(groupId),
                   new DescribeConsumerGroupsOptions().includeAuthorizedOperations(true))
               .describedGroups()
-              .get(groupId)
-              .get(timeout.toMillis(), TimeUnit.MILLISECONDS);
-      return classify(description.authorizedOperations());
-    } catch (ExecutionException e) {
-      return classifyFailure(e.getCause() == null ? e : e.getCause());
+              .get(groupId);
+      Map<String, KafkaFuture<TopicDescription>> described =
+          topics.isEmpty()
+              ? Map.of()
+              : admin
+                  .describeTopics(
+                      new LinkedHashSet<>(topics),
+                      new DescribeTopicsOptions().includeAuthorizedOperations(true))
+                  .topicNameValues();
+      Preflight.Status groupStatus;
+      try {
+        groupStatus = classify(await(group, deadline).authorizedOperations());
+      } catch (ExecutionException e) {
+        groupStatus = classifyFailure(e.getCause() == null ? e : e.getCause());
+      } catch (TimeoutException e) {
+        groupStatus = Preflight.Status.unreachable("no answer within " + timeout);
+      }
+      Map<String, Preflight.Status> topicStatuses = new LinkedHashMap<>();
+      for (Map.Entry<String, KafkaFuture<TopicDescription>> topic : described.entrySet()) {
+        Preflight.Status status;
+        try {
+          status = classifyTopic(await(topic.getValue(), deadline).authorizedOperations());
+        } catch (ExecutionException | TimeoutException e) {
+          // Missing, not visible, or no answer: the source's start reports each of these.
+          status = Preflight.Status.OK;
+        }
+        topicStatuses.put(topic.getKey(), status);
+      }
+      return new Preflight.SourceAccess(groupStatus, topicStatuses);
     } catch (InterruptedException e) {
       // A stop interrupts preflight; its verdict is discarded.
       Thread.currentThread().interrupt();
-      return Preflight.Status.unreachable("interrupted");
-    } catch (TimeoutException e) {
-      return Preflight.Status.unreachable("no answer within " + timeout);
+      return new Preflight.SourceAccess(Preflight.Status.unreachable("interrupted"), Map.of());
     } finally {
       close(admin);
     }
+  }
+
+  /** Waits for an answer until the deadline; one that is already in is returned after it too. */
+  private static <T> T await(KafkaFuture<T> future, long deadline)
+      throws InterruptedException, ExecutionException, TimeoutException {
+    return future.get(Math.max(0, deadline - System.nanoTime()), TimeUnit.NANOSECONDS);
   }
 
   /**
@@ -111,9 +174,24 @@ final class KafkaGroupCheck {
   }
 
   /**
+   * The verdict for an existing topic's authorized operations.
+   *
+   * @param operations what the broker lists, or {@code null} when it lists nothing (an old broker)
+   * @return OK when the identity may read the topic or the broker did not say
+   */
+  static Preflight.Status classifyTopic(@Nullable Set<AclOperation> operations) {
+    if (operations == null
+        || operations.contains(AclOperation.READ)
+        || operations.contains(AclOperation.ALL)) {
+      return Preflight.Status.OK;
+    }
+    return Preflight.Status.rejected("identity may describe the topic but not read it");
+  }
+
+  /**
    * The verdict for a failed describe.
    *
-   * @param failure the cause the admin client reported
+   * @param failure the cause the admin client reported for the group
    * @return the verdict
    */
   static Preflight.Status classifyFailure(Throwable failure) {
