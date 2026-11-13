@@ -124,8 +124,9 @@ final class ElasticsearchAuthCheck implements Preflight.AuthCheck {
    * I/O reactor to shut down, and that takes the whole 5s when the cancelled request has not been
    * torn down yet (an interrupt within milliseconds of the check's start, on a busy machine; #181).
    * The new thread also starts with its interrupt flag clear: with the flag set, the reactor's
-   * shutdown would be cut short and its threads would log a {@code ClosedSelectorException} at
-   * ERROR.
+   * shutdown would be cut short at once and forced. A close that does wait out the 5s is forced
+   * too, and a forced shutdown can make an I/O thread log a {@code ClosedSelectorException} at
+   * ERROR; that line is harmless, and rare.
    *
    * @param client the client to close
    * @return the closing thread, for tests
