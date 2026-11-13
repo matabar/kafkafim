@@ -385,6 +385,7 @@ final class PipelineRuntime {
                   KafkaGroupCheck.check(
                       consumers,
                       config.source().groupId(),
+                      config.source().topics(),
                       "kafkafim-" + name + "-preflight",
                       context.sourceOptions().metadataTimeout()),
               context.authCheck());

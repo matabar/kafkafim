@@ -1,0 +1,25 @@
+# The `validate` profile (docs/DESIGN.md §5.6): --spring.profiles.active=validate,kafkafim binds and
+# validates the mounted configuration, logs a summary and exits 0/1. The pipeline supervisor and
+# kafkafim's telemetry are not created under this profile; the settings below keep Spring Boot
+# itself from listening or connecting anywhere.
+spring:
+  main:
+    web-application-type: none      # no actuator port
+  docker:
+    compose:
+      enabled: false                # development runs (validate,local) must not start compose.yaml
+
+management:
+  defaults:
+    metrics:
+      export:
+        enabled: false              # no OTLP metrics push, no Prometheus registry
+  tracing:
+    export:
+      enabled: false                # no OTLP span export
+  logging:
+    export:
+      enabled: false                # no OTLP log export, also when an endpoint is configured
+  endpoint:
+    health:
+      validate-group-membership: false   # the probe groups name supervisor contributors that are absent here
