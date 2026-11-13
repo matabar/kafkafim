@@ -49,7 +49,7 @@ class PipelineSupervisorApplyRollbackTest {
             onAcquire.accept(properties);
             return (cluster, identity) -> Preflight.Status.OK;
           },
-          PipelineSupervisorTest.SETTINGS);
+          PipelineSupervisorTest.FAST_SETTINGS);
   private PipelineSupervisor supervisor;
 
   @AfterEach
