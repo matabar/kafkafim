@@ -133,6 +133,7 @@ jobs:
       - uses: softprops/action-gh-release@v3
         with:
           generate_release_notes: true
+          fail_on_unmatched_files: true   # the default only warns when a pattern below matches nothing
           files: |
             kafkafim-*-airgap.tar.gz
             dist/*.sbom.spdx.json
