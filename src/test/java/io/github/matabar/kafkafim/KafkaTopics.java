@@ -14,7 +14,7 @@ import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.serialization.ByteArraySerializer;
 
-/** Topic creation and the seeding producer of every integration test. */
+/** Topic creation and the seeding producer configuration shared by the integration tests. */
 public final class KafkaTopics {
 
   private static final Duration READY_TIMEOUT = Duration.ofSeconds(90);
