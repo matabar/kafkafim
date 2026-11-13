@@ -378,7 +378,10 @@ application context. The DLQ topic is described with the DLQ identity
 (`DlqProducers.checkTopic`); the consumer group is described with the source identity
 (`KafkaGroupCheck`, below); each `(cluster, identity)` sends one `GET
 /_security/_authenticate` (no privilege needed) through a client built like the sink's;
-then the source starts, which fails for a missing source topic. All DLQ and
+then the source starts, which fails for a missing source topic. A source whose start
+fails after some of its consumers were created (they are created one after another)
+stops those consumers before it reports the failure, so they leave the group and a
+pipeline that did not start never consumes. All DLQ and
 Elasticsearch checks run before a verdict, so one ERROR line names every problem.
 Missing or undescribable topics, a 401/403, an unknown identity or unreadable trust
 material, and a Kafka authentication or authorization error are **configuration**

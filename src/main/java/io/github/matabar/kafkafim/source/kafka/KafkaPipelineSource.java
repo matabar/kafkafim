@@ -149,7 +149,12 @@ public final class KafkaPipelineSource implements SmartLifecycle {
   /**
    * Reads topic metadata, sizes and starts the container.
    *
+   * <p>The container creates its consumers one after another on the calling thread. If one cannot
+   * be created, those already started are stopped (committing what completed and leaving the group)
+   * before the failure is rethrown, so a source that failed to start never consumes.
+   *
    * @throws MissingTopicsException if a source topic does not exist or is not visible
+   * @throws KafkaException if a consumer cannot be created
    */
   @Override
   public void start() {
@@ -176,7 +181,15 @@ public final class KafkaPipelineSource implements SmartLifecycle {
       pauseReasons.remove(HANDLER_FAILURE_REASON);
       container = created;
       pauseReasons.apply();
-      created.start();
+      boolean started = false;
+      try {
+        created.start();
+        started = true;
+      } finally {
+        if (!started) {
+          abandonStart(created);
+        }
+      }
       LOG.info(
           "Pipeline '{}': consuming {} as group '{}' with concurrency {}",
           pipeline,
@@ -210,13 +223,11 @@ public final class KafkaPipelineSource implements SmartLifecycle {
       } catch (InterruptedException e) {
         Thread.currentThread().interrupt();
       }
-      long deadline = System.nanoTime() + options.shutdownTimeout().toNanos();
-      running.stop();
-      awaitConsumers(deadline);
-      tracker.revokeAll();
-      lastCommitNanos.clear();
-      container = null;
-      pauseReasons.remove(STOPPING_REASON);
+      try {
+        stopContainer(running);
+      } finally {
+        pauseReasons.remove(STOPPING_REASON);
+      }
       LOG.info("Pipeline '{}': stopped", pipeline);
     }
   }
@@ -240,6 +251,37 @@ public final class KafkaPipelineSource implements SmartLifecycle {
             callback.run();
           }
         });
+  }
+
+  /**
+   * Stops the container and waits for its consumer threads, up to the shutdown timeout; the source
+   * is stopped afterwards, also if the container's stop throws. Under the lifecycle lock.
+   */
+  private void stopContainer(ConcurrentMessageListenerContainer<byte[], byte[]> running) {
+    long deadline = System.nanoTime() + options.shutdownTimeout().toNanos();
+    try {
+      running.stop();
+      awaitConsumers(deadline);
+    } finally {
+      tracker.revokeAll();
+      lastCommitNanos.clear();
+      container = null;
+    }
+  }
+
+  /**
+   * Stops a container whose start threw. The parent container counts as running from before its
+   * first consumer, and the consumers created before the failing one keep polling: without this
+   * they would stay in the group with no owner, and the source would report itself running. A
+   * failure of the stop is logged, so the start's own failure is the one that propagates.
+   */
+  private void abandonStart(ConcurrentMessageListenerContainer<byte[], byte[]> created) {
+    LOG.warn("Pipeline '{}': the container failed to start; stopping its consumers", pipeline);
+    try {
+      stopContainer(created);
+    } catch (RuntimeException e) {
+      LOG.warn("Pipeline '{}': stopping the half-started container failed", pipeline, e);
+    }
   }
 
   /**
