@@ -60,9 +60,13 @@ import tools.jackson.databind.json.JsonMapper;
  * <p>Memory: values are bounded by {@code maxRecordBytes} before parsing, so string, number and
  * token sizes are too; Jackson's {@link StreamReadConstraints} additionally cap nesting at {@value
  * #MAX_NESTING_DEPTH}, number literals at {@value #MAX_NUMBER_LENGTH} digits and keys at {@value
- * #MAX_NAME_LENGTH} UTF-8 bytes. The parsed trees are kept for routing and can take far more heap
- * than the value: the worst case, an array of empty objects, measured about 85 bytes per element,
- * roughly 28 times the value size (an 8 MiB record retained about 237 MB).
+ * #MAX_NAME_LENGTH} UTF-8 bytes. The parsed trees can take far more heap than the value: the worst
+ * case, an array of empty objects, measured about 85 bytes per element, roughly 28 times the value
+ * size (an 8 MiB record retained about 237 MB). That cost is transient: the caller decodes and
+ * routes one record at a time on its consumer thread and keeps only each document's {@link
+ * DocumentSource} bytes, so the trees are garbage once the record is planned. The peak is about one
+ * {@code maxRecordBytes} record times 28 per consumer thread, outside {@code max-in-flight-bytes}
+ * (DESIGN §4.5).
  */
 public final class Decoder {
 

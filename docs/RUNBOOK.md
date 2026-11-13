@@ -362,7 +362,12 @@ tooling shows it too (`kafka-consumer-groups.sh --describe --group kafkafim.<pip
   `kafkafim_bulk_requests_total{status=~"5..|429|io_error"}` rising.
 - **Check**: the ES cluster itself (its own monitoring; kafkafim never calls cluster
   health). Is it down, overloaded (429s, `es_rejected_execution_exception`), or is
-  the network path broken? Pipelines writing to other ES clusters are unaffected.
+  the network path broken? Pipelines writing to other ES clusters are unaffected. If
+  the failures are timeouts (`transport error: ...Timeout...`) on a cluster that is
+  otherwise healthy, a full bulk may simply take longer than the cluster's
+  `client.response-timeout`: lower `bulk.max-bytes` or raise the timeout. Startup warns
+  `bulk.max-bytes: ... longer than client.response-timeout` when `max-bytes` in MB
+  exceeds `response-timeout` in seconds (DESIGN §5.7).
 - **Action**: none in kafkafim. Bulk requests are retried with the same documents
   forever (100ms doubling to 30s, ±50%). The breaker (per ES cluster, shared by
   identities and pipelines) opens at ≥50% failures over the last 20 requests (at
@@ -430,10 +435,14 @@ tooling shows it too (`kafka-consumer-groups.sh --describe --group kafkafim.<pip
 - **`Read` missing on a source topic** (but `Describe` present): not checked at start.
   The pipeline shows **`running`**; its fetches fail with a topic authorization error,
   retried every 10s and logged; nothing is consumed.
-- **Consumer group not permitted** (missing `Read` on the group): not checked before
-  the first join. The pipeline shows **`running`**, but its consumers retry the join
-  every 10s and log the group authorization error; it never gets partitions.
-  `kafkafim_assigned_partitions == 0` on every pod and lag grows.
+- **Consumer group not permitted** (no ACL on the group, an ACL on another group name
+  or prefix, or `Describe` without `Read` on a group that has joined before): the
+  pipeline goes `failed_preflight`. The ERROR line names the group, the identity and the
+  cluster (see [§5.5](#55-failed_preflight-pipelines)).
+- **`Describe` without `Read` on a group that has never been joined**: preflight cannot
+  tell it from `Read` (ADR-0038). The pipeline shows **`running`**, but its consumers
+  retry the join every 10s and log the group authorization error; it never gets
+  partitions. `kafkafim_assigned_partitions == 0` on every pod and lag grows.
 - **Auth or ACL revoked after start**: consumers retry every 10s instead of stopping;
   state stays `running`, consumption stops.
 - **DLQ producer** (missing `Write` on the DLQ topic, which the idempotent producer
@@ -458,6 +467,7 @@ tooling shows it too (`kafka-consumer-groups.sh --describe --group kafkafim.<pip
   |---|---|---|
   | `source topics [...] do not exist or are not visible to identity '<id>'` | Topic missing, or no `Describe` for the consumer identity | Create the topic / add the ACL |
   | `identity '<id>' on Kafka cluster '<c>' rejected reading [...]` | SASL credentials wrong, or authorization denied | Fix the Secret or ACL |
+  | `consumer group '<g>' (identity '<id>' on Kafka cluster '<c>'): identity may not use the group` or `...: identity may describe the group but not read it` | No ACL on the group (or on another group name or prefix), or `Describe` without `Read` | Add `Read` on the group for the consumer identity |
   | `DLQ topic '<t>' (identity '<id>' on Kafka cluster '<c>') does not exist` or `...: identity may not describe it` | DLQ topic (default `<first topic>.kafkafim-dlq`) not provisioned, or no `Describe` for the DLQ identity | Create it / add the ACL; kafkafim never auto-creates it |
   | `Elasticsearch identity '<id>' on cluster '<es>' rejected: HTTP 401 from _security/_authenticate` (or 403) | Bad ES credential | Fix the Secret or the ES user/API key |
   | `Elasticsearch identity ... rejected: TLS handshake failed: ...` | Wrong or expired cluster CA (`ssl.ca-certificate`) or hostname mismatch | Fix the CA Secret (then restart the pods, [§4.3](#43-rotating-a-secret)) or `uris` |
@@ -622,11 +632,28 @@ tooling shows it too (`kafka-consumer-groups.sh --describe --group kafkafim.<pip
   - a pod's in-flight memory is the sum over all its pipelines;
   - a poll that crosses the budget is delivered whole, so the overshoot is up to one
     poll per consumer (`max-poll-records` records);
-  - parsed documents take more heap than their bytes: a JSON array of many small
-    objects can retain ~28× its size ([DESIGN §4.5](DESIGN.md#45-decoding)), and each
-    record may be up to `max-record-bytes` (default 8MB);
+  - what is held in flight is more than the counted bytes: a copy of each indexed
+    document's bytes (up to the value again), roughly 300–450 B of objects per indexed
+    copy (an estimate), and roughly 1 KB or more per document bound for the DLQ until
+    the broker acknowledges it. Negligible for ordinary documents; large for records
+    that are arrays of many tiny objects ([DESIGN §4.5](DESIGN.md#45-decoding));
+  - decoding adds a transient peak per consumer thread, outside the budget: the record
+    being decoded can retain ~28× its size while its parsed trees are routed, and a
+    record may be up to `max-record-bytes` (default 8MB, so ~237 MB worst case);
+  - each sink stream builds up to `bulk.in-flight` request bodies of up to
+    `bulk.max-bytes` (default 5MB), and each DLQ producer buffers up to
+    `buffer.memory` (Kafka's default 32 MiB);
   - heap is `MaxRAMPercentage=75` of the container limit; the rest is metaspace,
     threads, direct buffers.
+
+  Sizing rule, per pod: heap should cover, for each of its pipelines,
+  2 × (`max-in-flight-bytes` + the one-poll overshoot) for the raw bytes and their
+  document copies, plus indexed copies in flight × ~450 B, plus documents bound for
+  the DLQ × ~1 KB, plus consumer threads × 28 × that pipeline's `max-record-bytes`;
+  then add the bulk bodies and DLQ producer buffers above. No metric counts copies in flight: estimate them as
+  `kafkafim_in_flight_bytes` ÷ average document size × routes per document. For
+  documents of a few hundred bytes or more the per-copy term is small; for arrays of
+  tiny objects, count it (or lower `max-in-flight-bytes`). Compare
   `kafkafim_in_flight_bytes` per pipeline against heap use.
 - **Action**: lower `max-in-flight-bytes` or `max-poll-records` for the heavy
   pipeline (a config change, hot-reloaded), raise the group's memory limit (rolls the
@@ -708,7 +735,8 @@ or roll back. Until then the pods run the previous generation and new pods fail.
 - **Check**:
   1. Does the pipeline have drop routes? Look for `drop: true` in its `routes`
      (`/actuator/configprops`, or the chart values). The startup log warns
-     `every route has drop: true` for a pipeline that indexes nothing.
+     `every route has drop: true` for a pipeline that indexes nothing, and
+     `cancels every other route` for a `route-mode: all` drop route without `when`.
   2. `sum by (route) (rate(kafkafim_docs_total{pipeline="<p>",outcome="dropped"}[5m]))`.
      Every dropped document is counted once, under the label of the drop route that
      selected it (in `route-mode: all`, the first matching drop route). The dashboard's
@@ -748,8 +776,9 @@ Current behaviour that this runbook works around; each is a follow-up, not a fea
 
 - **A missing topic `Read` ACL shows `running`.** The start check fetches metadata
   only (`Describe`); fetches then fail and are retried every 10s.
-- **A denied consumer-group join shows `running`.** The group permission is not part
-  of preflight; the source retries the join every 10s.
+- **A denied join to a never-joined group shows `running`** when the identity has
+  `Describe` but not `Read` on it. Preflight's group check cannot tell the two apart
+  before the group exists (ADR-0038); the source retries the join every 10s.
 - **Rotated TLS files are not reloaded.** Certificate and keystore files are bound
   by path, so a content change with an unchanged path and password is `unchanged` to
   the reload; restart the pods ([§4.3](#43-rotating-a-secret)).

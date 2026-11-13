@@ -229,6 +229,18 @@ public record Pipeline(
       return drop;
     }
 
+    /**
+     * The route's {@code route} label (DESIGN §5.3): its {@code name}, or its zero-based position
+     * within the pipeline when unnamed. The validator keeps the two apart: a name is never only
+     * digits.
+     *
+     * @param position the route's index in {@code routes}
+     * @return the label
+     */
+    public String label(int position) {
+      return name != null ? name : Integer.toString(position);
+    }
+
     Route withIdentity(String newIdentity) {
       return new Route(name, when, isDefault, drop, cluster, newIdentity, index, pipeline);
     }
