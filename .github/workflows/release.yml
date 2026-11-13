@@ -77,7 +77,8 @@ jobs:
           upload-artifact: false
       - name: Save the signed image for the air gap
         # Pulls the exact pushed digest (all platforms) together with its Cosign signature
-        # and attestations into an OCI layout, so the bundle carries what was signed.
+        # into an OCI layout, so the bundle carries what was signed. BuildKit provenance
+        # travels inside the image index; no Cosign attestation exists (no `cosign attest`).
         env:
           IMAGE: ${{ steps.ver.outputs.image }}
           DIGEST: ${{ steps.push.outputs.digest }}

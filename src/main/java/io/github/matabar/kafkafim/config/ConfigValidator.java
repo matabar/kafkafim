@@ -44,6 +44,13 @@ public final class ConfigValidator {
    */
   private static final DataSize SLOW_BULK_BYTES_PER_SECOND = DataSize.ofMegabytes(1);
 
+  /**
+   * Elasticsearch's default {@code http.max_content_length}. It applies to the request body before
+   * compression, which is also what {@code bulk.max-bytes} counts, and a sealed batch never exceeds
+   * {@code max-bytes} (unless a single action does), so only a larger {@code max-bytes} warns.
+   */
+  private static final DataSize ES_DEFAULT_MAX_CONTENT_LENGTH = DataSize.ofMegabytes(100);
+
   private static final Set<String> TIMESTAMP_FORMATS =
       Set.of("iso-8601", "epoch-millis", "epoch-seconds");
 
@@ -214,6 +221,30 @@ public final class ConfigValidator {
     checkPositive(path + ".client.connect-timeout", client.connectTimeout());
     checkPositive(path + ".client.response-timeout", client.responseTimeout());
     checkBulkFitsResponseTimeout(path, bulk.maxBytes(), client.responseTimeout());
+    checkBulkFitsDefaultContentLength(path, bulk.maxBytes());
+  }
+
+  /**
+   * Warns when a full bulk request can exceed {@link #ES_DEFAULT_MAX_CONTENT_LENGTH}: unless the
+   * cluster raises the limit, it answers such a request with 413, which the sink splits in halves
+   * and sends again (DESIGN §7), so that batch is uploaded more than once. A warning only, because
+   * a cluster may raise the limit.
+   */
+  private void checkBulkFitsDefaultContentLength(String path, DataSize maxBytes) {
+    if (maxBytes == null || maxBytes.compareTo(ES_DEFAULT_MAX_CONTENT_LENGTH) <= 0) {
+      return;
+    }
+    warnings.add(
+        path
+            + ".bulk.max-bytes: "
+            + spelled(maxBytes)
+            + " is above Elasticsearch's default http.max_content_length ("
+            + spelled(ES_DEFAULT_MAX_CONTENT_LENGTH)
+            + "); unless the cluster raises that limit, it rejects every larger bulk request with"
+            + " 413 and kafkafim splits the request in halves and sends it again. Lower"
+            + " bulk.max-bytes to "
+            + spelled(ES_DEFAULT_MAX_CONTENT_LENGTH)
+            + " or less");
   }
 
   /**
