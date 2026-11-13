@@ -155,6 +155,9 @@ class ElasticsearchSinkContentLengthIntegrationTest {
       throws Exception {
     BulkSink<String> sink = open(compression);
     // 160 documents of 64 KB: the first batch seals for bytes just under 8MB.
+    // Mind the margin when changing sizes: the split ends in 16-document requests about 1.4 KB
+    // over the limit (413) and 8-document ones well under it. With gzip on, those 16-document
+    // bodies compress to under 1MB and still get 413: the limit counts uncompressed bytes.
     for (int i = 0; i < 160; i++) {
       sink.submit(doc(index, "id-" + i, source(64 << 10)));
     }
