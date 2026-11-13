@@ -151,7 +151,7 @@ public final class KafkaPipelineSource implements SmartLifecycle {
    *
    * <p>The container creates its consumers one after another on the calling thread. If one cannot
    * be created, those already started are stopped (committing what completed and leaving the group)
-   * before the failure is rethrown, so a source that failed to start never consumes.
+   * before the failure is rethrown, so a source that failed to start does not keep consuming.
    *
    * @throws MissingTopicsException if a source topic does not exist or is not visible
    * @throws KafkaException if a consumer cannot be created
@@ -271,11 +271,17 @@ public final class KafkaPipelineSource implements SmartLifecycle {
 
   /**
    * Stops a container whose start threw. The parent container counts as running from before its
-   * first consumer, and the consumers created before the failing one keep polling: without this
-   * they would stay in the group with no owner, and the source would report itself running. A
-   * failure of the stop is logged, so the start's own failure is the one that propagates.
+   * first consumer, and the consumers created before the failing one start polling once the start
+   * has returned: without this they would stay in the group with no owner, and the source would
+   * report itself running. A failure of the stop is logged, so the start's own failure is the one
+   * that propagates.
    */
   private void abandonStart(ConcurrentMessageListenerContainer<byte[], byte[]> created) {
+    if (!created.isRunning()) {
+      // It threw before any consumer existed: nothing to stop, and nothing would report stopped.
+      container = null;
+      return;
+    }
     LOG.warn("Pipeline '{}': the container failed to start; stopping its consumers", pipeline);
     try {
       stopContainer(created);

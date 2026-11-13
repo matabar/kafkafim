@@ -372,7 +372,8 @@ class KafkaPipelineSourceIntegrationTest {
     produce(topic, 0, 5, 10);
     produce(topic, 1, 5, 10);
     Pipeline.Source config = source(topic, 500, DataSize.ofMegabytes(1));
-    // The second of the two consumers cannot be created; the first is polling by then.
+    // The second of the two consumers cannot be created; the first exists by then, and would
+    // start polling as soon as the failed start returns.
     AtomicBoolean failing = new AtomicBoolean(true);
     List<String> created = new CopyOnWriteArrayList<>();
     KafkaCluster local =
@@ -412,8 +413,9 @@ class KafkaPipelineSourceIntegrationTest {
     assertThat(source.isRunning()).isFalse();
     assertThat(source.assignedPartitions()).isEmpty();
     assertThat(source.inFlightRecords()).isZero();
-    assertThat(liveConsumerThreads("it-" + topic)).as("no consumer thread is left").isEmpty();
-    // Nothing of this source consumes any more: what was not delivered before the failure stays.
+    // The stop returns when the consumer's run has completed; its thread ends a moment later.
+    await().atMost(TIMEOUT).until(() -> liveConsumerThreads("it-" + topic).isEmpty());
+    // Nothing of this source consumes any more (the first consumer may have polled once).
     int delivered = recorder.records.size();
     Thread.sleep(1_500);
     assertThat(recorder.records).hasSize(delivered);
