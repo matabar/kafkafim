@@ -1,0 +1,9 @@
+.DS_Store
+*.swp
+*.bak
+*.tmp
+*.orig
+*~
+# The production chart's own test inputs (its .helmignore is not read for a subchart).
+charts/kafkafim/ci/
+charts/kafkafim/tests/

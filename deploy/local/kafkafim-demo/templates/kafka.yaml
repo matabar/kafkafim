@@ -1,0 +1,111 @@
+{{- $labels := include "kafkafim-demo.labels" (dict "root" . "name" "kafka") }}
+# One single-node KRaft broker, no persistence. Production points charts/kafkafim at an
+# existing cluster; that chart never deploys Kafka (ADR-0015).
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka
+  labels:
+    {{- $labels | nindent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/name: kafka
+    app.kubernetes.io/instance: {{ .Release.Name }}
+  ports:
+    - { name: client, port: 9092, targetPort: client }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kafka
+  labels:
+    {{- $labels | nindent 4 }}
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kafka
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        {{- $labels | nindent 8 }}
+    spec:
+      # A Service named "kafka" would inject KAFKA_PORT etc., which the image would turn
+      # into broker properties.
+      enableServiceLinks: false
+      containers:
+        - name: kafka
+          image: {{ .Values.kafka.image | quote }}
+          ports:
+            - { name: client, containerPort: 9092 }
+          env:
+            - name: KAFKAFIM_USERNAME
+              valueFrom: { secretKeyRef: { name: kafka-demo-kafkafim, key: username } }
+            - name: KAFKAFIM_PASSWORD
+              valueFrom: { secretKeyRef: { name: kafka-demo-kafkafim, key: password } }
+            - { name: KAFKA_NODE_ID, value: "1" }
+            - { name: KAFKA_PROCESS_ROLES, value: "broker,controller" }
+            - { name: KAFKA_CONTROLLER_QUORUM_VOTERS, value: "1@127.0.0.1:9093" }
+            # CLIENT: SASL/PLAIN for kafkafim, through the Service. INTERNAL: plaintext on
+            # loopback only, for the broker itself, the topics container and the demo's
+            # kubectl exec tooling.
+            - name: KAFKA_LISTENERS
+              value: "CLIENT://0.0.0.0:9092,INTERNAL://127.0.0.1:19092,CONTROLLER://127.0.0.1:9093"
+            - name: KAFKA_ADVERTISED_LISTENERS
+              value: "CLIENT://kafka:9092,INTERNAL://127.0.0.1:19092"
+            - name: KAFKA_LISTENER_SECURITY_PROTOCOL_MAP
+              value: "CLIENT:SASL_PLAINTEXT,INTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT"
+            - { name: KAFKA_INTER_BROKER_LISTENER_NAME, value: INTERNAL }
+            - { name: KAFKA_CONTROLLER_LISTENER_NAMES, value: CONTROLLER }
+            - { name: KAFKA_LISTENER_NAME_CLIENT_SASL_ENABLED_MECHANISMS, value: PLAIN }
+            - name: KAFKA_LISTENER_NAME_CLIENT_PLAIN_SASL_JAAS_CONFIG
+              value: >-
+                org.apache.kafka.common.security.plain.PlainLoginModule required
+                user_$(KAFKAFIM_USERNAME)="$(KAFKAFIM_PASSWORD)";
+            - { name: KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR, value: "1" }
+            - { name: KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR, value: "1" }
+            - { name: KAFKA_TRANSACTION_STATE_LOG_MIN_ISR, value: "1" }
+            - { name: KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS, value: "0" }
+            - { name: KAFKA_AUTO_CREATE_TOPICS_ENABLE, value: "false" }   # as in production (ADR-0021)
+            - { name: KAFKA_HEAP_OPTS, value: "-Xms384m -Xmx384m" }
+          readinessProbe:
+            tcpSocket: { port: client }
+            periodSeconds: 5
+            failureThreshold: 30
+          resources:
+            requests: { cpu: 250m, memory: 768Mi }
+            limits: { memory: 768Mi }
+        # Creates the demo topics over the loopback listener, then idles. Its readiness
+        # gates the pod's: the kafka Service has no endpoint until the topics exist, so
+        # kafkafim's preflight sees "broker unreachable" (transient, retried) and never
+        # "topic missing" (failed_preflight until a reload). No persistence, so a restarted
+        # broker pod creates them again.
+        - name: topics
+          image: {{ .Values.kafka.image | quote }}
+          env:
+            - { name: KAFKA_HEAP_OPTS, value: "-Xms64m -Xmx64m" }
+            - { name: TOPICS, value: {{ join " " .Values.kafka.topics | quote }} }
+            - { name: PARTITIONS, value: {{ .Values.kafka.partitions | quote }} }
+          command:
+            - /bin/sh
+            - -c
+            - |
+              for t in $TOPICS; do
+                until /opt/kafka/bin/kafka-topics.sh --bootstrap-server 127.0.0.1:19092 --create \
+                    --if-not-exists --topic "$t" --partitions "$PARTITIONS" --replication-factor 1; do
+                  echo "broker not ready yet; retrying $t"; sleep 3
+                done
+              done
+              touch /tmp/topics-created
+              echo "topics created: $TOPICS"
+              trap 'exit 0' TERM
+              while :; do sleep 3600 & wait $!; done
+          readinessProbe:
+            exec: { command: [test, -f, /tmp/topics-created] }
+            periodSeconds: 3
+            failureThreshold: 100
+          resources:
+            requests: { cpu: 50m, memory: 256Mi }
+            limits: { memory: 256Mi }
