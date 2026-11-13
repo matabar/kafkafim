@@ -12,6 +12,25 @@ with the repo". Every query uses the metric names and labels of `/actuator/prome
 | [`alerts/kafkafim-alerts.test.yaml`](alerts/kafkafim-alerts.test.yaml) | `promtool test rules` unit tests for every alert |
 | [`provisioning/kafkafim-dashboards.yaml`](provisioning/kafkafim-dashboards.yaml) | Grafana dashboard provider used by the compose demo |
 
+## Where they ship
+
+The chart installs none of this: no `PrometheusRule` and no dashboard ConfigMap,
+because the production clusters have no Prometheus Operator CRDs (decided on #91,
+2026-11-13). Each release carries `alerts/kafkafim-alerts.yaml` and `dashboards/*.json`
+instead, versioned with the image:
+
+- in the air-gap bundle `kafkafim-<ver>-airgap.tar.gz`, under `kafkafim-<ver>-grafana/`
+  with the same `alerts/` and `dashboards/` layout, listed in the bundle's `SHA256SUMS`;
+- as separate assets of the GitHub Release (`kafkafim-alerts.yaml`,
+  `kafkafim-overview.json`, `kafkafim-elasticsearch.json`).
+
+The bundle's `IMPORT.md` says how to load them inside the air gap; it is
+[DELIVERY.md](../../docs/DELIVERY.md#alert-rules-and-dashboards) with the version filled
+in. The rule tests and the compose demo's provider stay in the repository only. A new
+file in `alerts/` needs its own line in `release.yml` (the "Stage alert rules and
+dashboards" step and the release's `files:`); a new `dashboards/*.json` is picked up by
+the globs there.
+
 ## Dashboards
 
 Both dashboards have a `datasource` variable (any Prometheus-compatible data source)
