@@ -176,6 +176,12 @@ class ConsumerSettingsTest {
   }
 
   @Test
+  void redactedHidesUserInfoLikeTheDlqProducerDoes() {
+    assertThat(ConsumerSettings.redacted(Map.of("basic.auth.user.info", "user:secret")))
+        .containsEntry("basic.auth.user.info", "[hidden]");
+  }
+
+  @Test
   void pipelineOverridesComeFromTheSourceBlock() {
     Pipeline.Source source =
         new Pipeline.Source(
