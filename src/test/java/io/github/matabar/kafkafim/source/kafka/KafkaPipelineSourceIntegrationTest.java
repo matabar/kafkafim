@@ -460,6 +460,18 @@ class KafkaPipelineSourceIntegrationTest {
           public void onPartitionsRevokedBeforeCommit(
               org.apache.kafka.clients.consumer.Consumer<?, ?> consumer,
               Collection<TopicPartition> partitions) {
+            hold();
+          }
+
+          // The client reports a loss instead if it closes without a valid generation.
+          @Override
+          public void onPartitionsLost(
+              org.apache.kafka.clients.consumer.Consumer<?, ?> consumer,
+              Collection<TopicPartition> partitions) {
+            hold();
+          }
+
+          private void hold() {
             revoking.countDown();
             try {
               releaseRevoke.await();
