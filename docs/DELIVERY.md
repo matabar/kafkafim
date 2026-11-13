@@ -57,7 +57,7 @@ image build, even when several merges land within minutes.
 
 A pull request whose every changed path (both sides of a rename) is `*.md` outside
 `src/` (Maven packages `src/main/resources`), under `docs/`, or `LICENSE` skips `build`, `integration` and therefore `image`; `helm` runs only if the
-chart, `ci.yml`, `.github/keys/` or `deploy/grafana/` changed (a pull request that changes
+chart, `deploy/local/`, `ci.yml`, `.github/keys/` or `deploy/grafana/` changed (a pull request that changes
 only `deploy/grafana/README.md` is docs-only but still gets the Grafana checks). Any other
 file under `deploy/grafana/` is not docs, so the Java and image jobs run for it too. The paths are what merging would change
 (`git diff` between the PR merge commit and the base tip). The skip is a job-level `if:`,
@@ -74,7 +74,7 @@ Branch protection on `main` (a classic branch protection rule, in force since
   image" and "Helm chart". "Detect changes" is not required. `image` does not wait
   for the integration tests, so "Integration tests" and "Container image" are both
   required: both must pass before a pull request merges. A job skipped by its `if:`
-  (docs-only pull requests, or `helm` when none of `charts/**`, `ci.yml`,
+  (docs-only pull requests, or `helm` when none of `charts/**`, `deploy/local/**`, `ci.yml`,
   `.github/keys/**` and `deploy/grafana/**` changed) reports as passing, so it does not block the merge.
 - Branches must be up to date with `main` before merging (strict status checks).
 - Administrators are included: the rule applies to them too.
