@@ -368,6 +368,10 @@ tooling shows it too (`kafka-consumer-groups.sh --describe --group kafkafim.<pip
   `client.response-timeout`: lower `bulk.max-bytes` or raise the timeout. Startup warns
   `bulk.max-bytes: ... longer than client.response-timeout` when `max-bytes` in MB
   exceeds `response-timeout` in seconds (DESIGN §5.7).
+  A steady `kafkafim_bulk_requests_total{status="413"}` with `413 for N actions ...
+  splitting` INFO lines means full bulks exceed the cluster's `http.max_content_length`
+  (default 100MB): lower `bulk.max-bytes`. Startup warns `bulk.max-bytes: ... is above
+  Elasticsearch's default http.max_content_length` above 100MB (DESIGN §5.7).
 - **Action**: none in kafkafim. Bulk requests are retried with the same documents
   forever (100ms doubling to 30s, ±50%). The breaker (per ES cluster, shared by
   identities and pipelines) opens at ≥50% failures over the last 20 requests (at
@@ -421,8 +425,9 @@ tooling shows it too (`kafka-consumer-groups.sh --describe --group kafkafim.<pip
   lag from the brokers' side.
 - **Check**: broker health, DNS, network policy/firewall from the pod's namespace to
   `bootstrap-servers`, TLS trust (an expired or rotated cluster CA shows up as an SSL
-  handshake failure in the logs; a rotated truststore file needs a pod restart,
-  [§4.3](#43-rotating-a-secret)).
+  handshake failure in the logs; running clients keep a truststore file replaced under
+  the same path and password until a pod restart, while a new path, password or type
+  reloads without one, [§4.3](#43-rotating-a-secret)).
 - **Action**: fix the path; kafkafim recovers by itself. Restart pods only if a
   pipeline stays wedged after Kafka is back (see [§5.7](#57-pipeline-shows-running-but-consumes-nothing)).
 

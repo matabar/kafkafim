@@ -16,7 +16,6 @@ import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -33,14 +32,12 @@ import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.clients.producer.KafkaProducer;
-import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.clients.producer.RecordMetadata;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.header.Header;
 import org.apache.kafka.common.header.internals.RecordHeader;
 import org.apache.kafka.common.serialization.ByteArrayDeserializer;
-import org.apache.kafka.common.serialization.ByteArraySerializer;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
@@ -86,12 +83,7 @@ class PipelineSupervisorIntegrationTest {
   static void startContainers() {
     Startables.deepStart(KAFKA, ES).join();
     admin = Admin.create(Map.of("bootstrap.servers", KAFKA.getBootstrapServers()));
-    Map<String, Object> producerConfig = new HashMap<>();
-    producerConfig.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, KAFKA.getBootstrapServers());
-    producerConfig.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, ByteArraySerializer.class);
-    producerConfig.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, ByteArraySerializer.class);
-    producerConfig.put(ProducerConfig.LINGER_MS_CONFIG, 5);
-    producer = new KafkaProducer<>(producerConfig);
+    producer = new KafkaProducer<>(KafkaTopics.seedingProducerConfig(KAFKA.getBootstrapServers()));
     http = HttpClient.newHttpClient();
   }
 
@@ -342,9 +334,9 @@ class PipelineSupervisorIntegrationTest {
     props.put("kafkafim.elasticsearch.clusters.local.bulk.in-flight", 1);
     int records = 2000;
     int perRecord = 10;
-    // Sent asynchronously and flushed once, not one round trip per record: seeding takes a fraction
-    // of the time, so a stall of the shared Docker host is less likely to hit it, and the leader
-    // wait in createTopics keeps the first sends from waiting on metadata (#68).
+    // Sent asynchronously and flushed once, not one round trip per record. createTopics returns
+    // only when the broker serves the partitions, and the producer keeps one request in flight, so
+    // the first batch can neither be refused nor overtaken (KafkaTopics, #147).
     List<Future<RecordMetadata>> sent = new ArrayList<>();
     for (int r = 0; r < records; r++) {
       StringBuilder value = new StringBuilder("[");
@@ -529,24 +521,7 @@ class PipelineSupervisorIntegrationTest {
     for (String topic : topics) {
       newTopics.add(new NewTopic(topic, partitions, (short) 1));
     }
-    admin.createTopics(newTopics).all().get();
-    awaitLeaders(List.of(topics));
-  }
-
-  /**
-   * Waits until every partition of the topics has a leader. Creation returns once the controller
-   * accepted it; the broker can learn of the leaders later, and a send before that waits for
-   * metadata, which under shared Docker load can take long enough to time out (#68).
-   */
-  private static void awaitLeaders(List<String> topics) {
-    await()
-        .atMost(TIMEOUT)
-        .ignoreExceptions()
-        .until(() ->
-            admin.describeTopics(topics).allTopicNames().get().values().stream()
-                .flatMap(topic -> topic.partitions().stream())
-                .allMatch(
-                    partition -> partition.leader() != null && !partition.leader().isEmpty()));
+    KafkaTopics.create(admin, newTopics);
   }
 
   private static long send(String topic, String key, String value, Header... headers)

@@ -1012,7 +1012,12 @@ are reported together:
   `client.response-timeout` at 1MB/s (that is, `max-bytes` in MB above
   `response-timeout` in seconds; the defaults leave a factor of 12). 1MB/s is a
   deliberately pessimistic bulk rate for a loaded cluster, so the warning catches
-  clearly mismatched settings only; it never rejects (§7, ADR-0031).
+  clearly mismatched settings only; it never rejects (§7, ADR-0031). Likewise a
+  `bulk.max-bytes` above 100MB, Elasticsearch's default `http.max_content_length`: the
+  limit applies to the body before compression, which is what `max-bytes` counts, so
+  unless the cluster raises it a full bulk request can exceed it, and is then rejected
+  with 413, split in halves and sent again (§7). A batch never exceeds `max-bytes`, so
+  100MB itself does not warn.
 
 ## 6. Scaling
 
