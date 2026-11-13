@@ -36,10 +36,8 @@ import org.apache.kafka.clients.admin.NewTopic;
 import org.apache.kafka.clients.admin.OffsetSpec;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.clients.producer.KafkaProducer;
-import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.TopicPartition;
-import org.apache.kafka.common.serialization.ByteArraySerializer;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
@@ -94,12 +92,7 @@ class HotReloadIntegrationTest {
     Startables.deepStart(KAFKA, ES).join();
     caFile = Files.write(shared.resolve("ca.crt"), ES.caCertAsBytes().orElseThrow());
     admin = Admin.create(Map.of("bootstrap.servers", KAFKA.getBootstrapServers()));
-    Map<String, Object> producerConfig = new HashMap<>();
-    producerConfig.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, KAFKA.getBootstrapServers());
-    producerConfig.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, ByteArraySerializer.class);
-    producerConfig.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, ByteArraySerializer.class);
-    producerConfig.put(ProducerConfig.LINGER_MS_CONFIG, 5);
-    producer = new KafkaProducer<>(producerConfig);
+    producer = new KafkaProducer<>(KafkaTopics.seedingProducerConfig(KAFKA.getBootstrapServers()));
     es =
         ElasticsearchClients.create(
             "it",
@@ -423,7 +416,7 @@ class HotReloadIntegrationTest {
       newTopics.add(new NewTopic(topic, 3, (short) 1));
       newTopics.add(new NewTopic(topic + ".kafkafim-dlq", 1, (short) 1));
     }
-    admin.createTopics(newTopics).all().get();
+    KafkaTopics.create(admin, newTopics);
   }
 
   private static void sendDocs(String topic, String prefix, int from, int to) {
