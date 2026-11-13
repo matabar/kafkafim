@@ -352,6 +352,77 @@ class HotReloadIntegrationTest {
     assertThat(count("ra-1")).isEqualTo(30);
   }
 
+  // ---- pausing ----
+
+  /**
+   * An identity that Elasticsearch stops accepting while its pipeline runs (its password changed
+   * there, the Secret did not follow): the pipeline pauses for {@code es-auth:<cluster>/<identity>}
+   * with nothing indexed, committed or dead-lettered, another identity's pipeline on the same
+   * cluster keeps running, and the paused one resumes by itself, without a reload or a restart,
+   * once Elasticsearch accepts the identity again.
+   */
+  @Test
+  void rejectedIdentityPausesItsPipelineUntilElasticsearchAcceptsItAgain() throws Exception {
+    createTopics("pa.events", "pb.events");
+    createUser("kfm-pa", "pa-secret-1");
+    createUser("kfm-pb", "pb-secret-1");
+    writeSecret("writer-a", "kfm-pa", "pa-secret-1");
+    writeSecret("writer-b", "kfm-pb", "pb-secret-1");
+    writeConfig(
+        false, // no reload takes part in this
+        pipeline("pa", "pa.events", "writer-a", "pa-docs")
+            + pipeline("pb", "pb.events", "writer-b", "pb-docs"));
+    ConfigurableApplicationContext app = start();
+    PipelineSupervisor supervisor = app.getBean(PipelineSupervisor.class);
+    final MeterRegistry meters = app.getBean(MeterRegistry.class);
+    awaitRunning(supervisor, "pa", "pb");
+    sendDocs("pa.events", "pa", 0, 10);
+    awaitCommittedToEnd("kafkafim.pa", "pa.events");
+    assertThat(count("pa-docs")).isEqualTo(10);
+    assertThat(supervisor.pauseReasons("pa")).isEmpty();
+    final KafkaPipelineSource source = supervisor.source("pa");
+
+    // Elasticsearch no longer accepts writer-a's password; the Secret still holds the old one.
+    changePassword("kfm-pa", "pa-secret-2");
+    sendDocs("pa.events", "pa", 10, 30);
+    sendDocs("pb.events", "pb", 0, 10);
+    await()
+        .atMost(TIMEOUT)
+        .untilAsserted(() ->
+            assertThat(supervisor.pauseReasons("pa")).containsExactly("es-auth:local/writer-a"));
+    assertThat(supervisor.state("pa")).isEqualTo(PipelineState.PAUSED);
+    assertThat(gauge(meters, "pa", "paused")).isEqualTo(1);
+    assertThat(gauge(meters, "pa", "running")).isZero();
+    // The same cluster through another identity is not affected.
+    awaitCommittedToEnd("kafkafim.pb", "pb.events");
+    assertThat(count("pb-docs")).isEqualTo(10);
+    assertThat(supervisor.state("pb")).isEqualTo(PipelineState.RUNNING);
+    assertThat(supervisor.pauseReasons("pb")).isEmpty();
+    // A rejected identity is a configuration failure: nothing is indexed, committed or
+    // dead-lettered, and the pause holds while the identity stays rejected.
+    await()
+        .during(Duration.ofSeconds(3))
+        .atMost(TIMEOUT)
+        .until(() -> supervisor.state("pa") == PipelineState.PAUSED);
+    assertThat(count("pa-docs")).isEqualTo(10);
+    assertThat(committedTotal("kafkafim.pa", "pa.events")).isEqualTo(10);
+    assertThat(endTotal("pa.events.kafkafim-dlq")).isZero();
+
+    // The password is put back in Elasticsearch: the sink's next retry is accepted.
+    changePassword("kfm-pa", "pa-secret-1");
+    await()
+        .atMost(TIMEOUT)
+        .untilAsserted(() -> assertThat(supervisor.pauseReasons("pa")).isEmpty());
+    awaitRunning(supervisor, "pa");
+    awaitCommittedToEnd("kafkafim.pa", "pa.events");
+    assertThat(count("pa-docs")).isEqualTo(30);
+    assertThat(endTotal("pa.events.kafkafim-dlq")).isZero();
+    assertThat(gauge(meters, "pa", "paused")).isZero();
+    // Resumed, not restarted or reloaded.
+    assertThat(supervisor.source("pa")).isSameAs(source);
+    assertThat(generation(meters)).isEqualTo(1);
+  }
+
   // ---- application and files ----
 
   private ConfigurableApplicationContext start() {
