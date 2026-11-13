@@ -4,6 +4,7 @@ import io.github.matabar.kafkafim.config.Pipeline;
 import io.github.matabar.kafkafim.dlq.TopicStatus;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.function.Supplier;
 import org.jspecify.annotations.Nullable;
@@ -11,9 +12,10 @@ import org.jspecify.annotations.Nullable;
 /**
  * The checks a pipeline passes before its source starts (DESIGN §4.6, ADR-0021): the DLQ topic
  * exists and its writer identity may describe it, the source identity may read the consumer group
- * ({@link KafkaGroupCheck}, ADR-0038), and every {@code (cluster, identity)} its routes use
- * authenticates against Elasticsearch. The source topics are checked by the source itself when it
- * starts ({@code MissingTopicsException}).
+ * and the source topics ({@link KafkaGroupCheck}, ADR-0038 and ADR-0039), and every {@code
+ * (cluster, identity)} its routes use authenticates against Elasticsearch. That the source topics
+ * exist and are visible is checked by the source itself when it starts ({@code
+ * MissingTopicsException}).
  *
  * <p>Every check runs, so one log line names every problem at once. A <b>configuration</b> problem
  * (missing topic, rejected identity) keeps the pipeline in {@code failed_preflight}; a
@@ -52,6 +54,19 @@ final class Preflight {
     }
   }
 
+  /**
+   * What the source identity may do on its Kafka cluster.
+   *
+   * @param group the verdict for the consumer group
+   * @param topics the verdict for each source topic that was asked about
+   */
+  record SourceAccess(Status group, Map<String, Status> topics) {
+
+    SourceAccess {
+      topics = Map.copyOf(topics);
+    }
+  }
+
   /** Check verdicts. */
   enum Kind {
     /** Passed. */
@@ -81,18 +96,18 @@ final class Preflight {
   }
 
   /**
-   * Runs the DLQ, consumer group and Elasticsearch checks of one pipeline.
+   * Runs the DLQ, consumer group, source topic and Elasticsearch checks of one pipeline.
    *
    * @param compiled the compiled pipeline
    * @param dlqTopic describes the pipeline's DLQ topic with its DLQ identity
-   * @param group checks the source identity's permission on the consumer group
+   * @param source checks the source identity's permission on the consumer group and the topics
    * @param auth the Elasticsearch identity check
    * @return every problem found
    */
   static Result run(
       CompiledPipeline compiled,
       Supplier<TopicStatus> dlqTopic,
-      Supplier<Status> group,
+      Supplier<SourceAccess> source,
       AuthCheck auth) {
     List<String> configuration = new ArrayList<>();
     List<String> transientProblems = new ArrayList<>();
@@ -118,24 +133,37 @@ final class Preflight {
     } else if (topic != TopicStatus.EXISTS) {
       transientProblems.add(dlq + ": broker did not answer");
     }
-    Status groupStatus;
+    SourceAccess access;
     try {
-      groupStatus = group.get();
+      access = source.get();
     } catch (RuntimeException e) {
-      groupStatus = Status.unreachable(e.toString());
+      access = new SourceAccess(Status.unreachable(e.toString()), Map.of());
     }
-    String groupName =
-        "consumer group '"
-            + config.source().groupId()
-            + "' (identity '"
+    Status groupStatus = access.group();
+    String sourceIdentity =
+        " (identity '"
             + Objects.toString(config.source().identity(), "<none>")
             + "' on Kafka cluster '"
             + config.source().cluster()
             + "')";
+    String groupName = "consumer group '" + config.source().groupId() + "'" + sourceIdentity;
     if (groupStatus.kind() == Kind.CONFIGURATION) {
       configuration.add(groupName + ": " + groupStatus.detail());
     } else if (groupStatus.kind() == Kind.TRANSIENT) {
       transientProblems.add(groupName + ": broker did not answer: " + groupStatus.detail());
+    }
+    // In configuration order; a topic the check has no verdict for is left to the source's start.
+    for (String sourceTopic : config.source().topics()) {
+      Status topicStatus = access.topics().get(sourceTopic);
+      if (topicStatus == null) {
+        continue;
+      }
+      String topicName = "source topic '" + sourceTopic + "'" + sourceIdentity;
+      if (topicStatus.kind() == Kind.CONFIGURATION) {
+        configuration.add(topicName + ": " + topicStatus.detail());
+      } else if (topicStatus.kind() == Kind.TRANSIENT) {
+        transientProblems.add(topicName + ": broker did not answer: " + topicStatus.detail());
+      }
     }
     for (RouteTarget.StreamKey stream : compiled.streams().keySet()) {
       Status status;

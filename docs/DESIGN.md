@@ -353,7 +353,8 @@ kafkafim creates nothing in Kafka or Elasticsearch. At pipeline start it verifie
 what the external provisioning systems should already have created, using only the
 identities the pipeline references:
 
-- source topics exist and are readable (`Describe` on topics, metadata fetch);
+- source topics exist (`Describe` on topics, metadata fetch) and the source identity
+  may read them (`describeTopics` with its authorized operations; ADR-0039);
 - the DLQ topic exists (`Describe`); kafkafim never relies on auto-create;
 - the source identity may read the consumer group (`DescribeGroups` with its
   authorized operations; ADR-0038);
@@ -375,14 +376,15 @@ provisioning systems by creating the `local` profile's `demo` topics
 How the supervisor runs it (`supervisor/Preflight`, `PipelineRuntime`): every pipeline
 starts on its own thread, so one slow check never delays another pipeline or the
 application context. The DLQ topic is described with the DLQ identity
-(`DlqProducers.checkTopic`); the consumer group is described with the source identity
-(`KafkaGroupCheck`, below); each `(cluster, identity)` sends one `GET
-/_security/_authenticate` (no privilege needed) through a client built like the sink's;
+(`DlqProducers.checkTopic`); the consumer group and the source topics are described
+with the source identity (`KafkaGroupCheck`, below); each `(cluster, identity)` sends
+one `GET /_security/_authenticate` (no privilege needed) through a client built like
+the sink's;
 then the source starts, which fails for a missing source topic. A source whose start
 fails after some of its consumers were created (they are created one after another)
 stops those consumers before it reports the failure, so they leave the group and a
-pipeline that did not start does not keep consuming. All DLQ and
-Elasticsearch checks run before a verdict, so one ERROR line names every problem.
+pipeline that did not start does not keep consuming. All DLQ, group, topic
+and Elasticsearch checks run before a verdict, so one ERROR line names every problem.
 Missing or undescribable topics, a 401/403, an unknown identity or unreadable trust
 material, and a Kafka authentication or authorization error are **configuration**
 failures (`failed_preflight` until the next accepted reload or a restart, §5.6). An unreachable broker or cluster
@@ -392,7 +394,7 @@ restart. A stop (shutdown, or a reload that restarts or removes the pipeline)
 cancels a start in progress: it interrupts any check still waiting for an answer and
 discards the verdict, and the pipeline ends `stopped`. A stop therefore never waits out
 the checks' timeouts (10s for the DLQ describe, the source's metadata timeout, 30s by
-default, for the group check, up to 15s per Elasticsearch identity); an Elasticsearch request in flight
+default, for the group and topic check, up to 15s per Elasticsearch identity); an Elasticsearch request in flight
 is cancelled, and its client is closed on a thread of its own, because the client's
 graceful close can take 5s. Elasticsearch answers 405 on that path when security is disabled; any
 status other than 401, 403 and 5xx passes.
@@ -409,6 +411,17 @@ whose authorized operations lack `READ`, and a group id another protocol already
 request passes. So does a group that has never been joined: the broker answers
 `GroupIdNotFoundException` and cannot tell `Read` from `Describe`, so the first join
 stays the check for `Describe` without `Read` on a new group (ADR-0038).
+
+The same admin client asks for the authorized operations on the source topics, with
+both requests in flight together under the one timeout (ADR-0039). The source's own
+start check is a metadata fetch, which `Describe` alone satisfies; without `Read` every
+fetch is denied and retried every 10s, and the pipeline would show `running`. An
+existing topic whose authorized operations lack `READ` is a configuration failure; no
+operations listed passes, as for the group.
+Any failure of the topic request passes this check and is left to the source's start:
+a topic that does not exist or that the identity cannot see fails it, and so does a
+broker that answers nothing. If only the topic request fails and the source's metadata
+fetch then succeeds, a topic without `Read` still shows `running`.
 
 After a successful start, a pipeline whose source cannot go on (the record handler
 threw, or a consumer of the listener container stopped on its own: any
