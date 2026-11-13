@@ -378,7 +378,10 @@ application context. The DLQ topic is described with the DLQ identity
 (`DlqProducers.checkTopic`); the consumer group is described with the source identity
 (`KafkaGroupCheck`, below); each `(cluster, identity)` sends one `GET
 /_security/_authenticate` (no privilege needed) through a client built like the sink's;
-then the source starts, which fails for a missing source topic. All DLQ and
+then the source starts, which fails for a missing source topic. A source whose start
+fails after some of its consumers were created (they are created one after another)
+stops those consumers before it reports the failure, so they leave the group and a
+pipeline that did not start does not keep consuming. All DLQ and
 Elasticsearch checks run before a verdict, so one ERROR line names every problem.
 Missing or undescribable topics, a 401/403, an unknown identity or unreadable trust
 material, and a Kafka authentication or authorization error are **configuration**
@@ -669,7 +672,15 @@ A route matches when **all** of its `when` conditions hold. Condition types:
   objects, arrays, `null` and a missing field match nothing.
 - `prefix`/`matches` apply to string fields only; any other type does not match. A
   value long enough to overflow `java.util.regex`'s stack (constructs like `(a|b)*`
-  recurse per repetition) counts as no match instead of failing the record.
+  recurse per repetition) counts as no match instead of failing the record. That is
+  deliberately silent: no log line and no metric say that the guard was hit
+  (kafkafim stays light, and `route` may depend only on the JDK and Jackson,
+  ADR-0003: no SLF4J, no Micrometer). The route is then treated as not matching, and
+  selection continues as described below: the document can miss that route's copy,
+  fall to the default route, or (in `all`, with no default) go to the DLQ as
+  `no_route`; a drop route guarded by such a condition does not drop it. Prefer
+  patterns without such constructs (`[ab]*` instead of `(a|b)*`) where values can be
+  long.
 - `header` compares the UTF-8 bytes of `v` with the value of the **last** header of
   that name (Kafka allows repeats); a missing header or a null value does not match.
 
