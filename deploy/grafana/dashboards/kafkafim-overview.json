@@ -492,14 +492,14 @@
       "type": "timeseries",
       "id": 7,
       "title": "Pipeline state by pod",
-      "description": "The state each pipeline is in on each pod (1 = current). paused means a supervisor reason (breaker open, identity rejected, DLQ blocked); the reason is only in the logs (RUNBOOK \u00a73.1).",
+      "description": "The state each pipeline is in on each pod (1 = current). paused means a supervisor reason (breaker open, identity rejected, DLQ blocked); the panel next to this one shows which kind.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
       },
       "gridPos": {
         "h": 7,
-        "w": 24,
+        "w": 14,
         "x": 0,
         "y": 6
       },
@@ -544,6 +544,67 @@
           "refId": "A",
           "expr": "kafkafim_pipeline_state{pipeline=~\"$pipeline\"} == 1",
           "legendFormat": "{{pipeline}} {{state}} {{instance}}",
+          "range": true,
+          "instant": false
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "id": 30,
+      "title": "Pause reasons by pod",
+      "description": "Why a pipeline is paused on a pod, by kind: es_breaker (RUNBOOK \u00a75.1), es_auth (\u00a75.2), dlq_blocked (\u00a75.6). A series shows only while kafkafim_pipeline_pause_reason is 1; an empty panel means nothing is paused. The cluster or identity a reason names is in the logs (RUNBOOK \u00a73.1).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 10,
+        "x": 14,
+        "y": 6
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "A",
+          "expr": "kafkafim_pipeline_pause_reason{pipeline=~\"$pipeline\"} == 1",
+          "legendFormat": "{{pipeline}} {{reason}} {{instance}}",
           "range": true,
           "instant": false
         }

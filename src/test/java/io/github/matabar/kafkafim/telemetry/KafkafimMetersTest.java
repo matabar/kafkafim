@@ -39,6 +39,7 @@ class KafkafimMetersTest {
     final AtomicLong inFlight = new AtomicLong();
     final AtomicInteger assigned = new AtomicInteger();
     volatile boolean connected;
+    volatile Set<PauseReason> pauseReasons = Set.of();
 
     @Override
     public long inFlightBytes() {
@@ -53,6 +54,11 @@ class KafkafimMetersTest {
     @Override
     public boolean connected() {
       return connected;
+    }
+
+    @Override
+    public Set<PauseReason> pauseReasons() {
+      return pauseReasons;
     }
   }
 
@@ -329,6 +335,31 @@ class KafkafimMetersTest {
   }
 
   @Test
+  void pauseReasonGaugesExistPerKindAndReadTheProbe() {
+    Probe probe = new Probe();
+    sync(Map.of("orders", spec("prod-a", List.of("t"), probe)));
+    final String[] base = {"pipeline", "orders", "kafka_cluster", "prod-a"};
+
+    assertThat(
+            registry.find(TelemetryNames.PAUSE_REASON).gauges().stream()
+                .map(g -> g.getId().getTag("reason"))
+                .toList())
+        .containsExactlyInAnyOrder("es_breaker", "es_auth", "dlq_blocked");
+    for (PauseReason reason : PauseReason.values()) {
+      assertThat(gauge(TelemetryNames.PAUSE_REASON, with(base, "reason", reason.label()))).isZero();
+    }
+
+    probe.pauseReasons = Set.of(PauseReason.ES_BREAKER, PauseReason.DLQ_BLOCKED);
+    assertThat(gauge(TelemetryNames.PAUSE_REASON, with(base, "reason", "es_breaker"))).isOne();
+    assertThat(gauge(TelemetryNames.PAUSE_REASON, with(base, "reason", "dlq_blocked"))).isOne();
+    assertThat(gauge(TelemetryNames.PAUSE_REASON, with(base, "reason", "es_auth"))).isZero();
+
+    // A reload that keeps the series reads the new probe.
+    sync(Map.of("orders", spec("prod-a", List.of("t"), new Probe())));
+    assertThat(gauge(TelemetryNames.PAUSE_REASON, with(base, "reason", "es_breaker"))).isZero();
+  }
+
+  @Test
   void breakerGaugeEncodesTheState() {
     sync(Map.of("orders", spec("prod-a", List.of("t"), new Probe())));
 
@@ -448,6 +479,8 @@ class KafkafimMetersTest {
               "kafkafim_in_flight_bytes{kafka_cluster=\"prod-a\",pipeline=\"orders\"} 0.0",
               "kafkafim_assigned_partitions{kafka_cluster=\"prod-a\",pipeline=\"orders\"} 0.0",
               "kafkafim_kafka_connected{kafka_cluster=\"prod-a\",pipeline=\"orders\"} 0.0",
+              "kafkafim_pipeline_pause_reason{kafka_cluster=\"prod-a\",pipeline=\"orders\","
+                  + "reason=\"dlq_blocked\"} 0.0",
               "kafkafim_dlq_records_total{error_type=\"decode\",kafka_cluster=\"prod-a\","
                   + "pipeline=\"orders\"} 1.0")
           .doesNotContain(
