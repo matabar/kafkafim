@@ -200,7 +200,7 @@ class PreflightTest {
 
   @Test
   void topicWithoutReadIsConfigurationNamingTopicIdentityAndCluster() {
-    CompiledPipeline twoTopics =
+    CompiledPipeline threeTopics =
         PipelineMapping.compile(
             "p",
             TestConfigs.withPipelines(
@@ -211,7 +211,7 @@ class PreflightTest {
                 """));
     Preflight.Result result =
         Preflight.run(
-            twoTopics,
+            threeTopics,
             () -> TopicStatus.EXISTS,
             () ->
                 new Preflight.SourceAccess(
@@ -226,7 +226,7 @@ class PreflightTest {
                         "u", Preflight.Status.OK)),
             (c, i) -> Preflight.Status.OK);
 
-    // In configuration order; a topic without a verdict is left to the source's start.
+    // In configuration order, not the map's.
     assertThat(result.configuration())
         .containsExactly(
             "source topic 't' (identity 'reader' on Kafka cluster 'k'): identity may describe the"

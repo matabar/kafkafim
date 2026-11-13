@@ -34,10 +34,10 @@ here: a missing topic already fails the start.
 - **Configuration** (`failed_preflight`): an existing topic whose authorized operations
   lack `READ` (and `ALL`). The ERROR line names the topic, the identity and the cluster.
 - **Passes**: `READ` or `ALL` listed; no operations listed (a broker that cannot say).
-- **Left to the source's start**, which already reports them: a topic that does not
-  exist or that the identity cannot see (`MissingTopicsException`), and a broker that
-  does not answer the topic request. The topic check passes these, so each problem
-  keeps its one message and its one owner.
+- **Left to the source's start**: any failure of the topic request. A topic that does
+  not exist or that the identity cannot see fails the start (`MissingTopicsException`),
+  and a broker that does not answer fails the source's metadata fetch. The topic check
+  passes these, so each problem keeps its one message and its one owner.
 
 ## Alternatives
 - **Fetch from the topic in preflight.** This is exact, but it needs a consumer with an
@@ -55,6 +55,12 @@ here: a missing topic already fails the start.
 - `Describe` without `Read` on a source topic now ends in `failed_preflight` and its
   alert, instead of a `running` pipeline that consumes nothing.
 - No new connection and no extra timeout: the request rides on the group check.
+- The check is best effort where the topic request fails but the source's metadata
+  fetch then succeeds (a timeout on the describe alone, for example): a topic with
+  `Describe` only still ends `running` in that case, as before this ADR.
+- An ACL that arrives after the start attempt no longer heals by itself: the pipeline
+  is in `failed_preflight` and needs a reload or a restart (runbook §5.4), as for the
+  group and the DLQ topic.
 - `Read` revoked after the start is still not detected: consumers retry every 10s and
   the state stays `running` (runbook §5.4), as for the group.
 - A custom authorizer or an old broker that lists no operations passes, and the first

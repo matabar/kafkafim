@@ -27,7 +27,8 @@ import org.jspecify.annotations.Nullable;
 import org.springframework.kafka.core.ConsumerFactory;
 
 /**
- * The preflight check of a pipeline's consumer group (DESIGN §4.6, ADR-0038): one {@code
+ * The preflight check of what a pipeline's source identity may do: read its consumer group, and
+ * read its topics (below). For the group (DESIGN §4.6, ADR-0038) it sends one {@code
  * DescribeGroups} with the source identity, asking for the identity's authorized operations.
  *
  * <p>A denied join is otherwise invisible: the listener container retries it every {@code
@@ -52,8 +53,8 @@ import org.springframework.kafka.core.ConsumerFactory;
  * source topics (ADR-0039): the source's own start check is a metadata fetch, which {@code
  * Describe} alone satisfies, so a missing {@code Read} would leave the pipeline {@code running}
  * with every fetch denied. A topic whose operations are listed without {@code READ} is rejected.
- * Everything else about a topic passes here, because the source's start reports it: a topic that
- * does not exist or is not visible, and a broker that does not answer.
+ * Any failure of the topic request passes here and is left to the source's start, which fails for a
+ * topic that does not exist or is not visible and for a broker that does not answer.
  */
 final class KafkaGroupCheck {
 
@@ -137,7 +138,7 @@ final class KafkaGroupCheck {
         try {
           status = classifyTopic(await(topic.getValue(), deadline).authorizedOperations());
         } catch (ExecutionException | TimeoutException e) {
-          // Missing, not visible, or no answer: the source's start reports each of these.
+          // Missing, not visible, or no answer: left to the source's start.
           status = Preflight.Status.OK;
         }
         topicStatuses.put(topic.getKey(), status);

@@ -377,8 +377,9 @@ How the supervisor runs it (`supervisor/Preflight`, `PipelineRuntime`): every pi
 starts on its own thread, so one slow check never delays another pipeline or the
 application context. The DLQ topic is described with the DLQ identity
 (`DlqProducers.checkTopic`); the consumer group and the source topics are described
-with the source identity (`KafkaGroupCheck`, below); each `(cluster, identity)` sends one `GET
-/_security/_authenticate` (no privilege needed) through a client built like the sink's;
+with the source identity (`KafkaGroupCheck`, below); each `(cluster, identity)` sends
+one `GET /_security/_authenticate` (no privilege needed) through a client built like
+the sink's;
 then the source starts, which fails for a missing source topic. All DLQ, group, topic
 and Elasticsearch checks run before a verdict, so one ERROR line names every problem.
 Missing or undescribable topics, a 401/403, an unknown identity or unreadable trust
@@ -412,9 +413,10 @@ both requests in flight together under the one timeout (ADR-0039). The source's 
 start check is a metadata fetch, which `Describe` alone satisfies; without `Read` every
 fetch is denied and retried every 10s, and the pipeline would show `running`. An
 existing topic whose authorized operations lack `READ` is a configuration failure.
-Everything else about a topic passes this check, because the source's start already
-reports it: a topic that does not exist or that the identity cannot see, and a broker
-that does not answer the topic request.
+Any failure of the topic request passes this check and is left to the source's start:
+a topic that does not exist or that the identity cannot see fails it, and so does a
+broker that answers nothing. If only the topic request fails and the source's metadata
+fetch then succeeds, a topic without `Read` still shows `running`.
 
 After a successful start, a pipeline whose source cannot go on (the record handler
 threw, or a consumer of the listener container stopped on its own: any
