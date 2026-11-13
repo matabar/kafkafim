@@ -152,7 +152,8 @@ final class PipelineResources implements SmartLifecycle, AutoCloseable {
           authCheck = authChecks.apply(properties);
         } catch (RuntimeException e) {
           // Nothing was taken yet: drop the instances created for this call (current, but unused)
-          // and make the ones they replaced current again.
+          // and make the ones they replaced current again. A current instance without users
+          // exists only inside the acquire that created it: unuse retires an instance at zero.
           for (Handle handle : current()) {
             if (handle.users == 0) {
               retire(handle, retired);
@@ -259,7 +260,9 @@ final class PipelineResources implements SmartLifecycle, AutoCloseable {
    * Undoes the acquires of a reload that failed (ADR-0041): releases {@code acquired}, then makes
    * every instance of {@code checkpoint} that is still open current again, in place of whatever
    * replaced it. Pipelines that start afterwards on the running configuration get the instances
-   * they had, instead of new ones.
+   * they had, instead of new ones. The releases and the restore are separate steps; that is safe
+   * because {@code PipelineSupervisor} makes every acquire, release and rollback under its
+   * lifecycle lock.
    *
    * @param checkpoint taken before the first of those acquires
    * @param acquired the contexts to give back

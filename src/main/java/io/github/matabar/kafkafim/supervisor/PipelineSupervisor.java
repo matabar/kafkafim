@@ -363,6 +363,7 @@ public final class PipelineSupervisor implements SmartLifecycle {
    * current are current again, and the pipelines the drains stopped while running or starting start
    * again. Pipelines the new configuration removes were not released yet and are among those.
    *
+   * @param checkpoint the building blocks that were current before the first acquire
    * @param acquired every context acquired for the new configuration
    * @param replaced the reconfigured pipelines, each with its previous context
    * @param active the pipelines to start again
