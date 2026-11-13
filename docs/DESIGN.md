@@ -1169,19 +1169,22 @@ unresolved-backlog number.
 ## 10. Observability
 
 Spring Boot's OpenTelemetry starter: Micrometer → OTLP (APM Server) plus
-`/actuator/prometheus`; Micrometer Tracing with the OTel bridge → OTLP. APM Server
+`/actuator/prometheus`; Micrometer Tracing with the OTel bridge → OTLP; Logback →
+OTLP. Metrics, traces and logs always travel together, to
+`${OTEL_EXPORTER_OTLP_ENDPOINT}/v1/metrics`, `/v1/traces` and `/v1/logs`. APM Server
 (or later an OpenTelemetry Collector) pre-exists in production; switching between
 them is only the `OTEL_EXPORTER_OTLP_ENDPOINT` value in the chart. Export headers reach
-both exporters: non-secret ones through `OTEL_EXPORTER_OTLP_HEADERS` (mapped by Spring
-Boot), secret ones (the APM Server token) as `configtree` files the chart mounts at the
-exporters' `headers` property paths (`otel.secretHeaders`, [HELM.md](HELM.md)). Header
-secrets are read at startup; rotating one needs a pod restart.
+the three exporters: non-secret ones through `OTEL_EXPORTER_OTLP_HEADERS` (mapped by
+Spring Boot), secret ones (the APM Server token) as `configtree` files the chart mounts
+at the exporters' `headers` property paths (`otel.secretHeaders`, [HELM.md](HELM.md)).
+Header secrets are read at startup; rotating one needs a pod restart.
 
-Both OTLP resources carry `service.name=kafkafim`, `service.namespace=kafkafim` and
+The three OTLP resources carry `service.name=kafkafim`, `service.namespace=kafkafim` and
 `service.instance.id` = the pod name (`POD_NAME`, which the chart sets from the downward
 API; `HOSTNAME` in a plain container, `localhost` without either), so series and spans
 stay per pod; Prometheus-compatible OTLP backends derive `job` (`kafkafim/kafkafim`) and
-`instance` from them. OTLP metrics use seconds as the base time unit
+`instance` from them, and log records are found under the same service and instance.
+OTLP metrics use seconds as the base time unit
 (`management.otlp.metrics.export.base-time-unit`; Micrometer's OTLP default is
 milliseconds), so timers export with unit `seconds` and seconds buckets: through OTLP
 the names below are the same as on `/actuator/prometheus`
@@ -1255,8 +1258,27 @@ to Elasticsearch. Dropped documents (§5.3) never join a batch, so they appear i
 
 ### Logs
 
-ECS-structured JSON on stdout (Spring Boot structured logging); OTLP log export
-optional. One WARN line per bulk response with failed items, naming the first 5 by
+Every log event goes to two places (ADR-0041):
+
+- **OTLP**, the structured copy, for the backend. OpenTelemetry's Logback appender
+  (`logback-spring.xml`) feeds the logger provider Spring Boot auto-configures; records
+  are batched off the logging thread and sent to `/v1/logs`. A record carries the
+  severity, the logger name (its instrumentation scope), `thread.name`, MDC entries and
+  key-value pairs as attributes, an exception's type, message and stack trace, the trace
+  and span id of the span in scope, and the resource attributes above. Lines logged
+  before the OpenTelemetry SDK exists (Spring Boot's startup lines, configuration
+  warnings) are kept, up to 1000, and replayed. Export never blocks a pipeline: a full
+  queue (2048 records) drops records, and an unreachable endpoint loses only the export.
+  `management.logging.export.otlp.enabled=false` switches it off, as
+  `management.otlp.metrics.export.enabled` and `management.tracing.export.otlp.enabled`
+  do for the other two.
+- **stdout**, readable text for a person (`kubectl logs`, a local run): Spring Boot's
+  console line with time, level, thread, trace and span id, logger and message. It is
+  never JSON and nothing parses it. It is also the only place for what OTLP cannot
+  carry: a pod that fails before the SDK exists (invalid configuration), the last lines
+  of a shutdown, and everything while the endpoint is unreachable.
+
+Pipeline lines name their pipeline in the message (`Pipeline '<name>': …`). One WARN line per bulk response with failed items, naming the first 5 by
 position, status and error type (not Elasticsearch's reason, which quotes field values
 of the document; it travels in the DLQ record), written before that response's outcomes;
 one WARN line per request-level retry (429, 5xx, 401/403, unexpected status) with the
@@ -1303,7 +1325,7 @@ The compose demo provisions both dashboards into its Grafana LGTM.
 
 - Secrets only via mounted `Secret`s imported as `configtree`; inline secret values
   fail validation outside local development. This includes the OTLP export token
-  (`otel.secretHeaders`, §10).
+  (`otel.secretHeaders`, §10), for metrics, traces and logs alike.
 - TLS everywhere, custom CA per cluster. Named identities (Kafka: SASL/mTLS;
   Elasticsearch: API key, basic, mTLS) referenced per consumer group, DLQ producer
   and route, so Kafka ACLs and ES roles can be scoped per pipeline and per role.

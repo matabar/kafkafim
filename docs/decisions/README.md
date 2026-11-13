@@ -42,3 +42,4 @@ One file per decision, MADR-style. Supersede with a new ADR rather than editing 
 | [0036](0036-pipeline-that-fails-while-running-is-stopped-as-failed.md) | A pipeline that fails while running (handler threw, consumer stopped on its own) is stopped in a new `failed` state; an accepted reload retries it (refines 0032) |
 | [0037](0037-routes-can-drop-documents.md) | Routes can drop documents (`drop: true`); in `route-mode: all` a drop cancels every other copy; no `allow-drop` switch (refines 0009 and 0006) |
 | [0038](0038-preflight-checks-consumer-group-permission.md) | Preflight checks the consumer group permission with one `DescribeGroups` (authorized operations); a never-joined group passes (refines 0021) |
+| [0041](0041-logs-over-otlp-stdout-is-readable-text.md) | Logs are exported over OTLP with metrics and traces; stdout is readable text, never JSON (supersedes the logs part of 0013) |

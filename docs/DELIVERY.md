@@ -93,6 +93,10 @@ the build until `opentelemetry-proto.version` is bumped to match. The rule canno
 Micrometer dropping the dependency: `micrometer-registry-otlp` 1.18 (Boot 4.2) shades it,
 which leaves only the direct path, so the rule passes. #127 tracks moving the artifact to
 test scope and removing these guards in that upgrade.
+Dependabot also ignores `io.opentelemetry.instrumentation:opentelemetry-logback-appender-1.0`
+(ADR-0041). No BOM manages it either; `pom.xml` pins the instrumentation release built
+against the Spring Boot BOM's OpenTelemetry SDK (instrumentation 2.N pairs with SDK
+1.(N+34)), and it is bumped by hand in the Boot upgrade that moves the SDK.
 
 ## CD (`.github/workflows/release.yml`) on tag `v*`
 

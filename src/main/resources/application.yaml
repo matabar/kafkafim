@@ -35,9 +35,10 @@ management:
                                                   # never Elasticsearch (DESIGN §4.6, §10)
       show-components: always
       show-details: when-authorized
+  # Metrics, traces and logs all go to OTEL_EXPORTER_OTLP_ENDPOINT (DESIGN §10).
   # OTLP export headers are not set here. Spring Boot maps OTEL_EXPORTER_OTLP_HEADERS onto
-  # both exporters' headers maps, and the chart mounts secret headers (otel.secretHeaders)
-  # as configtree files at those maps' property paths (docs/HELM.md).
+  # the three exporters' headers maps, and the chart mounts secret headers
+  # (otel.secretHeaders) as configtree files at those maps' property paths (docs/HELM.md).
   otlp:
     metrics:
       export:
@@ -55,7 +56,11 @@ management:
       export:
         otlp:
           endpoint: ${OTEL_EXPORTER_OTLP_ENDPOINT:http://localhost:4318}/v1/traces
-    resource-attributes:            # on both OTLP metrics and traces; these win over OTEL_RESOURCE_ATTRIBUTES
+    logging:                        # every Logback event, through the OTLP appender of logback-spring.xml;
+      export:                       # batched off the logging thread, dropped (never blocking) when the
+        otlp:                       # 2048-record queue is full. stdout keeps every line, as readable text.
+          endpoint: ${OTEL_EXPORTER_OTLP_ENDPOINT:http://localhost:4318}/v1/logs
+    resource-attributes:            # on OTLP metrics, traces and logs; these win over OTEL_RESOURCE_ATTRIBUTES
       service.namespace: kafkafim
       service.instance.id: ${POD_NAME:${HOSTNAME:localhost}}   # per-pod OTLP identity (the backend's
                                     # `instance`): the chart sets POD_NAME from the downward API; a plain
@@ -66,8 +71,3 @@ kafkafim:
     enabled: true                   # read at startup only. The watched paths are the file and
     poll-interval: 10s              # configtree locations of spring.config.(additional-)location and
     debounce: 2s                    # spring.config.import. POST /actuator/reload works regardless.
-
-logging:
-  structured:
-    format:
-      console: ecs

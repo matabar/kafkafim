@@ -6,9 +6,12 @@ import static org.awaitility.Awaitility.await;
 import com.sun.net.httpserver.Headers;
 import com.sun.net.httpserver.HttpServer;
 import io.github.matabar.kafkafim.KafkafimApplication;
+import io.opentelemetry.proto.collector.logs.v1.ExportLogsServiceRequest;
 import io.opentelemetry.proto.collector.metrics.v1.ExportMetricsServiceRequest;
 import io.opentelemetry.proto.collector.trace.v1.ExportTraceServiceRequest;
 import io.opentelemetry.proto.common.v1.KeyValue;
+import io.opentelemetry.proto.logs.v1.LogRecord;
+import io.opentelemetry.proto.logs.v1.ResourceLogs;
 import io.opentelemetry.proto.metrics.v1.Metric;
 import io.opentelemetry.proto.metrics.v1.ResourceMetrics;
 import io.opentelemetry.proto.metrics.v1.ScopeMetrics;
@@ -45,14 +48,16 @@ import org.junit.jupiter.api.io.TempDir;
 /**
  * Proves the OTLP export contract against the real application.
  *
- * <p>It checks three things:
+ * <p>It checks four things:
  *
  * <ul>
  *   <li>the header contract the Helm chart renders (docs/HELM.md, {@code otel}): a non-secret
  *       header from {@code OTEL_EXPORTER_OTLP_HEADERS} and a secret header from a {@code
- *       configtree} file both arrive on the OTLP metrics ({@code /v1/metrics}) and trace ({@code
- *       /v1/traces}) export requests;
- *   <li>both resources carry {@code service.instance.id} from the chart's {@code POD_NAME};
+ *       configtree} file both arrive on the OTLP metrics ({@code /v1/metrics}), trace ({@code
+ *       /v1/traces}) and log ({@code /v1/logs}) export requests;
+ *   <li>the three resources carry {@code service.instance.id} from the chart's {@code POD_NAME};
+ *   <li>log records leave over OTLP, the ones logged before the OpenTelemetry SDK existed included
+ *       (DESIGN §10 Logs);
  *   <li>timers export in seconds (unit {@code seconds}, bucket bounds in seconds), so the OTLP
  *       names match {@code /actuator/prometheus} and the PromQL in deploy/grafana/ (DESIGN §10).
  * </ul>
@@ -73,7 +78,8 @@ class OtlpExportIntegrationTest {
   private static final List<String> SECRET_HEADER_DIRS =
       List.of(
           "management/otlp/metrics/export/headers",
-          "management/opentelemetry/tracing/export/otlp/headers");
+          "management/opentelemetry/tracing/export/otlp/headers",
+          "management/opentelemetry/logging/export/otlp/headers");
 
   private static final String SECRET_VALUE = "Bearer s3cr3t-apm-token";
 
@@ -166,6 +172,7 @@ class OtlpExportIntegrationTest {
     env.put("MANAGEMENT_OTLP_METRICS_EXPORT_STEP", "1s");
     env.put("MANAGEMENT_TRACING_SAMPLING_PROBABILITY", "1.0");
     env.put("OTEL_BSP_SCHEDULE_DELAY", "100");
+    env.put("OTEL_BLRP_SCHEDULE_DELAY", "100");
     app = builder.start();
 
     try (HttpClient http = HttpClient.newHttpClient()) {
@@ -187,7 +194,7 @@ class OtlpExportIntegrationTest {
             } catch (IOException e) {
               // Not answering yet.
             }
-            assertThat(paths()).contains("/v1/metrics", "/v1/traces");
+            assertThat(paths()).contains("/v1/metrics", "/v1/traces", "/v1/logs");
             // Exports before the pipeline meters were registered lack the e2e timer.
             assertThat(e2eMetrics(parsedMetrics()))
                 .as("%s in the OTLP metrics", TelemetryNames.E2E_LATENCY)
@@ -195,14 +202,14 @@ class OtlpExportIntegrationTest {
           });
     } catch (ConditionTimeoutException | AssertionError e) {
       throw new AssertionError(
-          "No metrics and trace export seen; paths="
+          "No metrics, trace and log export seen; paths="
               + paths()
               + "\n--- application output ---\n"
               + Files.readString(appLog, StandardCharsets.UTF_8),
           e);
     }
 
-    for (String path : List.of("/v1/metrics", "/v1/traces")) {
+    for (String path : List.of("/v1/metrics", "/v1/traces", "/v1/logs")) {
       List<Headers> requests =
           captured.stream().filter(c -> c.path().equals(path)).map(Captured::headers).toList();
       assertThat(requests)
@@ -223,6 +230,12 @@ class OtlpExportIntegrationTest {
         traces.add(ExportTraceServiceRequest.parseFrom(c.body()));
       }
     }
+    List<ExportLogsServiceRequest> logs = new ArrayList<>();
+    for (Captured c : captured) {
+      if (c.path().equals("/v1/logs")) {
+        logs.add(ExportLogsServiceRequest.parseFrom(c.body()));
+      }
+    }
     List<Resource> resources = new ArrayList<>();
     metrics.forEach(r ->
         r.getResourceMetricsList().stream()
@@ -230,14 +243,31 @@ class OtlpExportIntegrationTest {
             .forEach(resources::add));
     traces.forEach(r ->
         r.getResourceSpansList().stream().map(ResourceSpans::getResource).forEach(resources::add));
+    logs.forEach(r ->
+        r.getResourceLogsList().stream().map(ResourceLogs::getResource).forEach(resources::add));
     assertThat(resources)
-        .as("metric and trace resources")
+        .as("metric, trace and log resources")
         .isNotEmpty()
         .allSatisfy(resource ->
             assertThat(attributes(resource))
                 .containsEntry("service.instance.id", POD_NAME)
                 .containsEntry("service.name", "kafkafim")
                 .containsEntry("service.namespace", "kafkafim"));
+
+    // Spring Boot logs this line before the application context, and so the OpenTelemetry SDK,
+    // exists: the appender kept it and replayed it.
+    List<LogRecord> records =
+        logs.stream()
+            .flatMap(r -> r.getResourceLogsList().stream())
+            .flatMap(r -> r.getScopeLogsList().stream())
+            .flatMap(scope -> scope.getLogRecordsList().stream())
+            .toList();
+    assertThat(records)
+        .as("exported log records")
+        .anySatisfy(record -> {
+          assertThat(record.getBody().getStringValue()).startsWith("Starting KafkafimApplication");
+          assertThat(record.getSeverityText()).isEqualTo("INFO");
+        });
 
     // The demo pipeline of the local profile registers its e2e timer at startup (DESIGN §10).
     List<Metric> e2e = e2eMetrics(metrics);

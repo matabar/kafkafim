@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Two destinations for every log event (docs/DESIGN.md §10 Logs, ADR-0041):
+
+  CONSOLE  readable text on stdout, for a person reading `kubectl logs` or running locally:
+           Spring Boot's own console appender and pattern (time, level, pid, application,
+           thread, trace and span id, logger, message, stack trace). Nothing parses it.
+  OTLP     the structured copy, for machines: the OpenTelemetry Logback appender hands each
+           event to the OpenTelemetry SDK's logger provider, which Spring Boot auto-configures
+           with a batching OTLP exporter (management.opentelemetry.logging.export.* in
+           application.yaml). Records travel with metrics and traces, under the same resource
+           attributes, with severity, logger name, thread, MDC entries, key-value pairs, the
+           exception (type, message, stack trace) and the current span's trace and span id.
+           Events logged before the SDK exists are kept (the first 1000) and replayed once
+           telemetry/LogExportConfiguration installs it. Switching the export off
+           (management.logging.export.otlp.enabled=false) leaves the appender in place with
+           nothing behind it.
+
+  Log levels still come from logging.level.* properties.
+-->
+<configuration>
+	<include resource="org/springframework/boot/logging/logback/defaults.xml"/>
+	<include resource="org/springframework/boot/logging/logback/console-appender.xml"/>
+
+	<appender name="OTLP" class="io.opentelemetry.instrumentation.logback.appender.v1_0.OpenTelemetryAppender">
+		<!-- thread.name and thread.id: which consumer or sink thread logged -->
+		<captureExperimentalAttributes>true</captureExperimentalAttributes>
+		<captureMdcAttributes>*</captureMdcAttributes>
+		<captureKeyValuePairAttributes>true</captureKeyValuePairAttributes>
+	</appender>
+
+	<root level="INFO">
+		<appender-ref ref="CONSOLE"/>
+		<appender-ref ref="OTLP"/>
+	</root>
+</configuration>

@@ -21,7 +21,13 @@ Conventions used below:
 
   Every pod has its own pipelines, state and reload result; a port-forward to
   `deploy/kafkafim-<g>` picks the first matching pod, so prefer naming the pod.
-- Logs are ECS JSON on stdout. The log lines quoted below are the `message` field.
+- Logs are in two places ([DESIGN §10](DESIGN.md#logs)). The backend that receives
+  OTLP (APM Server) has every pod's records, searchable by `service.instance.id` (the
+  pod name), severity, logger and trace id: start there. `kubectl logs` shows the same
+  lines as plain text, one per event, with the trace and span id in brackets. Only
+  stdout has a pod that failed to start, the last lines of a shutdown, and whatever was
+  logged while the OTLP endpoint was unreachable. The log lines quoted below are the
+  message of either.
 - Metric names are the Prometheus names from [DESIGN §10](DESIGN.md#10-observability).
 
 ## 1. Mental model in one minute
@@ -603,7 +609,8 @@ tooling shows it too (`kafka-consumer-groups.sh --describe --group kafkafim.<pip
 ### 5.9 Pod refuses to start
 
 - **Symptom**: `CrashLoopBackOff`, or the startup probe (liveness, 30 × 2s) kills the
-  pod. Read the first ERROR of the previous container:
+  pod. Read the first ERROR of the previous container. It is on stdout only: a pod
+  that fails this early exports no logs over OTLP ([DESIGN §10](DESIGN.md#logs)):
 
   ```bash
   kubectl -n <ns> logs <pod> --previous | head -50
@@ -768,7 +775,8 @@ or roll back. Until then the pods run the previous generation and new pods fail.
 Before escalating to the kafkafim maintainers, collect for the affected pod(s):
 
 - `kubectl -n <ns> describe pod <pod>` and `kubectl -n <ns> logs <pod>` (plus
-  `--previous` after a restart);
+  `--previous` after a restart), or the same period's records from the OTLP backend
+  when the pod is gone;
 - `curl -s localhost:8080/actuator/prometheus | grep '^kafkafim_'` (port-forwarded);
 - `helm history kafkafim -n <ns>` and the values diff of the last revision;
 - the consumer group description from Kafka tooling.
