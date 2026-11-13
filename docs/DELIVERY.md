@@ -122,9 +122,21 @@ against the Spring Boot BOM's OpenTelemetry SDK (instrumentation 2.N pairs with 
    - `kafkafim-<ver>-image.digest` (the `ghcr.io/...@sha256:...` reference that was signed)
    - `kafkafim-<ver>.tgz` (the chart)
    - `kafkafim-<ver>.sbom.spdx.json`
+   - `kafkafim-<ver>-grafana/` (the Prometheus alert rules and Grafana dashboards of this
+     version, copied from [`deploy/grafana/`](../deploy/grafana/README.md):
+     `alerts/kafkafim-alerts.yaml` and `dashboards/*.json`). The workflow copies them
+     first, so a missing file fails the release before anything is published.
    - `SHA256SUMS` (every file in the bundle)
-   - `IMPORT.md` (the procedure below, with the exact version filled in)
-8. GitHub Release created with auto-generated notes.
+   - `IMPORT.md` (this document with the exact version filled in; the procedure is
+     "Importing into the air-gapped environment" below)
+8. GitHub Release created with auto-generated notes. Besides the bundle it carries the
+   SBOM, the chart, the alert rules and the dashboards as separate assets
+   (`kafkafim-alerts.yaml`, `kafkafim-overview.json`, `kafkafim-elasticsearch.json`), so
+   whoever runs Prometheus and Grafana can fetch them without the image.
+
+The chart installs no alert rules and no dashboards (no `PrometheusRule`, no dashboard
+ConfigMap): the production clusters have no Prometheus Operator CRDs. They travel in the
+bundle instead, versioned with the image (decided on #91, 2026-11-13).
 
 ## Importing into the air-gapped environment
 
@@ -271,6 +283,36 @@ their digests, and `cosign verify` and `cosign verify-attestation` pass on the c
 Keyless verification of the copy was not tested; the release's certificate and
 transparency-log entry are part of the signature manifest, which skopeo copies
 unchanged.
+
+### Alert rules and dashboards
+
+The bundle carries the Prometheus alert rules and the Grafana dashboards that match
+this version in `kafkafim-1.2.3-grafana/`, and `SHA256SUMS` covers them. `helm upgrade`
+does not install them. Load them with each import, because metric names, labels and
+thresholds can change between versions:
+
+- `alerts/kafkafim-alerts.yaml`: copy it to a path that the `rule_files:` of the
+  Prometheus inside the air gap names, then reload Prometheus (`SIGHUP`, or
+  `POST /-/reload` where `--web.enable-lifecycle` is set). For a Prometheus Operator,
+  put the file's `groups:` list under the `spec:` of a `PrometheusRule` that carries
+  the labels the Prometheus `ruleSelector` matches (without them the operator ignores
+  it silently). Where
+  `promtool` is available, check the file first:
+
+  ```bash
+  promtool check rules kafkafim-1.2.3-grafana/alerts/kafkafim-alerts.yaml
+  ```
+
+- `dashboards/kafkafim-overview.json` and `dashboards/kafkafim-elasticsearch.json`:
+  import each in Grafana (*Dashboards → New → Import*), or copy them into the directory
+  of a file provider. The UIDs are fixed (`kafkafim-overview`,
+  `kafkafim-elasticsearch`), so importing a newer version replaces the old dashboard
+  and links to it keep working. Both have a `datasource` variable; pick the
+  Prometheus-compatible data source that scrapes kafkafim.
+
+Thresholds marked "tune" in the rules file are starting points. Keep local changes to
+them as a patch applied after each import, since the next bundle's file replaces them.
+`deploy/grafana/README.md` in the repository lists every alert with its runbook section.
 
 ## Local developer loop
 

@@ -6,7 +6,9 @@ import static org.awaitility.Awaitility.await;
 import io.github.matabar.kafkafim.KafkaTestContainers;
 import io.github.matabar.kafkafim.KafkafimApplication;
 import io.github.matabar.kafkafim.dlq.DlqRecordFormat;
+import io.github.matabar.kafkafim.source.kafka.KafkaPipelineSource;
 import io.github.matabar.kafkafim.telemetry.TelemetryNames;
+import io.github.resilience4j.circuitbreaker.CircuitBreaker;
 import io.micrometer.core.instrument.MeterRegistry;
 import java.io.IOException;
 import java.net.URI;
@@ -272,6 +274,64 @@ class PipelineSupervisorIntegrationTest {
     awaitCommittedToEnd("kafkafim.c", "c.events");
     assertThat(readAll("c.events.kafkafim-dlq", Duration.ofSeconds(1))).isEmpty();
     assertThat(supervisor(app).state("c")).isIn(PipelineState.RUNNING, PipelineState.PAUSED);
+  }
+
+  /**
+   * The outage of (c), seen from the supervisor: bulk requests that fail fast enough open the
+   * cluster's breaker, the pipeline pauses for {@code es-breaker:<cluster>} and commits nothing
+   * more, and it resumes by itself once the breaker's probes are answered again.
+   */
+  @Test
+  void openBreakerPausesThePipelineUntilElasticsearchAnswersAgain() throws Exception {
+    createTopics(2, "g.events", "g.events.kafkafim-dlq");
+    // Created up front: with the 1s response timeout below, a first bulk request that also has to
+    // create the index could time out on a slow node and count against the breaker early.
+    createIndex("g-docs", "{}");
+    Map<String, Object> props =
+        new PipelineProps("g").topic("g.events").defaultRoute("g-docs").map();
+    // A paused node answers nothing: with the default 60s response timeout the breaker's ten
+    // calls would take minutes. Small batches keep several requests in flight.
+    props.put("kafkafim.elasticsearch.clusters.local.client.connect-timeout", "1s");
+    props.put("kafkafim.elasticsearch.clusters.local.client.response-timeout", "1s");
+    props.put("kafkafim.elasticsearch.clusters.local.bulk.max-docs", 5);
+    ConfigurableApplicationContext app = start(props);
+    final PipelineSupervisor supervisor = supervisor(app);
+    final MeterRegistry meters = app.getBean(MeterRegistry.class);
+    awaitState(app, "g", PipelineState.RUNNING);
+    sendDocs("g.events", "g", 0, 20);
+    await().atMost(TIMEOUT).untilAsserted(() -> assertThat(count("g-docs")).isEqualTo(20));
+    awaitCommittedToEnd("kafkafim.g", "g.events");
+    assertThat(supervisor.pauseReasons("g")).isEmpty();
+    assertThat(supervisor.breakerState("local")).isEqualTo(CircuitBreaker.State.CLOSED);
+    final KafkaPipelineSource source = supervisor.source("g");
+
+    ES.getDockerClient().pauseContainerCmd(ES.getContainerId()).exec();
+    try {
+      sendDocs("g.events", "g", 20, 120);
+      await()
+          .atMost(TIMEOUT)
+          .untilAsserted(
+              () -> assertThat(supervisor.pauseReasons("g")).containsExactly("es-breaker:local"));
+      assertThat(supervisor.state("g")).isEqualTo(PipelineState.PAUSED);
+      assertThat(gauge(meters, "g", "paused")).isEqualTo(1);
+      assertThat(gauge(meters, "g", "running")).isZero();
+      // Open, or half-open while a probe is out; never closed while the node is paused.
+      assertThat(supervisor.breakerState("local")).isNotEqualTo(CircuitBreaker.State.CLOSED);
+      // Nothing of the outage is committed or dead-lettered.
+      assertThat(committedTotal("kafkafim.g", "g.events")).isEqualTo(20);
+    } finally {
+      ES.getDockerClient().unpauseContainerCmd(ES.getContainerId()).exec();
+    }
+
+    // The breaker stays open for 10s, then its probes succeed and close it: no restart needed.
+    await().atMost(TIMEOUT).untilAsserted(() -> assertThat(supervisor.pauseReasons("g")).isEmpty());
+    awaitState(app, "g", PipelineState.RUNNING);
+    assertThat(supervisor.breakerState("local")).isEqualTo(CircuitBreaker.State.CLOSED);
+    assertThat(supervisor.source("g")).isSameAs(source);
+    await().atMost(TIMEOUT).untilAsserted(() -> assertThat(count("g-docs")).isEqualTo(120));
+    awaitCommittedToEnd("kafkafim.g", "g.events");
+    assertThat(gauge(meters, "g", "paused")).isZero();
+    assertThat(readAll("g.events.kafkafim-dlq", Duration.ofSeconds(1))).isEmpty();
   }
 
   // ---- (d) ----
