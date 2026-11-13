@@ -390,7 +390,8 @@ cancels a start in progress: it interrupts any check still waiting for an answer
 discards the verdict, and the pipeline ends `stopped`. A stop therefore never waits out
 the checks' timeouts (10s for the DLQ describe, the source's metadata timeout, 30s by
 default, for the group check, up to 15s per Elasticsearch identity); an Elasticsearch request in flight
-is cancelled. Elasticsearch answers 405 on that path when security is disabled; any
+is cancelled, and its client is closed on a thread of its own, because the client's
+graceful close can take 5s. Elasticsearch answers 405 on that path when security is disabled; any
 status other than 401, 403 and 5xx passes.
 
 The group check exists because a denied join is otherwise invisible: the listener
