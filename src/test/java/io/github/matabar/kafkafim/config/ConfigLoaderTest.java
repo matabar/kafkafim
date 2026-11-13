@@ -119,4 +119,41 @@ class ConfigLoaderTest {
         .asString()
         .contains("allow-inline-secrets=true is set on Kubernetes");
   }
+
+  @Test
+  void attachesTheRelaxedSourceSoTheCheckSeesWhatTheBinderBinds() {
+    // Not attached by the caller. A secret file that matches the placeholder only under relaxed
+    // matching sits before a literal with the exact name: once load attaches, the binder takes
+    // the file, which is what the inline-secret check accepts. Unattached, it bound the literal.
+    String yaml =
+        ConfigTestSupport.pipeline(
+            """
+            k:
+              bootstrap-servers: [k1:9092]
+              security-protocol: SASL_SSL
+              default-identity: r
+              identities:
+                r:
+                  sasl: { mechanism: PLAIN, username: u, password: "${kafka.k.r.password}" }
+            """,
+            ConfigTestSupport.ES_CLUSTERS,
+            "source: { cluster: k, topics: [t] }\n" + ConfigTestSupport.DEFAULT_ROUTE);
+    StandardEnvironment environment = new StandardEnvironment();
+    ConfigTestSupport.load(yaml).forEach(environment.getPropertySources()::addLast);
+    environment
+        .getPropertySources()
+        .addFirst(new MapPropertySource("literal", Map.of("kafka.k.r.password", "hunter2")));
+    environment
+        .getPropertySources()
+        .addFirst(
+            new ConfigTreePropertySource(
+                "configtree", ConfigTestSupport.configTree(Map.of("Kafka.K.R.Password", "file"))));
+
+    ConfigLoader.Result result = ConfigLoader.load(environment);
+
+    assertThat(result.problems()).isEmpty();
+    assertThat(
+            result.properties().kafka().clusters().get("k").identities().get("r").sasl().password())
+        .isEqualTo("file");
+  }
 }
