@@ -394,7 +394,7 @@ restart. A stop (shutdown, or a reload that restarts or removes the pipeline)
 cancels a start in progress: it interrupts any check still waiting for an answer and
 discards the verdict, and the pipeline ends `stopped`. A stop therefore never waits out
 the checks' timeouts (10s for the DLQ describe, the source's metadata timeout, 30s by
-default, for the group check, up to 15s per Elasticsearch identity); an Elasticsearch request in flight
+default, for the group and topic check, up to 15s per Elasticsearch identity); an Elasticsearch request in flight
 is cancelled, and its client is closed on a thread of its own, because the client's
 graceful close can take 5s. Elasticsearch answers 405 on that path when security is disabled; any
 status other than 401, 403 and 5xx passes.
@@ -416,7 +416,8 @@ The same admin client asks for the authorized operations on the source topics, w
 both requests in flight together under the one timeout (ADR-0039). The source's own
 start check is a metadata fetch, which `Describe` alone satisfies; without `Read` every
 fetch is denied and retried every 10s, and the pipeline would show `running`. An
-existing topic whose authorized operations lack `READ` is a configuration failure.
+existing topic whose authorized operations lack `READ` is a configuration failure; no
+operations listed passes, as for the group.
 Any failure of the topic request passes this check and is left to the source's start:
 a topic that does not exist or that the identity cannot see fails it, and so does a
 broker that answers nothing. If only the topic request fails and the source's metadata
