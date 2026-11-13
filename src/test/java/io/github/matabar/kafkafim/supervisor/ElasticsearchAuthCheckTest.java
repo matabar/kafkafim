@@ -10,6 +10,8 @@ import java.net.Socket;
 import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.AfterEach;
@@ -102,6 +104,45 @@ class ElasticsearchAuthCheckTest {
 
     assertThat(Duration.ofNanos(System.nanoTime() - began)).isLessThan(Duration.ofSeconds(2));
     assertThat(status.get().kind()).isEqualTo(Preflight.Kind.TRANSIENT);
+  }
+
+  /**
+   * The client's graceful close can take 5s when the cancelled request is not torn down yet (#181),
+   * so an interrupted check hands the close to another thread.
+   */
+  @Test
+  void interruptedCheckDoesNotWaitForTheClientToClose() throws Exception {
+    CountDownLatch closing = new CountDownLatch(1);
+    CountDownLatch release = new CountDownLatch(1);
+    AtomicBoolean closedWithFlagSet = new AtomicBoolean(true);
+    AtomicReference<Thread> closer = new AtomicReference<>();
+    AtomicBoolean callerStillInterrupted = new AtomicBoolean();
+    Thread caller =
+        Thread.ofVirtual()
+            .start(() -> {
+              Thread.currentThread().interrupt();
+              closer.set(
+                  ElasticsearchAuthCheck.closeAfterInterrupt(() -> {
+                    closedWithFlagSet.set(Thread.currentThread().isInterrupted());
+                    closing.countDown();
+                    try {
+                      release.await();
+                    } catch (InterruptedException e) {
+                      throw new IOException(e);
+                    }
+                  }));
+              callerStillInterrupted.set(Thread.currentThread().isInterrupted());
+            });
+
+    // The caller is back while the close is still in progress.
+    assertThat(caller.join(Duration.ofSeconds(5))).isTrue();
+    assertThat(closing.await(5, TimeUnit.SECONDS)).isTrue();
+    assertThat(closer.get().isAlive()).isTrue();
+    assertThat(callerStillInterrupted).isTrue();
+    assertThat(closedWithFlagSet).isFalse();
+
+    release.countDown();
+    assertThat(closer.get().join(Duration.ofSeconds(5))).isTrue();
   }
 
   @Test
