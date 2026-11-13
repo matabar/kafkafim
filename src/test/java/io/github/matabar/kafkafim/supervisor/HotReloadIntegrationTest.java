@@ -30,6 +30,7 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.apache.hc.core5.http.io.entity.EntityUtils;
 import org.apache.kafka.clients.admin.Admin;
@@ -38,6 +39,7 @@ import org.apache.kafka.clients.admin.OffsetSpec;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerRecord;
+import org.apache.kafka.clients.producer.RecordMetadata;
 import org.apache.kafka.common.TopicPartition;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
@@ -325,7 +327,8 @@ class HotReloadIntegrationTest {
     assertThat(supervisor.failure("r")).isNull();
     assertThat(gauge(meters, "r", "failed_preflight")).isZero();
     assertThat(gauge(meters, "r", "running")).isEqualTo(1);
-    assertThat(readiness(app)).isEqualTo(200);
+    // Readiness also wants the consumers connected, which follows `running` by a moment.
+    await().atMost(TIMEOUT).untilAsserted(() -> assertThat(readiness(app)).isEqualTo(200));
     // It runs for real: what waited is indexed and committed, and so is what comes next.
     sendDocs("ra.events", "r", 20, 30);
     awaitCommittedToEnd("kafkafim.r", "ra.events");
@@ -492,13 +495,18 @@ class HotReloadIntegrationTest {
     KafkaTopics.create(admin, newTopics);
   }
 
-  private static void sendDocs(String topic, String prefix, int from, int to) {
+  private static void sendDocs(String topic, String prefix, int from, int to) throws Exception {
+    List<Future<RecordMetadata>> sent = new ArrayList<>();
     for (int i = from; i < to; i++) {
-      producer.send(
-          new ProducerRecord<>(
-              topic, bytes("k" + i), bytes("{\"id\":\"" + prefix + "-" + i + "\"}")));
+      sent.add(
+          producer.send(
+              new ProducerRecord<>(
+                  topic, bytes("k" + i), bytes("{\"id\":\"" + prefix + "-" + i + "\"}"))));
     }
     producer.flush();
+    for (Future<RecordMetadata> future : sent) {
+      future.get(); // every record acknowledged, or the test fails here with the cause
+    }
   }
 
   private static void awaitCommittedToEnd(String group, String topic) {
