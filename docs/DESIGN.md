@@ -320,8 +320,8 @@ element, `kafkafim.doc-index`.
     from object layout, not a measurement. A document bound for the DLQ holds its DLQ
     request and pending send (headers, reason, futures) until the broker acknowledges
     it, roughly 1 KB or more each, and the DLQ producer serialises a copy of the
-    record value per failed document into its buffer (`buffer.memory`, Kafka's
-    default 32 MiB per producer). For ordinary documents these are small next to
+    record value per failed document into its buffer (lz4-compressed, at most
+    `buffer.memory`, Kafka's default 32 MiB per producer). For ordinary documents these are small next to
     their bytes; for a record holding many tiny documents they can be many times the
     value. Sizing: [RUNBOOK §5.10](RUNBOOK.md#510-out-of-memory-back-pressure).
 

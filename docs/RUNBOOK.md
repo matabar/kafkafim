@@ -638,9 +638,9 @@ tooling shows it too (`kafka-consumer-groups.sh --describe --group kafkafim.<pip
 
   Sizing rule, per pod: heap should cover, for each of its pipelines,
   2 × (`max-in-flight-bytes` + the one-poll overshoot) for the raw bytes and their
-  document copies, plus indexed copies in flight × ~450 B, plus consumer threads ×
-  28 × that pipeline's `max-record-bytes`; then add the bulk bodies and DLQ producer
-  buffers above. No metric counts copies in flight: estimate them as
+  document copies, plus indexed copies in flight × ~450 B, plus documents bound for
+  the DLQ × ~1 KB, plus consumer threads × 28 × that pipeline's `max-record-bytes`;
+  then add the bulk bodies and DLQ producer buffers above. No metric counts copies in flight: estimate them as
   `kafkafim_in_flight_bytes` ÷ average document size × routes per document. For
   documents of a few hundred bytes or more the per-copy term is small; for arrays of
   tiny objects, count it (or lower `max-in-flight-bytes`). Compare
