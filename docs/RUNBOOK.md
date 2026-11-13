@@ -159,7 +159,8 @@ Each pipeline on each pod is in one `PipelineState`
 | `stopped` | Not started yet, or stopped by a reload or shutdown. | Only transiently. |
 
 **Alerts**: [`KafkafimPipelinePaused`](../deploy/grafana/alerts/kafkafim-alerts.yaml) (a pipeline `paused` for 5m; the
-reason is in the log lines below, and §5 has a section per reason).
+kind of reason is in `kafkafim_pipeline_pause_reason`, the cluster or identity it names in
+the log lines below, and §5 has a section per reason).
 
 Where to read it:
 
@@ -181,8 +182,12 @@ Where to read it:
 
 - **Logs**: every transition is logged at INFO as `Pipeline '<name>': <from> -> <to>`;
   a pause as WARN `Pipeline '<name>': pausing (<reason>)` and its end as INFO
-  `Pipeline '<name>': <reason> cleared`. The **reason** of a pause is only in these log
-  lines (the metric says `paused`, not why).
+  `Pipeline '<name>': <reason> cleared`.
+- **Why it is paused**: `kafkafim_pipeline_pause_reason{pipeline,reason} == 1`, with
+  `reason` one of `es_breaker` ([§5.1](#51-elasticsearch-outage-circuit-breaker-open)),
+  `es_auth` ([§5.2](#52-elasticsearch-authentication-failure-pipeline-paused)) and
+  `dlq_blocked` ([§5.6](#56-dlq-filling-or-dlq-blocked)); more than one can be 1. It is 1
+  only while the state is `paused`. Which cluster or identity is in the log lines above.
 - **Health**: `/actuator/health/readiness` includes the `pipelines` component. With
   the packaged `show-details: when-authorized` and no authentication, the response
   shows component statuses only, not the per-pipeline states, so use the metric.
@@ -215,6 +220,7 @@ neither (`kafkafim_config_reload_total` has `result`) ([DESIGN §10](DESIGN.md#1
 | What is going to the DLQ? | `kafkafim_dlq_records_total{error_type}`, `kafkafim_item_errors_total{es_cluster,error_type,retryable}` |
 | What are drop routes discarding? | `rate(kafkafim_docs_total{outcome="dropped"}[5m])` by `route` ([§5.14](#514-documents-missing-from-elasticsearch-dropped-or-lost)) |
 | Backpressure / memory? | `kafkafim_in_flight_bytes` against the pipeline's `source.max-in-flight-bytes`; `jvm_memory_used_bytes{area="heap"}` |
+| Why is a pipeline paused? | `kafkafim_pipeline_pause_reason{reason}` (1/0 per kind: `es_breaker`, `es_auth`, `dlq_blocked`) |
 | Does this pod own partitions? Is Kafka connected? | `kafkafim_assigned_partitions`, `kafkafim_kafka_connected` (1/0) |
 
 Dashboards and alert rules for these metrics ship in `deploy/grafana/`
@@ -787,8 +793,10 @@ Current behaviour that this runbook works around; each is a follow-up, not a fea
 - **Rotated TLS files are not reloaded.** Certificate and keystore files are bound
   by path, so a content change with an unchanged path and password is `unchanged` to
   the reload; restart the pods ([§4.3](#43-rotating-a-secret)).
-- **Pause reasons are only in logs.** The metric and the health endpoint say `paused`
-  without the reason; health details are hidden by `show-details: when-authorized`.
+- **A pause reason's cluster and identity are only in logs.**
+  `kafkafim_pipeline_pause_reason` gives the kind (`es_breaker`, `es_auth`,
+  `dlq_blocked`); the health endpoint says `paused` without a reason, and its details
+  are hidden by `show-details: when-authorized`.
 - **No `validate` profile yet** ([DESIGN §5.6](DESIGN.md#56-validation-and-hot-reload),
   roadmap 0.2): an invalid configuration is found only by a running pod's reload or a
   new pod's startup.

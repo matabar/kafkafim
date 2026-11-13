@@ -195,6 +195,8 @@ new sinks report them again if the cluster is still down, and the in-flight budg
 what is fetched meanwhile. `dlq-blocked` stays until the shared DLQ writer's retries
 succeed, unless the restart gives the pipeline a new DLQ writer (§5.6), whose events are
 then the only ones that count. A pipeline that is stopping cannot be started until the stop returns.
+`kafkafim_pipeline_pause_reason` (§10) exports the kinds of reason while the pipeline is
+`paused`; a reason held for a pipeline that is not running pauses nothing yet and reads 0.
 
 - **Batching**: a batch is sealed at `bulk.max-docs`, at `bulk.max-bytes` (an action
   that would push it over seals it first, so only a single action larger than
@@ -1201,9 +1203,10 @@ Exact label sets (`telemetry/TelemetryNames`, `telemetry/PipelineMeters`):
 | `kafkafim_batch_flush_total` | `es_cluster`, `reason=docs\|bytes\|age\|explicit` | every sealed batch (`explicit`: revoke, stop) |
 | `kafkafim_e2e_latency_seconds` (histogram) | — | every Elasticsearch ack: ack time minus the Kafka record timestamp (DLQ'd documents are not counted) |
 | `kafkafim_in_flight_bytes`, `kafkafim_assigned_partitions`, `kafkafim_kafka_connected` (1/0) | — | the pipeline's running source, read on scrape |
+| `kafkafim_pipeline_pause_reason` (1/0) | `reason=es_breaker\|es_auth\|dlq_blocked` | the supervisor's pause reasons by kind, read on scrape: 1 while the pipeline is `paused` for a reason of that kind (more than one can be 1), else 0. The cluster and identity a reason names are only in the logs |
 | `kafkafim_dlq_records_total` | `error_type` | every DLQ record the broker acknowledged |
 | `kafkafim_breaker_state` | only `es_cluster`: 0 closed, 1 half-open, 2 open | the breakers the pipelines send through (the worst one while a reload leaves two generations alive) |
-| `kafkafim_pipeline_state` | only `pipeline`, `state=starting\|running\|paused\|failed_preflight\|failed\|stopped` | 1 for the current state, 0 for the others; `paused` means a supervisor reason: breaker open, identity rejected or DLQ blocked, not the byte-budget backpressure |
+| `kafkafim_pipeline_state` | only `pipeline`, `state=starting\|running\|paused\|failed_preflight\|failed\|stopped` | 1 for the current state, 0 for the others; `paused` means a supervisor reason: breaker open, identity rejected or DLQ blocked (`kafkafim_pipeline_pause_reason` says which), not the byte-budget backpressure |
 | `kafkafim_config_reload_total{result=success\|failure}`, `kafkafim_config_generation` | none | §5.6 (1 at startup, +1 per applied reload) |
 
 Label discipline: `route` is the route's `name`, or its zero-based position, never the
