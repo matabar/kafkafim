@@ -1,5 +1,6 @@
 package io.github.matabar.kafkafim.source.kafka;
 
+import io.github.matabar.kafkafim.config.KafkaClientSecurity;
 import io.github.matabar.kafkafim.config.KafkaCluster;
 import io.github.matabar.kafkafim.config.Pipeline;
 import java.util.LinkedHashMap;
@@ -12,8 +13,6 @@ import java.util.TreeSet;
 import org.apache.kafka.clients.CommonClientConfigs;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.CooperativeStickyAssignor;
-import org.apache.kafka.common.config.SaslConfigs;
-import org.apache.kafka.common.config.SslConfigs;
 import org.apache.kafka.common.serialization.ByteArrayDeserializer;
 import org.jspecify.annotations.Nullable;
 
@@ -28,8 +27,9 @@ import org.jspecify.annotations.Nullable;
  *
  * <p>The passthrough may not set a key kafkafim owns: {@link #OWNED_KEYS} always, plus the security
  * keys kafkafim derives from the cluster's {@code ssl} block or the identity's {@code sasl}/{@code
- * ssl} blocks when those blocks are present ({@link #derivedSecurityKeys}). Such a passthrough is
- * rejected with {@link IllegalArgumentException} naming only the keys, never the values.
+ * ssl} blocks when those blocks are present ({@link #derivedSecurityKeys}, built by {@link
+ * KafkaClientSecurity}, which the DLQ producer shares). Such a passthrough is rejected with {@link
+ * IllegalArgumentException} naming only the keys, never the values.
  */
 public final class ConsumerSettings {
 
@@ -52,12 +52,6 @@ public final class ConsumerSettings {
           ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG,
           ConsumerConfig.PARTITION_ASSIGNMENT_STRATEGY_CONFIG,
           ConsumerConfig.ALLOW_AUTO_CREATE_TOPICS_CONFIG);
-
-  private static final Map<String, String> PASSWORD_LOGIN_MODULES =
-      Map.of(
-          "PLAIN", "org.apache.kafka.common.security.plain.PlainLoginModule",
-          "SCRAM-SHA-256", "org.apache.kafka.common.security.scram.ScramLoginModule",
-          "SCRAM-SHA-512", "org.apache.kafka.common.security.scram.ScramLoginModule");
 
   private ConsumerSettings() {}
 
@@ -84,7 +78,7 @@ public final class ConsumerSettings {
         List.of(CooperativeStickyAssignor.class.getName()));
     derived.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, ByteArrayDeserializer.class);
     derived.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, ByteArrayDeserializer.class);
-    putSecurity(derived, cluster, identity);
+    derived.putAll(KafkaClientSecurity.properties(cluster, identity));
 
     Set<String> rejected = new TreeSet<>();
     for (String key : cluster.properties().keySet()) {
@@ -111,9 +105,7 @@ public final class ConsumerSettings {
    */
   public static Set<String> derivedSecurityKeys(
       KafkaCluster cluster, KafkaCluster.@Nullable KafkaIdentity identity) {
-    Map<String, Object> security = new LinkedHashMap<>();
-    putSecurity(security, cluster, identity);
-    return new TreeSet<>(security.keySet());
+    return new TreeSet<>(KafkaClientSecurity.properties(cluster, identity).keySet());
   }
 
   /**
@@ -140,70 +132,6 @@ public final class ConsumerSettings {
    * @return the settings with secret values masked
    */
   public static Map<String, Object> redacted(Map<String, ?> settings) {
-    Map<String, Object> copy = new LinkedHashMap<>();
-    settings.forEach(
-        (key, value) -> copy.put(key, isSecretKey(key) ? "[hidden]" : String.valueOf(value)));
-    return copy;
-  }
-
-  private static boolean isSecretKey(String key) {
-    String lower = key.toLowerCase(Locale.ROOT);
-    return lower.contains("password")
-        || lower.contains("jaas")
-        || lower.contains("secret")
-        || lower.contains("token")
-        || lower.contains("credential")
-        || lower.endsWith(".key");
-  }
-
-  private static void putSecurity(
-      Map<String, Object> target,
-      KafkaCluster cluster,
-      KafkaCluster.@Nullable KafkaIdentity identity) {
-    KafkaCluster.Trust trust = cluster.ssl();
-    if (trust != null) {
-      target.put(SslConfigs.SSL_TRUSTSTORE_LOCATION_CONFIG, trust.truststoreLocation());
-      putIfSet(target, SslConfigs.SSL_TRUSTSTORE_PASSWORD_CONFIG, trust.truststorePassword());
-      putIfSet(target, SslConfigs.SSL_TRUSTSTORE_TYPE_CONFIG, trust.truststoreType());
-    }
-    if (identity == null) {
-      return;
-    }
-    KafkaCluster.Keystore keystore = identity.ssl();
-    if (keystore != null) {
-      target.put(SslConfigs.SSL_KEYSTORE_LOCATION_CONFIG, keystore.keystoreLocation());
-      putIfSet(target, SslConfigs.SSL_KEYSTORE_PASSWORD_CONFIG, keystore.keystorePassword());
-      putIfSet(target, SslConfigs.SSL_KEY_PASSWORD_CONFIG, keystore.keyPassword());
-      putIfSet(target, SslConfigs.SSL_KEYSTORE_TYPE_CONFIG, keystore.keystoreType());
-    }
-    KafkaCluster.Sasl sasl = identity.sasl();
-    if (sasl != null) {
-      target.put(SaslConfigs.SASL_MECHANISM, sasl.mechanism());
-      String loginModule = PASSWORD_LOGIN_MODULES.get(sasl.mechanism());
-      if (loginModule != null) {
-        target.put(
-            SaslConfigs.SASL_JAAS_CONFIG,
-            loginModule
-                + " required username=\""
-                + jaasEscape(sasl.username())
-                + "\" password=\""
-                + jaasEscape(sasl.password())
-                + "\";");
-      }
-    }
-  }
-
-  private static void putIfSet(Map<String, Object> target, String key, @Nullable String value) {
-    if (value != null && !value.isEmpty()) {
-      target.put(key, value);
-    }
-  }
-
-  /** JAAS quoted-string escaping: backslash and double quote. */
-  static String jaasEscape(@Nullable String value) {
-    if (value == null) {
-      return "";
-    }
-    return value.replace("\\", "\\\\").replace("\"", "\\\"");
+    return KafkaClientSecurity.redacted(settings);
   }
 }
