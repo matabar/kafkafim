@@ -24,7 +24,8 @@ Conventions used below:
 - Logs are in two places ([DESIGN §10](DESIGN.md#logs)). The backend that receives
   OTLP (APM Server) has every pod's records, searchable by `service.instance.id` (the
   pod name), severity, logger and trace id: start there. `kubectl logs` shows the same
-  lines as plain text, one per event, with the trace and span id in brackets. Only
+  events as plain text, with the trace and span id in brackets (a multi-line message or
+  a stack trace continues on the following lines). Only
   stdout has a pod that failed to start, the last lines of a shutdown, and whatever was
   logged while the OTLP endpoint was unreachable. The log lines quoted below are the
   message of either.

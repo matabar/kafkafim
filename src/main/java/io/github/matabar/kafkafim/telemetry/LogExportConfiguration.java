@@ -5,6 +5,7 @@ import io.opentelemetry.instrumentation.logback.appender.v1_0.OpenTelemetryAppen
 import org.springframework.beans.factory.InitializingBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Profile;
 
 /**
  * Connects the {@code OTLP} appender of {@code logback-spring.xml} to the OpenTelemetry SDK that
@@ -15,8 +16,12 @@ import org.springframework.context.annotation.Configuration;
  * bridge from Logback is the one piece it leaves to the application. Until it runs, the appender
  * keeps the events logged so far and replays them. With OpenTelemetry or the log export switched
  * off, the installed SDK has no log exporter and the appender's records go nowhere.
+ *
+ * <p>Not created under the {@code validate} profile, like the other telemetry beans (DESIGN §5.6):
+ * that run exports nothing and exits, so the appender only holds its lines until then.
  */
 @Configuration(proxyBeanMethods = false)
+@Profile("!validate")
 public class LogExportConfiguration {
 
   @Bean

@@ -861,7 +861,7 @@ in `ConfigValidator`, whose messages never include values.
   checks are those of a normal start with one exception: a credential placeholder
   that nothing defines is accepted, because where the profile runs the Secrets are
   usually not mounted. Literal secrets are still rejected (§5.5). The summary is one
-  INFO line: the totals, each pipeline (Kafka cluster, identity, topics, group, DLQ
+  INFO event, printed over several lines: the totals, each pipeline (Kafka cluster, identity, topics, group, DLQ
   topic, routes with their Elasticsearch cluster, identity and index) and the secret
   names the tree expects from mounted files, each marked `(not mounted)` when it is
   missing. It never prints a secret value. So a misnamed secret passes validation and
