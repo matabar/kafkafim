@@ -48,7 +48,8 @@ import org.springframework.context.SmartLifecycle;
  * <p><b>Reload</b> ({@link #apply}, DESIGN §5.6): removed and changed pipelines drain and stop in
  * parallel; changed ones get a new context and start again, added ones start, unchanged ones are
  * not touched, except that an unchanged one in {@code failed_preflight} or {@code failed} is
- * started once more ({@link #retryFailedPipelines}).
+ * started once more ({@link #retryFailedPipelines}). An apply that fails is undone as a whole
+ * (ADR-0041).
  */
 public final class PipelineSupervisor implements SmartLifecycle {
 
@@ -271,6 +272,11 @@ public final class PipelineSupervisor implements SmartLifecycle {
    * restarted ones get the building blocks of {@code next} and start in the background, as do added
    * ones; unchanged ones keep running on what they have.
    *
+   * <p>If acquiring a context or reconfiguring a pipeline fails, nothing of {@code next} takes
+   * effect (ADR-0041): what was acquired is released, and the pipelines stopped for it that were
+   * running or starting start again on the running configuration, including those {@code next}
+   * removes. The exception is rethrown.
+   *
    * @param next the new configuration, valid as a whole
    * @param diff {@code ConfigDiff.between(properties(), next)}
    * @return the unchanged pipelines in {@code failed_preflight} or {@code failed} that were started
@@ -290,30 +296,47 @@ public final class PipelineSupervisor implements SmartLifecycle {
       for (String name : diff.restarted().keySet()) {
         toStop.add(current.get(name));
       }
+      // What the drains stop while it runs or starts: a failed apply starts those again.
+      List<PipelineRuntime> active = new ArrayList<>();
+      for (PipelineRuntime runtime : toStop) {
+        PipelineState state = runtime.state();
+        if (state.isStarted() || state == PipelineState.STARTING) {
+          active.add(runtime);
+        }
+      }
       stopAll(toStop);
 
+      // Everything is acquired before any pipeline changes, and nothing of the running
+      // configuration is released before every pipeline changed: a failure can be undone.
+      PipelineResources.Checkpoint checkpoint = resources.checkpoint();
+      Map<String, PipelineRuntime.Context> acquired = new LinkedHashMap<>();
+      Map<PipelineRuntime, PipelineRuntime.Context> replaced = new LinkedHashMap<>();
       Map<String, PipelineRuntime> updated = new LinkedHashMap<>();
       List<PipelineRuntime> toStart = new ArrayList<>();
-      for (String name : next.pipelines().keySet()) {
-        PipelineRuntime runtime = current.get(name);
-        if (runtime == null) {
-          runtime = newRuntime(name, resources.acquire(name, next));
-          toStart.add(runtime);
-        } else if (diff.restarted().containsKey(name)) {
-          PipelineRuntime.Context acquired = resources.acquire(name, next);
-          PipelineRuntime.Context previous;
-          try {
-            previous = runtime.reconfigure(acquired);
-          } catch (RuntimeException e) {
-            resources.release(acquired);
-            throw e;
+      try {
+        for (String name : next.pipelines().keySet()) {
+          if (!current.containsKey(name) || diff.restarted().containsKey(name)) {
+            acquired.put(name, resources.acquire(name, next));
           }
-          resources.release(previous);
-          toStart.add(runtime);
         }
-        updated.put(name, runtime);
+        for (String name : next.pipelines().keySet()) {
+          PipelineRuntime runtime = current.get(name);
+          PipelineRuntime.Context context = acquired.get(name);
+          if (runtime == null) {
+            runtime = newRuntime(name, context);
+            toStart.add(runtime);
+          } else if (context != null) {
+            replaced.put(runtime, runtime.reconfigure(context));
+            toStart.add(runtime);
+          }
+          updated.put(name, runtime);
+        }
+      } catch (RuntimeException e) {
+        rollBack(checkpoint, acquired.values(), replaced, active);
+        throw e;
       }
       pipelines = Collections.unmodifiableMap(updated);
+      replaced.values().forEach(resources::release);
       for (String name : diff.removed()) {
         resources.release(current.get(name).context());
         lastStates.remove(name);
@@ -330,6 +353,57 @@ public final class PipelineSupervisor implements SmartLifecycle {
       LOG.info("Shutdown in progress; {} pipeline(s) of the reload not started", toStart.size());
       return List.of();
     }
+  }
+
+  /**
+   * Undoes an apply that failed after the drains (ADR-0041), so that the running configuration
+   * stays in effect as a whole: pipelines already reconfigured get their previous context back,
+   * everything acquired for the new configuration is released, the building blocks that were
+   * current are current again, and the pipelines the drains stopped while running or starting start
+   * again. Pipelines the new configuration removes were not released yet and are among those.
+   *
+   * @param acquired every context acquired for the new configuration
+   * @param replaced the reconfigured pipelines, each with its previous context
+   * @param active the pipelines to start again
+   */
+  private void rollBack(
+      PipelineResources.Checkpoint checkpoint,
+      Collection<PipelineRuntime.Context> acquired,
+      Map<PipelineRuntime, PipelineRuntime.Context> replaced,
+      List<PipelineRuntime> active) {
+    List<PipelineRuntime.Context> toRelease = new ArrayList<>(acquired);
+    replaced.forEach((runtime, previous) -> {
+      try {
+        runtime.reconfigure(previous);
+      } catch (RuntimeException e) {
+        // Something started it meanwhile: it runs on the new context, so that one stays in use.
+        PipelineRuntime.Context kept = runtime.context();
+        toRelease.removeIf(context -> context == kept); // by identity: contexts are records
+        toRelease.add(previous);
+        LOG.warn(
+            "Pipeline '{}' was started while a failed reload was undone; it keeps the new"
+                + " configuration until the next reload",
+            runtime.name(),
+            e);
+      }
+    });
+    resources.rollback(checkpoint, toRelease);
+    if (!running) {
+      return; // a shutdown began during the drains: stop() runs next
+    }
+    List<String> started = new ArrayList<>();
+    for (PipelineRuntime runtime : active) {
+      try {
+        runtime.start();
+        started.add(runtime.name());
+      } catch (RuntimeException e) {
+        LOG.warn("Pipeline '{}' could not be started again", runtime.name(), e);
+      }
+    }
+    LOG.warn(
+        "Applying the configuration failed; the running configuration stays in effect, and the"
+            + " pipelines stopped for the reload were started again: {}",
+        started);
   }
 
   /**
