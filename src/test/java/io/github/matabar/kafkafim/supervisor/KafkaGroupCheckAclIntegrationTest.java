@@ -168,6 +168,57 @@ class KafkaGroupCheckAclIntegrationTest {
         .until(() -> check(group).kind() == Preflight.Kind.OK);
   }
 
+  /**
+   * The topic half of the check (ADR-0039): {@code Describe} without {@code Read} on a source topic
+   * passes the source's metadata fetch, and is rejected here. A topic the identity cannot see, and
+   * one that does not exist, are left to the source's start.
+   */
+  @Test
+  void describeOnlyOnTopicIsRejectedUntilReadIsGranted() throws Exception {
+    String group = "kafkafim.topics-" + UUID.randomUUID();
+    grant(ResourceType.GROUP, group, AclOperation.READ);
+    String describeOnly = "describe-only-" + UUID.randomUUID();
+    String hidden = "hidden-" + UUID.randomUUID();
+    String absent = "absent-" + UUID.randomUUID();
+    admin
+        .createTopics(
+            List.of(new NewTopic(describeOnly, 1, (short) 1), new NewTopic(hidden, 1, (short) 1)))
+        .all()
+        .get(TIMEOUT.toSeconds(), TimeUnit.SECONDS);
+    grant(ResourceType.TOPIC, describeOnly, AclOperation.DESCRIBE);
+    grant(ResourceType.TOPIC, absent, AclOperation.READ);
+    List<String> topics = List.of(TOPIC, describeOnly, hidden, absent);
+
+    Preflight.Status rejected =
+        Preflight.Status.rejected("identity may describe the topic but not read it");
+    // Until the ACLs reach the broker's authorizer, the group and the topic are still denied.
+    await()
+        .atMost(TIMEOUT)
+        .pollInterval(Duration.ofMillis(500))
+        .until(() -> {
+          Preflight.SourceAccess access = check(group, topics);
+          return access.group().kind() == Preflight.Kind.OK
+              && rejected.equals(access.topics().get(describeOnly));
+        });
+
+    assertThat(check(group, topics).topics())
+        .containsOnly(
+            Map.entry(TOPIC, Preflight.Status.OK),
+            Map.entry(describeOnly, rejected),
+            Map.entry(hidden, Preflight.Status.OK),
+            Map.entry(absent, Preflight.Status.OK));
+
+    grant(ResourceType.TOPIC, describeOnly, AclOperation.READ);
+    await()
+        .atMost(TIMEOUT)
+        .pollInterval(Duration.ofMillis(500))
+        .until(() -> check(group, topics).topics().get(describeOnly).kind() == Preflight.Kind.OK);
+  }
+
+  private static Preflight.SourceAccess check(String group, List<String> topics) {
+    return KafkaGroupCheck.check(factory, group, topics, "kafkafim-test-preflight", TIMEOUT);
+  }
+
   private static Preflight.Status check(String group) {
     return KafkaGroupCheck.check(factory, group, "kafkafim-test-preflight", TIMEOUT);
   }
