@@ -58,8 +58,9 @@ public final class ValidateProfile {
       throw new IllegalStateException(
           "No kafkafim configuration found: no Kafka cluster, no Elasticsearch cluster and no"
               + " pipeline is defined. Check that application-kafkafim.yaml is mounted where"
-              + " the image reads it (/etc/kafkafim/config/) and that the 'kafkafim' profile is"
-              + " active (--spring.profiles.active=validate,kafkafim).");
+              + " the image reads it (/etc/kafkafim/config/), that the 'kafkafim' profile is"
+              + " active (--spring.profiles.active=validate,kafkafim), and that the file"
+              + " defines clusters or pipelines.");
     }
   }
 

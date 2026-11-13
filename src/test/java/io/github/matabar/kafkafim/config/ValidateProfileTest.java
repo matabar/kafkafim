@@ -225,7 +225,12 @@ class ValidateProfileTest {
     // The image's own application.yaml always sets kafkafim.reload.*.
     ConfigTestSupport.runner("kafkafim: { reload: { enabled: true } }", Map.of())
         .withPropertyValues(VALIDATE)
-        .run(context -> assertThat(context).hasFailed());
+        .run(context -> {
+          assertThat(context).hasFailed();
+          assertThat(context.getStartupFailure())
+              .rootCause()
+              .hasMessageContaining("No kafkafim configuration found");
+        });
   }
 
   @Test
