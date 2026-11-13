@@ -175,6 +175,22 @@ class PipelineRuntimeTest {
   }
 
   @Test
+  void unexpectedExceptionWhileStartingFailsThePipelineAndLeavesItRetryable() {
+    // Closed DLQ producers answer writer() with an IllegalStateException, which no check expects.
+    first.dlqProducers().close();
+
+    runtime.start();
+
+    await()
+        .atMost(Duration.ofSeconds(10))
+        .until(() -> runtime.state() == PipelineState.FAILED_PREFLIGHT);
+    assertThat(runtime.failure()).contains("IllegalStateException");
+    // The starter was forgotten with the state, so a retry can begin at once.
+    assertThat(runtime.retryIfFailed()).isTrue();
+    runtime.stop();
+  }
+
+  @Test
   void reconfigureNeedsContextThatHasThePipeline() {
     PipelineRuntime.Context other =
         resources.acquire("b", TestConfigs.bind(yaml(A.replace("a:", "b:"))));
