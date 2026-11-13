@@ -1,4 +1,4 @@
-package io.github.matabar.kafkafim.supervisor;
+package io.github.matabar.kafkafim;
 
 import static org.awaitility.Awaitility.await;
 
@@ -14,8 +14,8 @@ import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.serialization.ByteArraySerializer;
 
-/** Topic creation and the seeding producer of the supervisor integration tests. */
-final class KafkaTopics {
+/** Topic creation and the seeding producer of every integration test. */
+public final class KafkaTopics {
 
   private static final Duration READY_TIMEOUT = Duration.ofSeconds(90);
 
@@ -34,7 +34,7 @@ final class KafkaTopics {
    *
    * @param topics topics with an explicit partition count
    */
-  static void create(Admin admin, List<NewTopic> topics)
+  public static void create(Admin admin, List<NewTopic> topics)
       throws ExecutionException, InterruptedException {
     Map<TopicPartition, OffsetSpec> partitions = new HashMap<>();
     for (NewTopic topic : topics) {
@@ -61,7 +61,7 @@ final class KafkaTopics {
    * one with {@code OUT_OF_ORDER_SEQUENCE_NUMBER} on every attempt until the delivery timeout: the
    * 120 s "Expiring 7 record(s)" of #147. With one request in flight nothing can overtake.
    */
-  static Map<String, Object> seedingProducerConfig(String bootstrapServers) {
+  public static Map<String, Object> seedingProducerConfig(String bootstrapServers) {
     Map<String, Object> config = new HashMap<>();
     config.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers);
     config.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, ByteArraySerializer.class);
