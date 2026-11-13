@@ -58,10 +58,12 @@ final class ElasticsearchAuthCheck implements Preflight.AuthCheck {
   }
 
   /**
-   * Sends the request and waits for its answer. A stop interrupts a check in progress (DESIGN
-   * §4.6): the request is then cancelled, so that closing the client finds no exchange open (a
-   * graceful close would wait for it, a forced one makes every I/O thread log a {@code
-   * ClosedSelectorException} at ERROR), and the check answers unreachable at once.
+   * Sends the request, waits for its answer and classifies its status: the client hands back every
+   * status below 500 as an ordinary response, 401 and 403 included, and reports only 5xx as a
+   * {@link ResponseException}. A stop interrupts a check in progress (DESIGN §4.6): the request is
+   * then cancelled, so that closing the client finds no exchange open (a graceful close would wait
+   * for it, a forced one makes every I/O thread log a {@code ClosedSelectorException} at ERROR),
+   * and the check answers unreachable at once.
    */
   private static Preflight.Status authenticate(Rest5Client client) {
     CompletableFuture<Response> answer = new CompletableFuture<>();
@@ -80,8 +82,7 @@ final class ElasticsearchAuthCheck implements Preflight.AuthCheck {
               }
             });
     try {
-      answer.get();
-      return Preflight.Status.OK;
+      return classify(answer.get().getStatusCode());
     } catch (InterruptedException e) {
       request.cancel();
       Thread.currentThread().interrupt();

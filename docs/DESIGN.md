@@ -378,7 +378,10 @@ application context. The DLQ topic is described with the DLQ identity
 (`DlqProducers.checkTopic`); the consumer group is described with the source identity
 (`KafkaGroupCheck`, below); each `(cluster, identity)` sends one `GET
 /_security/_authenticate` (no privilege needed) through a client built like the sink's;
-then the source starts, which fails for a missing source topic. All DLQ and
+then the source starts, which fails for a missing source topic. A source whose start
+fails after some of its consumers were created (they are created one after another)
+stops those consumers before it reports the failure, so they leave the group and a
+pipeline that did not start does not keep consuming. All DLQ and
 Elasticsearch checks run before a verdict, so one ERROR line names every problem.
 Missing or undescribable topics, a 401/403, an unknown identity or unreadable trust
 material, and a Kafka authentication or authorization error are **configuration**
@@ -1020,7 +1023,12 @@ are reported together:
   `client.response-timeout` at 1MB/s (that is, `max-bytes` in MB above
   `response-timeout` in seconds; the defaults leave a factor of 12). 1MB/s is a
   deliberately pessimistic bulk rate for a loaded cluster, so the warning catches
-  clearly mismatched settings only; it never rejects (§7, ADR-0031).
+  clearly mismatched settings only; it never rejects (§7, ADR-0031). Likewise a
+  `bulk.max-bytes` above 100MB, Elasticsearch's default `http.max_content_length`: the
+  limit applies to the body before compression, which is what `max-bytes` counts, so
+  unless the cluster raises it a full bulk request can exceed it, and is then rejected
+  with 413, split in halves and sent again (§7). A batch never exceeds `max-bytes`, so
+  100MB itself does not warn.
 
 ## 6. Scaling
 
