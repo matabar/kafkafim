@@ -272,6 +272,69 @@ class ConfigReloaderTest {
     assertThat(reloads("failure")).isEqualTo(1);
   }
 
+  /**
+   * A valid tree whose apply throws (here: the building blocks are closed, so the added pipeline
+   * cannot get any) is a failed reload: counted as {@code failure}, the generation stays, and the
+   * exception reaches the caller. The endpoint answers 503 for an {@link IllegalStateException}.
+   */
+  @Test
+  void treeThatFailsWhileBeingAppliedCountsAsFailureAndKeepsTheGeneration() {
+    final ConfigReloader reloader = start(A);
+    awaitSettled();
+    final KafkafimProperties running = supervisor.properties();
+    resources.close();
+    onDisk(A + B);
+
+    assertThatThrownBy(() -> reloader.reload("test"))
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessage("Pipeline resources are closed");
+
+    assertThat(supervisor.isRunning()).isTrue();
+    assertThat(reloads("failure")).isEqualTo(1);
+    assertThat(reloads("success")).isZero();
+    assertThat(reloader.generation()).isEqualTo(1);
+    assertThat(generationGauge()).isEqualTo(1);
+    assertThat(supervisor.properties()).isSameAs(running);
+    assertThat(supervisor.pipelineNames()).containsExactly("a");
+
+    WebEndpointResponse<ReloadResult> response = new ReloadEndpoint(reloader).reload();
+    assertThat(response.getStatus()).isEqualTo(503);
+    assertThat(response.getBody().result()).isEqualTo(ReloadResult.REJECTED);
+    assertThat(response.getBody().generation()).isEqualTo(1);
+    assertThat(response.getBody().errors()).containsExactly("Pipeline resources are closed");
+    assertThat(reloads("failure")).isEqualTo(2);
+    assertThat(reloads("success")).isZero();
+  }
+
+  /**
+   * A shutdown that begins after the reload saw a running supervisor, before {@code apply} took
+   * over: nothing was applied and nothing is wrong with the tree, so it is neither a failure nor a
+   * success.
+   */
+  @Test
+  void shutdownBeforeApplyIsNotCountedAsFailedReload() {
+    ConfigReloader reloader = start(A);
+    awaitSettled();
+    final KafkafimProperties running = supervisor.properties();
+    Environment changed = environment(yaml(A + B));
+    disk =
+        () -> {
+          supervisor.stop();
+          return changed;
+        };
+
+    assertThatThrownBy(() -> reloader.reload("test"))
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessage("The pipeline supervisor is not running");
+
+    assertThat(reloads("failure")).isZero();
+    assertThat(reloads("success")).isZero();
+    assertThat(reloader.generation()).isEqualTo(1);
+    assertThat(generationGauge()).isEqualTo(1);
+    assertThat(supervisor.properties()).isSameAs(running);
+    assertThat(supervisor.pipelineNames()).containsExactly("a");
+  }
+
   @Test
   void parseErrorsKeepOnlyTheirFirstLine() {
     assertThat(
