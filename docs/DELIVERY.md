@@ -290,7 +290,9 @@ thresholds can change between versions:
 - `alerts/kafkafim-alerts.yaml`: copy it to a path that the `rule_files:` of the
   Prometheus inside the air gap names, then reload Prometheus (`SIGHUP`, or
   `POST /-/reload` where `--web.enable-lifecycle` is set). For a Prometheus Operator,
-  put the file's `groups:` list under the `spec:` of a `PrometheusRule`. Where
+  put the file's `groups:` list under the `spec:` of a `PrometheusRule` that carries
+  the labels the Prometheus `ruleSelector` matches (without them the operator ignores
+  it silently). Where
   `promtool` is available, check the file first:
 
   ```bash
