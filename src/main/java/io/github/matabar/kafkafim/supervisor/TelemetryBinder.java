@@ -4,9 +4,11 @@ import io.github.matabar.kafkafim.config.KafkafimProperties;
 import io.github.matabar.kafkafim.config.Pipeline;
 import io.github.matabar.kafkafim.source.kafka.KafkaPipelineSource;
 import io.github.matabar.kafkafim.telemetry.KafkafimMeters;
+import io.github.matabar.kafkafim.telemetry.PauseReason;
 import io.github.matabar.kafkafim.telemetry.PipelineSpec;
 import io.github.matabar.kafkafim.telemetry.SourceProbe;
 import java.util.ArrayList;
+import java.util.EnumSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -79,6 +81,29 @@ final class TelemetryBinder {
     return connections;
   }
 
+  /**
+   * The kinds of reason a pipeline in {@code state} is paused for: {@code es-breaker:<cluster>} and
+   * {@code es-auth:<cluster>/<identity>} lose what they name, so the {@code reason} label set is
+   * fixed. Empty unless the state is {@code paused}: the supervisor also holds reasons for a
+   * pipeline that is not running (they apply when its source starts), and those pause nothing yet.
+   */
+  static Set<PauseReason> kinds(PipelineState state, Set<String> reasons) {
+    Set<PauseReason> kinds = EnumSet.noneOf(PauseReason.class);
+    if (state != PipelineState.PAUSED) {
+      return kinds;
+    }
+    for (String reason : reasons) {
+      if (reason.startsWith(PipelineRuntime.BREAKER_REASON_PREFIX)) {
+        kinds.add(PauseReason.ES_BREAKER);
+      } else if (reason.startsWith(PipelineRuntime.AUTH_REASON_PREFIX)) {
+        kinds.add(PauseReason.ES_AUTH);
+      } else if (reason.equals(PipelineRuntime.DLQ_BLOCKED_REASON)) {
+        kinds.add(PauseReason.DLQ_BLOCKED);
+      }
+    }
+    return kinds;
+  }
+
   /** The current source of one pipeline, read on every call. */
   private final class Probe implements SourceProbe {
 
@@ -110,6 +135,19 @@ final class TelemetryBinder {
     public boolean started() {
       PipelineState state = supervisor.stateOrNull(pipeline);
       return state != null && state.isStarted();
+    }
+
+    @Override
+    public Set<PauseReason> pauseReasons() {
+      PipelineState state = supervisor.stateOrNull(pipeline);
+      if (state != PipelineState.PAUSED) {
+        return Set.of();
+      }
+      try {
+        return kinds(state, supervisor.pauseReasons(pipeline));
+      } catch (IllegalArgumentException e) {
+        return Set.of(); // a reload removed the pipeline between the two reads
+      }
     }
   }
 }

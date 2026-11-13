@@ -58,6 +58,12 @@ public final class TelemetryNames {
   /** {@code kafkafim_kafka_connected{pipeline,kafka_cluster}}: 1 or 0. */
   public static final String KAFKA_CONNECTED = "kafkafim.kafka.connected";
 
+  /**
+   * {@code kafkafim_pipeline_pause_reason{pipeline,kafka_cluster,reason}}: 1 while the pipeline is
+   * paused for a reason of that kind ({@link PauseReason}), else 0.
+   */
+  public static final String PAUSE_REASON = "kafkafim.pipeline.pause.reason";
+
   /** {@code kafkafim_dlq_records_total{pipeline,kafka_cluster,error_type}}. */
   public static final String DLQ_RECORDS = "kafkafim.dlq.records";
 
@@ -100,6 +106,9 @@ public final class TelemetryNames {
           Map.entry(IN_FLIGHT_BYTES, "Key plus value bytes delivered and not yet completed"),
           Map.entry(ASSIGNED_PARTITIONS, "Partitions assigned to this pod's consumers"),
           Map.entry(KAFKA_CONNECTED, "1 while the pipeline's consumers hold broker connections"),
+          Map.entry(
+              PAUSE_REASON,
+              "1 while the pipeline is paused for this kind of supervisor reason, else 0"),
           Map.entry(DLQ_RECORDS, "DLQ records acknowledged by the broker, by error type"));
 
   private TelemetryNames() {}
