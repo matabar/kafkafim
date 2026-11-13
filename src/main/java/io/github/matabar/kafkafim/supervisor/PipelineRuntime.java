@@ -321,9 +321,13 @@ final class PipelineRuntime {
     } catch (RuntimeException e) {
       LOG.error("Pipeline '{}': start failed unexpectedly", name, e);
       synchronized (lock) {
-        failure = e.toString();
-        setState(PipelineState.FAILED_PREFLIGHT);
-        finishStart();
+        // Only while this thread is still the starter: once it published its outcome
+        // (finishStart), a retry may have begun a newer start, whose state this must not replace.
+        if (starter == Thread.currentThread()) {
+          failure = e.toString();
+          setState(PipelineState.FAILED_PREFLIGHT);
+          finishStart();
+        }
       }
     } finally {
       synchronized (lock) {
