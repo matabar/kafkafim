@@ -370,8 +370,8 @@ retries (1s doubling to 30s), so a pod that starts during a short outage needs n
 restart. A stop (shutdown, or a reload that restarts or removes the pipeline)
 cancels a start in progress: it interrupts any check still waiting for an answer and
 discards the verdict, and the pipeline ends `stopped`. A stop therefore never waits out
-the checks' timeouts (10s for the DLQ describe, the source's metadata timeout for the
-group check, up to 15s per Elasticsearch identity); an Elasticsearch request in flight
+the checks' timeouts (10s for the DLQ describe, the source's metadata timeout, 30s by
+default, for the group check, up to 15s per Elasticsearch identity); an Elasticsearch request in flight
 is cancelled. Elasticsearch answers 405 on that path when security is disabled; any
 status other than 401, 403 and 5xx passes.
 

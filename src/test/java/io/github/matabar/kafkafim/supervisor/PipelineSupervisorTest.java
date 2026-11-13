@@ -287,7 +287,8 @@ class PipelineSupervisorTest {
   @Test
   void stopInterruptsPreflightChecksWaitingForServersThatNeverAnswer() throws Exception {
     // Both the broker and the Elasticsearch cluster accept connections and never answer, so the
-    // DLQ describe and the _security/_authenticate request would each wait out a 10s timeout.
+    // DLQ describe and the _security/_authenticate request would each wait out a 10s timeout, and
+    // the consumer group describe the source's metadata timeout (30s).
     try (ServerSocket silent = new ServerSocket(0, 50, InetAddress.getLoopbackAddress())) {
       List<Socket> accepted = new CopyOnWriteArrayList<>();
       Thread acceptor =

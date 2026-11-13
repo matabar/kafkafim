@@ -158,8 +158,10 @@ final class KafkaGroupCheck {
    * Closes the admin client with the interrupt flag cleared, then restores it: a stop interrupts a
    * check in progress, and an interrupted close would stop waiting for the client's I/O thread and
    * leave it running. No grace period: the verdict is in, or the check was abandoned on a timeout
-   * or a stop, so a pending describe is failed at once (the close still joins the I/O thread). A
-   * grace period would make a stop wait it out against a broker that never answers.
+   * or a stop, so a pending describe is failed at once. The close still joins the I/O thread,
+   * without a bound: that relies on the thread exiting promptly once woken, as it does when only
+   * calls are pending. A grace period would make a stop wait it out against a broker that never
+   * answers.
    */
   private static void close(Admin admin) {
     boolean interrupted = Thread.interrupted();
