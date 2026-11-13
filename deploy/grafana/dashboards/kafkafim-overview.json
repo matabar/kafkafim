@@ -364,7 +364,7 @@
       "type": "stat",
       "id": 29,
       "title": "failed (pod \u00d7 pipeline)",
-      "description": "Count of (pod, pipeline) pairs whose kafkafim_pipeline_state{state=\"failed\"} is 1: the pipeline stopped after failing while it ran, and stays so until a reload or a restart (RUNBOOK \u00a75.13).",
+      "description": "Count of (pod, pipeline) pairs whose kafkafim_pipeline_state{state=\"failed\"} is 1: the pipeline stopped after failing while it ran, and stays so until an accepted reload or a pod restart (RUNBOOK \u00a75.13).",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
