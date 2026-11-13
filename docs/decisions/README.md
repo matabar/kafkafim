@@ -43,3 +43,4 @@ One file per decision, MADR-style. Supersede with a new ADR rather than editing 
 | [0037](0037-routes-can-drop-documents.md) | Routes can drop documents (`drop: true`); in `route-mode: all` a drop cancels every other copy; no `allow-drop` switch (refines 0009 and 0006) |
 | [0038](0038-preflight-checks-consumer-group-permission.md) | Preflight checks the consumer group permission with one `DescribeGroups` (authorized operations); a never-joined group passes (refines 0021) |
 | [0039](0039-preflight-checks-read-on-the-source-topics.md) | Preflight checks `Read` on the source topics with the group check's admin client (`describeTopics`, authorized operations); missing or invisible topics stay with the source's start (refines 0038) |
+| [0040](0040-validate-profile-accepts-unmounted-secrets.md) | The `validate` profile accepts secrets that are not mounted and lists the names it expects; it starts no pipeline, web server or telemetry export (refines 0012 and 0018) |
