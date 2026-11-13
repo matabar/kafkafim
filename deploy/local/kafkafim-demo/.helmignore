@@ -7,3 +7,6 @@
 # The production chart's own test inputs (its .helmignore is not read for a subchart).
 charts/kafkafim/ci/
 charts/kafkafim/tests/
+charts/*.tgz
+Chart.lock
+.gitignore

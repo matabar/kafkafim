@@ -21,7 +21,7 @@ One release, `kafkafim`, in namespace `kafkafim-demo`:
 
 | Piece | From | Notes |
 |---|---|---|
-| `kafka` | [templates/kafka.yaml](kafkafim-demo/templates/kafka.yaml) | `apache/kafka:4.1.0`, one KRaft node, no persistence. SASL/PLAIN on `kafka:9092` for kafkafim; plaintext on the pod's loopback for the demo's own `kubectl exec` commands. Topic auto-creation off. |
+| `kafka` | [templates/kafka.yaml](kafkafim-demo/templates/kafka.yaml) | `apache/kafka:4.1.0`, one KRaft node, data in the pod's `emptyDir` only. SASL/PLAIN on `kafka:9092` for kafkafim; plaintext on the pod's loopback for the demo's own `kubectl exec` commands. Topic auto-creation off. |
 | Topics `demo.events`, `demo.events.kafkafim-dlq` | the `topics` container of the `kafka` pod | kafkafim never creates topics (ADR-0021). The pod becomes ready, and the `kafka` Service gets its endpoint, only once they exist, so kafkafim never sees the broker without them. |
 | `elasticsearch` | [templates/elasticsearch.yaml](kafkafim-demo/templates/elasticsearch.yaml) | `elasticsearch:8.19.0`, single node, security on (basic auth), TLS off, no persistence. |
 | `lgtm` | [templates/lgtm.yaml](kafkafim-demo/templates/lgtm.yaml) | `grafana/otel-lgtm:0.11.0` (the Compose version): OpenTelemetry Collector, Prometheus, Tempo, Loki and Grafana in one container, no persistence. Both dashboards of [deploy/grafana](../grafana/README.md) are loaded into the *kafkafim* folder. |
@@ -41,9 +41,9 @@ Desktop's Kubernetes (kubeadm mode, which shares Docker's images). JDK 27 to bui
 jar, as for the rest of the repository. With Nix:
 `nix shell nixpkgs#kind nixpkgs#kubectl nixpkgs#kubernetes-helm`.
 
-Memory: the four pods request about 3.3 GiB and are limited to about 4.4 GiB (Kafka
-768 Mi + 256 Mi for its topics container, Elasticsearch 1 Gi, LGTM 1.5 Gi, kafkafim
-768 Mi). Give Docker at least 6 GiB.
+Memory: the four pods request about 3.75 GiB and are limited to about 4.25 GiB (Kafka
+768 Mi + 256 Mi for its topics container, Elasticsearch 1 Gi, LGTM 1 Gi requested and
+1.5 Gi limit, kafkafim 768 Mi). Give Docker at least 6 GiB.
 
 ## Run it
 
@@ -87,7 +87,7 @@ kubectl --context kind-kafkafim-demo -n kafkafim-demo port-forward svc/lgtm 3000
 
 Then open <http://localhost:3000>:
 
-- *Dashboards → kafkafim*: **kafkafim overview** and **kafkafim Elasticsearch**. Run
+- *Dashboards → kafkafim*: **kafkafim / Overview** and **kafkafim / Elasticsearch**. Run
   `demo.sh smoke` a few times first; metrics arrive every 15s, and rate panels need two
   samples.
 - *Explore → Tempo*: search for `service.name = kafkafim` to see a record's trace.
@@ -134,6 +134,8 @@ Docker Desktop for Mac (7.7 GiB):
   #182.
 - Running the same `helm upgrade --install` again kept both generated passwords, and
   `smoke` passed after it.
+- After a restart of the broker container alone (SIGTERM to the broker; same pod,
+  restart count 1) the topics were still there and `smoke` passed.
 - `demo.sh down`. `helm lint` passes and the rendered chart passes `kubeconform -strict`.
 
 `CLUSTER=docker-desktop` has not been run.

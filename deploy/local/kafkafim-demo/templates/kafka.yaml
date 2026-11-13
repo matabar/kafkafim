@@ -1,5 +1,5 @@
 {{- $labels := include "kafkafim-demo.labels" (dict "root" . "name" "kafka") }}
-# One single-node KRaft broker, no persistence. Production points charts/kafkafim at an
+# One single-node KRaft broker, no persistence beyond the pod. Production points charts/kafkafim at an
 # existing cluster; that chart never deploys Kafka (ADR-0015).
 apiVersion: v1
 kind: Service
@@ -70,6 +70,9 @@ spec:
             - { name: KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS, value: "0" }
             - { name: KAFKA_AUTO_CREATE_TOPICS_ENABLE, value: "false" }   # as in production (ADR-0021)
             - { name: KAFKA_HEAP_OPTS, value: "-Xms384m -Xmx384m" }
+            - { name: KAFKA_LOG_DIRS, value: /var/lib/kafka/data }
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/kafka/data }
           readinessProbe:
             tcpSocket: { port: client }
             periodSeconds: 5
@@ -80,8 +83,9 @@ spec:
         # Creates the demo topics over the loopback listener, then idles. Its readiness
         # gates the pod's: the kafka Service has no endpoint until the topics exist, so
         # kafkafim's preflight sees "broker unreachable" (transient, retried) and never
-        # "topic missing" (failed_preflight until a reload). No persistence, so a restarted
-        # broker pod creates them again.
+        # "topic missing" (failed_preflight until a reload). The broker's data is in the
+        # pod's emptyDir: it survives a restart of the kafka container (so the topics do
+        # too) and is gone with the pod, whose replacement creates the topics again.
         - name: topics
           image: {{ .Values.kafka.image | quote }}
           env:
@@ -109,3 +113,6 @@ spec:
           resources:
             requests: { cpu: 50m, memory: 256Mi }
             limits: { memory: 256Mi }
+      volumes:
+        - name: data
+          emptyDir: {}

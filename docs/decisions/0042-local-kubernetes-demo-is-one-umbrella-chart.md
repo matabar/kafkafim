@@ -3,7 +3,7 @@
 Status: accepted · Date: 2026-11-13 · Refines [ADR-0015](0015-local-dev-compose-and-k8s-demo.md)
 
 ## Context
-The local Kubernetes demo was three steps hidden in `demo.sh`: create two Secrets,
+The local Kubernetes demo was four steps hidden in `demo.sh`: create two Secrets,
 `kubectl apply` a manifest with Kafka and Elasticsearch, create the topics with
 `kubectl exec`, then install `charts/kafkafim`. It had no observability stack, so OTLP
 export was switched off and neither dashboard could be shown.
@@ -19,9 +19,10 @@ hand. Locally, the whole thing must come up with a single `helm install` (#180),
   production chart as a subchart, configured under the `kafkafim:` key.
 - `charts/kafkafim` is unchanged and still deploys only kafkafim (ADR-0015). The demo
   chart is not packaged or released.
-- The subchart is a symlink (`charts/kafkafim` → the repository's `charts/kafkafim`), not
-  a `file://` dependency fetched by `helm dependency build`: no extra step before the
-  install and no packaged copy that can go stale.
+- The subchart is a symlink (`charts/kafkafim` → the repository's `charts/kafkafim`).
+  `Chart.yaml` declares the dependency, and the symlink satisfies it, so it is not
+  fetched with `helm dependency build`: no extra step before the install and no packaged
+  copy that can go stale.
 - The dashboards and their Grafana provider are read with `.Files` through symlinks into
   `deploy/grafana`, and rendered into ConfigMaps mounted as in `compose.yaml`. There is
   one copy of each dashboard in the repository.
