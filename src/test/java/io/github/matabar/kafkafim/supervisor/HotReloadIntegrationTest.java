@@ -15,6 +15,7 @@ import io.github.matabar.kafkafim.config.ElasticsearchCluster.ElasticsearchIdent
 import io.github.matabar.kafkafim.sink.es.ClientSettings;
 import io.github.matabar.kafkafim.sink.es.ElasticsearchClients;
 import io.github.matabar.kafkafim.source.kafka.KafkaPipelineSource;
+import io.github.matabar.kafkafim.telemetry.TelemetryNames;
 import io.micrometer.core.instrument.MeterRegistry;
 import java.io.IOException;
 import java.net.URI;
@@ -394,6 +395,15 @@ class HotReloadIntegrationTest {
     assertThat(supervisor.state("pa")).isEqualTo(PipelineState.PAUSED);
     assertThat(gauge(meters, "pa", "paused")).isEqualTo(1);
     assertThat(gauge(meters, "pa", "running")).isZero();
+    // The kind of the reason, not its cluster and identity (#191).
+    assertThat(
+            meters
+                .get(TelemetryNames.PAUSE_REASON)
+                .tag("pipeline", "pa")
+                .tag("reason", "es_auth")
+                .gauge()
+                .value())
+        .isEqualTo(1);
     // The same cluster through another identity is not affected.
     awaitCommittedToEnd("kafkafim.pb", "pb.events");
     assertThat(count("pb-docs")).isEqualTo(10);
@@ -515,11 +525,13 @@ class HotReloadIntegrationTest {
     }
   }
 
+  // The actuator calls ask 127.0.0.1, not localhost: the context listens on an ephemeral port that
+  // a Docker-published port of another container can share on another address (#211, #222).
   private static HttpResponse<String> postReload(ConfigurableApplicationContext app)
       throws IOException, InterruptedException {
     String port = app.getEnvironment().getProperty("local.server.port");
     return http.send(
-        HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/actuator/reload"))
+        HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + "/actuator/reload"))
             .POST(HttpRequest.BodyPublishers.noBody())
             .timeout(TIMEOUT)
             .build(),
@@ -531,7 +543,7 @@ class HotReloadIntegrationTest {
     String port = app.getEnvironment().getProperty("local.server.port");
     return http.send(
             HttpRequest.newBuilder(
-                    URI.create("http://localhost:" + port + "/actuator/health/readiness"))
+                    URI.create("http://127.0.0.1:" + port + "/actuator/health/readiness"))
                 .timeout(TIMEOUT)
                 .build(),
             HttpResponse.BodyHandlers.discarding())

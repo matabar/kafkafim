@@ -100,8 +100,9 @@ Then open <http://localhost:3000>:
   (`MANAGEMENT_TRACING_SAMPLING_PROBABILITY=1.0` in the demo values); the application
   default keeps 1% of batches and every failed one. Health probes are traced too, so a
   search by `service.name` alone returns mostly those.
-- *Explore → Loki*: kafkafim's logs, once the application exports logs over OTLP (#182).
-  They use the same endpoint, so the demo needs no change.
+- *Explore → Loki*: kafkafim's logs, which the application exports over OTLP to the
+  same endpoint as metrics and traces. Query `{service_name="kafkafim"}`; the stream
+  labels are `service_name`, `service_namespace` and `service_instance_id`.
 
 kafkafim itself:
 
@@ -143,8 +144,11 @@ On 2026-11-14, on the branch with main `34accd9` merged, with kind 0.33.0 (node 
   each with its `es.bulk` child span (`http.response.status_code` 200,
   `kafkafim.pipeline` `demo`). Before the demo sampled every batch, the same run with
   ten records had no batch trace.
-- Loki has no kafkafim logs yet: the application does not export logs over OTLP before
-  #182.
+- Loki (on 2026-11-14, a new cluster on main `c29bf90`, which exports logs over OTLP,
+  two `smoke` runs): the `service_name` label had the value `kafkafim`, and the query
+  `{service_name="kafkafim"}` through Grafana's Loki data source returned kafkafim's
+  log lines (Kafka consumer subscription messages, for example offset resets). Checked through the
+  data source's HTTP API, not in the *Explore* page.
 - Running the same `helm upgrade --install` again kept both generated passwords, and
   `smoke` passed after it.
 - After a restart of the broker container alone (SIGTERM to the broker; same pod,
