@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 
 import io.github.matabar.kafkafim.KafkaTestContainers;
+import io.github.matabar.kafkafim.KafkaTopics;
 import io.github.matabar.kafkafim.KafkafimApplication;
 import io.github.matabar.kafkafim.telemetry.BatchTracer;
 import io.opentelemetry.api.common.AttributeKey;
@@ -31,11 +32,9 @@ import org.apache.kafka.clients.admin.NewTopic;
 import org.apache.kafka.clients.admin.OffsetSpec;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.clients.producer.KafkaProducer;
-import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.header.internals.RecordHeader;
-import org.apache.kafka.common.serialization.ByteArraySerializer;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
@@ -113,11 +112,7 @@ class TelemetryIntegrationTest {
   static void startContainers() {
     Startables.deepStart(KAFKA, ES).join();
     admin = Admin.create(Map.of("bootstrap.servers", KAFKA.getBootstrapServers()));
-    Map<String, Object> producerConfig = new HashMap<>();
-    producerConfig.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, KAFKA.getBootstrapServers());
-    producerConfig.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, ByteArraySerializer.class);
-    producerConfig.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, ByteArraySerializer.class);
-    producer = new KafkaProducer<>(producerConfig);
+    producer = new KafkaProducer<>(KafkaTopics.seedingProducerConfig(KAFKA.getBootstrapServers()));
     http = HttpClient.newHttpClient();
   }
 
@@ -143,13 +138,11 @@ class TelemetryIntegrationTest {
 
   @Test
   void prometheusSpansAndProbesAfterRealTraffic() throws Exception {
-    admin
-        .createTopics(
-            List.of(
-                new NewTopic(TOPIC, 2, (short) 1),
-                new NewTopic(TOPIC + ".kafkafim-dlq", 1, (short) 1)))
-        .all()
-        .get();
+    KafkaTopics.create(
+        admin,
+        List.of(
+            new NewTopic(TOPIC, 2, (short) 1),
+            new NewTopic(TOPIC + ".kafkafim-dlq", 1, (short) 1)));
     es(
         "PUT",
         "/tel-docs",

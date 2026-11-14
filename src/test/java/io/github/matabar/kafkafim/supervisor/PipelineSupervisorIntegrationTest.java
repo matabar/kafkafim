@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 
 import io.github.matabar.kafkafim.KafkaTestContainers;
+import io.github.matabar.kafkafim.KafkaTopics;
 import io.github.matabar.kafkafim.KafkafimApplication;
 import io.github.matabar.kafkafim.dlq.DlqRecordFormat;
 import io.github.matabar.kafkafim.source.kafka.KafkaPipelineSource;
@@ -448,13 +449,11 @@ class PipelineSupervisorIntegrationTest {
       String bootstrap = oneMemberGroups.getBootstrapServers();
       try (Admin ownAdmin = Admin.create(Map.of("bootstrap.servers", bootstrap));
           KafkaConsumer<byte[], byte[]> member = consumer(bootstrap, "kafkafim.f")) {
-        ownAdmin
-            .createTopics(
-                List.of(
-                    new NewTopic("f.events", 1, (short) 1),
-                    new NewTopic("f.events.kafkafim-dlq", 1, (short) 1)))
-            .all()
-            .get();
+        KafkaTopics.create(
+            ownAdmin,
+            List.of(
+                new NewTopic("f.events", 1, (short) 1),
+                new NewTopic("f.events.kafkafim-dlq", 1, (short) 1)));
         member.subscribe(List.of("f.events"));
         await()
             .atMost(TIMEOUT)

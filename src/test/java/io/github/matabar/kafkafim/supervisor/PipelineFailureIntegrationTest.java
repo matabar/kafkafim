@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 
 import io.github.matabar.kafkafim.KafkaTestContainers;
+import io.github.matabar.kafkafim.KafkaTopics;
 import io.github.matabar.kafkafim.config.KafkafimProperties;
 import io.github.matabar.kafkafim.source.kafka.KafkaPipelineSource;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
@@ -43,13 +44,11 @@ class PipelineFailureIntegrationTest {
   void startPipeline() throws Exception {
     String topic = "t-" + UUID.randomUUID().toString().substring(0, 8);
     try (Admin admin = Admin.create(Map.of("bootstrap.servers", KAFKA.getBootstrapServers()))) {
-      admin
-          .createTopics(
-              List.of(
-                  new NewTopic(topic, 1, (short) 1),
-                  new NewTopic(topic + ".kafkafim-dlq", 1, (short) 1)))
-          .all()
-          .get();
+      KafkaTopics.create(
+          admin,
+          List.of(
+              new NewTopic(topic, 1, (short) 1),
+              new NewTopic(topic + ".kafkafim-dlq", 1, (short) 1)));
     }
     KafkafimProperties properties =
         TestConfigs.bind(
