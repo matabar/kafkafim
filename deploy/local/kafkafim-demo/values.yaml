@@ -1,0 +1,103 @@
+# Local Kubernetes demo (deploy/local/README.md). One release: Kafka, Elasticsearch,
+# Grafana LGTM (templates/ of this chart) and kafkafim (the production chart, as the
+# `kafkafim` subchart). Resource names are fixed (kafka, elasticsearch, lgtm), so install
+# it once per namespace.
+
+kafka:
+  # JVM image: the native image cannot authenticate SASL clients. Same version as compose.yaml.
+  image: apache/kafka:4.1.0
+  # kafkafim never creates topics (ADR-0021); the broker pod creates these before it
+  # becomes ready, standing in for the team's provisioning.
+  topics: [demo.events, demo.events.kafkafim-dlq]
+  partitions: 3
+
+elasticsearch:
+  image: docker.elastic.co/elasticsearch/elasticsearch:8.19.0   # as compose.yaml
+
+lgtm:
+  image: grafana/otel-lgtm:0.11.0   # as compose.yaml
+
+# Values of charts/kafkafim. Same shape as a production values-<cluster>.yaml: no literal
+# secret, every credential a ${...} placeholder resolved from a mounted Secret through
+# configtree:/etc/kafkafim/secrets/.
+kafkafim:
+  image:
+    registry: ""                 # the locally built kafkafim:dev, loaded into the cluster
+    repository: kafkafim
+    tag: dev
+    pullPolicy: Never
+
+  config:
+    kafkafim:
+      kafka:
+        clusters:
+          demo:
+            bootstrap-servers: [kafka:9092]
+            security-protocol: SASL_PLAINTEXT
+            identities:
+              kafkafim:
+                sasl:
+                  mechanism: PLAIN
+                  username: ${kafka.demo.kafkafim.username}
+                  password: ${kafka.demo.kafkafim.password}
+            default-identity: kafkafim
+      elasticsearch:
+        clusters:
+          demo:
+            uris: [http://elasticsearch:9200]
+            identities:
+              kafkafim:
+                username: ${elasticsearch.demo.kafkafim.username}
+                password: ${elasticsearch.demo.kafkafim.password}
+            default-identity: kafkafim
+      pipelines:
+        demo:                    # the same pipeline as the compose demo (application-local.yaml)
+          source:
+            cluster: demo
+            topics: [demo.events]
+            offset-reset: earliest
+          document:
+            id-field: /id
+            timestamp-field: /@timestamp
+            timestamp-format: iso-8601
+            on-bad-timestamp: dlq
+          routes:
+            - when:
+                - { field: /region, equals: eu }
+              cluster: demo
+              index: "demo-eu-%{+yyyy.MM.dd}"
+            - default: true
+              cluster: demo
+              index: "demo-%{region}-%{+yyyy.MM}"
+          route-mode: first
+          dlq:
+            topic: demo.events.kafkafim-dlq
+
+  # Created by templates/secrets.yaml with random passwords; the broker and Elasticsearch
+  # read the same ones.
+  secrets:
+    - name: kafka-demo-kafkafim
+      mountPath: /etc/kafkafim/secrets/kafka/demo.kafkafim
+    - name: es-demo-kafkafim
+      mountPath: /etc/kafkafim/secrets/elasticsearch/demo.kafkafim
+
+  groups:
+    demo:
+      pipelines: [demo]
+      replicas: 1
+      allowSingleReplica: true   # a laptop; production groups run >= 2
+
+  resources:
+    requests: { cpu: 250m, memory: 768Mi }
+    limits: { memory: 768Mi }
+
+  # The one OTLP endpoint value: every signal kafkafim exports over OTLP goes to the
+  # in-cluster Grafana LGTM (in production: the external APM Server).
+  otel:
+    endpoint: http://lgtm:4318
+
+  # Trace every batch. The application default keeps 1% of batches and every failed one
+  # (ADR-0029), which leaves a demo with a handful of records without a trace to look at.
+  extraEnv:
+    - name: MANAGEMENT_TRACING_SAMPLING_PROBABILITY
+      value: "1.0"

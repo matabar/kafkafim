@@ -1,0 +1,15 @@
+apiVersion: v2
+name: kafkafim-demo
+description: >-
+  Local demo only: kafkafim (the production chart, unchanged) plus a single-node Kafka,
+  Elasticsearch and Grafana LGTM in one release. Never install this in production.
+type: application
+version: 0.0.0-dev
+appVersion: 0.0.0-dev
+home: https://github.com/matabar/kafkafim
+# charts/kafkafim is a symlink to the production chart in this repository, so there is no
+# `helm dependency build` step and no packaged copy to go stale.
+dependencies:
+  - name: kafkafim
+    version: 0.0.0-dev
+    repository: file://../../../charts/kafkafim
