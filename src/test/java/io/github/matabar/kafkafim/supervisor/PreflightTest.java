@@ -240,8 +240,6 @@ class PreflightTest {
   void topicOperationsClassification() {
     assertThat(KafkaGroupCheck.classifyTopic(Set.of(AclOperation.READ, AclOperation.DESCRIBE)))
         .isEqualTo(Preflight.Status.OK);
-    assertThat(KafkaGroupCheck.classifyTopic(Set.of(AclOperation.ALL)))
-        .isEqualTo(Preflight.Status.OK);
     // An old broker lists nothing: it cannot say, so the first fetch is the check.
     assertThat(KafkaGroupCheck.classifyTopic(null)).isEqualTo(Preflight.Status.OK);
     // Nor can one that answers an empty list instead of leaving it out (#176).
@@ -270,8 +268,6 @@ class PreflightTest {
   @Test
   void groupOperationsClassification() {
     assertThat(KafkaGroupCheck.classify(Set.of(AclOperation.READ, AclOperation.DESCRIBE)).kind())
-        .isEqualTo(Preflight.Kind.OK);
-    assertThat(KafkaGroupCheck.classify(Set.of(AclOperation.ALL)).kind())
         .isEqualTo(Preflight.Kind.OK);
     // A broker that lists no operations cannot say: the first join is the check.
     assertThat(KafkaGroupCheck.classify(null).kind()).isEqualTo(Preflight.Kind.OK);

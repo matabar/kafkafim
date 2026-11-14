@@ -123,15 +123,4 @@ public final class ConsumerSettings {
         ConsumerConfig.MAX_POLL_RECORDS_CONFIG, String.valueOf(source.maxPollRecords()));
     return properties;
   }
-
-  /**
-   * A printable copy of settings: values of keys that may carry secrets are replaced, so the result
-   * is safe to log.
-   *
-   * @param settings consumer settings
-   * @return the settings with secret values masked
-   */
-  public static Map<String, Object> redacted(Map<String, ?> settings) {
-    return KafkaClientSecurity.redacted(settings);
-  }
 }

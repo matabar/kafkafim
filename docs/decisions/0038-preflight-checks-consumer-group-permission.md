@@ -30,9 +30,8 @@ with `includeAuthorizedOperations(true)` reports, by the identity's group ACLs:
   bounded by the source's metadata timeout (30s). It runs with the DLQ and
   Elasticsearch checks, so one ERROR line still names every problem.
 - **Configuration** (`failed_preflight`): a group or other authorization error, an
-  authentication error, an existing group whose authorized operations lack `READ`
-  (and `ALL`), or a group id another protocol already uses (such as Connect).
-- **Passes**: `READ` or `ALL` listed; no operations listed (a broker that cannot say);
+  authentication error, an existing group whose authorized operations lack `READ`, or a group id another protocol already uses (such as Connect).
+- **Passes**: `READ` listed; no operations listed (a broker that cannot say);
   a group that does not exist yet; a broker that does not support the request.
 - **Transient** (stays `starting`, retried with backoff): a timeout or connection error.
   An interrupt from a stop also counts as transient, and the stop discards the verdict.
@@ -61,3 +60,7 @@ with `includeAuthorizedOperations(true)` reports, by the identity's group ACLs:
 - Against a cluster that does not answer, each start attempt now also waits out this
   check's timeout (the source's metadata timeout, 30s) after the DLQ check, so retries
   in `starting` are spaced further apart.
+
+## Correction (2026-11-14, #213)
+
+This record first listed `ALL` as a passing operation. kafka-clients 4.2 never reports `ALL`, `ANY` or `UNKNOWN` among the authorized operations (`AdminUtils.validAclOperations` filters them out), so only `READ` can pass; the text above is corrected and the dead test removed.
