@@ -38,9 +38,9 @@ into ~20 Elasticsearch 8.x clusters.
 - First-class OpenTelemetry (metrics, traces, logs) exported over OTLP to Elastic
   APM Server, Prometheus endpoint for free, Grafana dashboards and alert rules in
   the repo.
-- Local demo stack (Kafka + ES + kafkafim) on Docker Compose and on a local Kubernetes
-  cluster (kind or Docker Desktop, `deploy/local/`); the production Helm chart deploys
-  only kafkafim.
+- Local demo stack (Kafka + ES + Grafana LGTM + kafkafim) on Docker Compose and on a
+  local Kubernetes cluster (kind or Docker Desktop, one `helm install` of the demo chart
+  in `deploy/local/`, ADR-0042); the production Helm chart deploys only kafkafim.
 - kafkafim **never provisions resources**. Topics, consumer groups, credentials,
   indices, index templates, ingest pipelines, users and roles are created by the
   team's external provisioning systems before a pipeline is deployed. kafkafim
@@ -1394,7 +1394,7 @@ src/main/resources/application.yaml   profile-independent defaults (default prof
 src/main/resources/application-local.yaml   local-dev sample config: clusters + demo pipeline
 src/test/java/...                     unit + Testcontainers integration tests
 charts/kafkafim/                      production Helm chart
-deploy/local/                         local Kubernetes demo (kind or Docker Desktop): plain Kafka + ES manifests, demo chart values, demo.sh up/smoke/down
+deploy/local/                         local Kubernetes demo (kind or Docker Desktop): demo-only umbrella chart (Kafka, ES, Grafana LGTM + charts/kafkafim as subchart, ADR-0042), demo.sh up/smoke/down
 deploy/grafana/                       Grafana dashboards, Prometheus alert rules + promtool tests, compose provisioning
 docs/                                 DESIGN.md, TECH_STACK.md, decisions/, runbook
 ```

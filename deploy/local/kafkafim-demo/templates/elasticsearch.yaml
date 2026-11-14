@@ -1,0 +1,64 @@
+{{- $labels := include "kafkafim-demo.labels" (dict "root" . "name" "elasticsearch") }}
+# One single-node Elasticsearch, no persistence. Production points charts/kafkafim at an
+# existing cluster; that chart never deploys Elasticsearch (ADR-0015).
+apiVersion: v1
+kind: Service
+metadata:
+  name: elasticsearch
+  labels:
+    {{- $labels | nindent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/name: elasticsearch
+    app.kubernetes.io/instance: {{ .Release.Name }}
+  ports:
+    - { name: http, port: 9200, targetPort: http }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: elasticsearch
+  labels:
+    {{- $labels | nindent 4 }}
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: elasticsearch
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        {{- $labels | nindent 8 }}
+    spec:
+      enableServiceLinks: false
+      containers:
+        - name: elasticsearch
+          image: {{ .Values.elasticsearch.image | quote }}
+          ports:
+            - { name: http, containerPort: 9200 }
+          env:
+            # Security on (kafkafim authenticates with basic auth, as against production),
+            # TLS off to keep the demo small. The elastic superuser stands in for a
+            # provisioned writer role.
+            - name: ELASTIC_PASSWORD
+              valueFrom: { secretKeyRef: { name: es-demo-kafkafim, key: password } }
+            - { name: discovery.type, value: single-node }
+            - { name: xpack.security.enabled, value: "true" }
+            - { name: xpack.security.http.ssl.enabled, value: "false" }
+            - { name: xpack.security.transport.ssl.enabled, value: "false" }
+            - { name: cluster.routing.allocation.disk.threshold_enabled, value: "false" }
+            - { name: ES_JAVA_OPTS, value: "-Xms512m -Xmx512m" }
+          readinessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - curl -fsS -u "elastic:$ELASTIC_PASSWORD" 'http://127.0.0.1:9200/_cluster/health?wait_for_status=yellow&timeout=1s' >/dev/null
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 60
+          resources:
+            requests: { cpu: 250m, memory: 1Gi }
+            limits: { memory: 1Gi }
