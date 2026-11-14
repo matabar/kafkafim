@@ -10,7 +10,7 @@ with the repo". Every query uses the metric names and labels of `/actuator/prome
 | [`dashboards/kafkafim-elasticsearch.json`](dashboards/kafkafim-elasticsearch.json) | Per Elasticsearch cluster: breaker state, bulk requests by status, 429 ratio, bulk latency, docs and bytes per request, flush reasons, retries, item errors, auth failures |
 | [`alerts/kafkafim-alerts.yaml`](alerts/kafkafim-alerts.yaml) | Prometheus alerting rules (below) |
 | [`alerts/kafkafim-alerts.test.yaml`](alerts/kafkafim-alerts.test.yaml) | `promtool test rules` unit tests for every alert |
-| [`provisioning/kafkafim-dashboards.yaml`](provisioning/kafkafim-dashboards.yaml) | Grafana dashboard provider used by the compose demo |
+| [`provisioning/kafkafim-dashboards.yaml`](provisioning/kafkafim-dashboards.yaml) | Grafana dashboard provider used by the compose demo and the local Kubernetes demo |
 
 ## Where they ship
 
@@ -26,7 +26,7 @@ instead, versioned with the image:
 
 The bundle's `IMPORT.md` says how to load them inside the air gap; it is
 [DELIVERY.md](../../docs/DELIVERY.md#alert-rules-and-dashboards) with the version filled
-in. The rule tests and the compose demo's provider stay in the repository only. A new
+in. The rule tests and the demos' provider stay in the repository only. A new
 file in `alerts/` needs its own line in `release.yml` (the "Stage alert rules and
 dashboards" step and the release's `files:`); a new `dashboards/*.json` is picked up by
 the globs there.
@@ -92,7 +92,11 @@ Notes:
   sustained rate, so it has no such term.
 - Rules group by `job`/`instance` where a per-pod answer matters; relabel to your own
   pod label if your scrape config uses another one.
-- Each alert carries a `runbook_url` annotation to the matching RUNBOOK section.
+- Each alert carries a `runbook_url` annotation to the matching RUNBOOK section. In the
+  repository it points at `main`; the release copy points at the tag's RUNBOOK
+  (`release.yml` rewrites `blob/main` to `blob/v<ver>`) and the bundle ships `RUNBOOK.md`
+  so the prefix can be rewritten to an internal host
+  ([DELIVERY.md](../../docs/DELIVERY.md#alert-rules-and-dashboards)).
 
 Load the rules into Prometheus (`rule_files:`), or into a Prometheus Operator
 `PrometheusRule` by wrapping the `groups:` list.
@@ -122,6 +126,11 @@ promtool check rules deploy/grafana/alerts/kafkafim-alerts.yaml
 *kafkafim* folder. The app pushes metrics over OTLP there, and otel-lgtm's
 Prometheus stores them under the names below. The alert rules are not loaded in the
 demo (otel-lgtm's Prometheus has no `rule_files`).
+
+The local Kubernetes demo ([`deploy/local`](../local/README.md)) mounts the same provider
+and the same `dashboards/` directory (symlinked into its chart's `files/`) into its
+`lgtm` pod, so it shows the same two dashboards and, like the compose demo, loads no
+alert rules.
 
 Through OTLP every name matches `/actuator/prometheus`, the timers included: the app
 exports times in seconds (`management.otlp.metrics.export.base-time-unit: seconds`), so

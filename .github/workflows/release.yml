@@ -32,6 +32,9 @@ jobs:
           mkdir -p "$out/alerts" "$out/dashboards"
           cp deploy/grafana/alerts/kafkafim-alerts.yaml "$out/alerts/"
           cp deploy/grafana/dashboards/*.json "$out/dashboards/"
+          # runbook_url points at this tag's RUNBOOK, not main; the bundle carries a copy for the air gap
+          sed -i "s#/blob/main/docs/RUNBOOK.md#/blob/v${V}/docs/RUNBOOK.md#" "$out/alerts/kafkafim-alerts.yaml"
+          cp docs/RUNBOOK.md "$out/"
       - uses: actions/setup-java@v6
         with:
           distribution: temurin

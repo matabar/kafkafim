@@ -168,13 +168,7 @@ final class KafkaGroupCheck {
    * @return OK when the identity may read the group or the broker did not say
    */
   static Preflight.Status classify(@Nullable Set<AclOperation> operations) {
-    if (operations == null
-        || operations.isEmpty()
-        || operations.contains(AclOperation.READ)
-        || operations.contains(AclOperation.ALL)) {
-      return Preflight.Status.OK;
-    }
-    return Preflight.Status.rejected("identity may describe the group but not read it");
+    return readVerdict(operations, "group");
   }
 
   /**
@@ -185,13 +179,19 @@ final class KafkaGroupCheck {
    * @return OK when the identity may read the topic or the broker did not say
    */
   static Preflight.Status classifyTopic(@Nullable Set<AclOperation> operations) {
-    if (operations == null
-        || operations.isEmpty()
-        || operations.contains(AclOperation.READ)
-        || operations.contains(AclOperation.ALL)) {
+    return readVerdict(operations, "topic");
+  }
+
+  /**
+   * Shared verdict: kafka-clients filters {@code ALL}, {@code ANY} and {@code UNKNOWN} out of the
+   * authorized operations it reports, so {@code READ} is the only operation that can be there.
+   */
+  private static Preflight.Status readVerdict(
+      @Nullable Set<AclOperation> operations, String resource) {
+    if (operations == null || operations.isEmpty() || operations.contains(AclOperation.READ)) {
       return Preflight.Status.OK;
     }
-    return Preflight.Status.rejected("identity may describe the topic but not read it");
+    return Preflight.Status.rejected("identity may describe the " + resource + " but not read it");
   }
 
   /**
