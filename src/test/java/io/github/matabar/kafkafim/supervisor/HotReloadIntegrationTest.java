@@ -15,6 +15,7 @@ import io.github.matabar.kafkafim.config.ElasticsearchCluster.ElasticsearchIdent
 import io.github.matabar.kafkafim.sink.es.ClientSettings;
 import io.github.matabar.kafkafim.sink.es.ElasticsearchClients;
 import io.github.matabar.kafkafim.source.kafka.KafkaPipelineSource;
+import io.github.matabar.kafkafim.telemetry.TelemetryNames;
 import io.micrometer.core.instrument.MeterRegistry;
 import java.io.IOException;
 import java.net.URI;
@@ -394,6 +395,15 @@ class HotReloadIntegrationTest {
     assertThat(supervisor.state("pa")).isEqualTo(PipelineState.PAUSED);
     assertThat(gauge(meters, "pa", "paused")).isEqualTo(1);
     assertThat(gauge(meters, "pa", "running")).isZero();
+    // The kind of the reason, not its cluster and identity (#191).
+    assertThat(
+            meters
+                .get(TelemetryNames.PAUSE_REASON)
+                .tag("pipeline", "pa")
+                .tag("reason", "es_auth")
+                .gauge()
+                .value())
+        .isEqualTo(1);
     // The same cluster through another identity is not affected.
     awaitCommittedToEnd("kafkafim.pb", "pb.events");
     assertThat(count("pb-docs")).isEqualTo(10);
