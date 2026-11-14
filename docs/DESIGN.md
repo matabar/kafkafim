@@ -409,7 +409,7 @@ the consumer-only keys) and is bounded by the source's metadata timeout. An
 authorization or authentication error (no group ACL, or one on another group name:
 `FindCoordinator` needs `Describe`) is a configuration failure. So is an existing group
 whose authorized operations lack `READ`, and a group id another protocol already uses.
-`READ` or `ALL` listed, no operations listed, or a broker that does not support the
+`READ` listed, no operations listed, or a broker that does not support the
 request passes. So does a group that has never been joined: the broker answers
 `GroupIdNotFoundException` and cannot tell `Read` from `Describe`, so the first join
 stays the check for `Describe` without `Read` on a new group (ADR-0038).
