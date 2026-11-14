@@ -309,11 +309,17 @@ final class ConfigReloader implements SmartLifecycle {
         paths, settings.pollInterval(), settings.debounce(), this::reloadFromWatcher);
   }
 
-  private void reloadFromWatcher() {
+  /** The watcher's callback: a failed reload is logged by {@link #reload}, not again here. */
+  void reloadFromWatcher() {
     try {
       reload("watcher");
     } catch (IllegalStateException e) {
-      LOG.info("Configuration change ignored: {}", e.getMessage());
+      if (supervisor.isRunning()) {
+        // Only a failed apply gets here while running, and reload() logged it at ERROR already.
+        return;
+      }
+      LOG.info(
+          "Configuration change not applied, the supervisor is shutting down: {}", e.getMessage());
     }
   }
 }
