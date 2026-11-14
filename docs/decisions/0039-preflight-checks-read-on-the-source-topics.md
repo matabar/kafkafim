@@ -32,8 +32,8 @@ here: a missing topic already fails the start.
   together and share the check's one deadline (the source's metadata timeout), so the
   topics add no connection and no waiting time.
 - **Configuration** (`failed_preflight`): an existing topic whose authorized operations
-  lack `READ` (and `ALL`). The ERROR line names the topic, the identity and the cluster.
-- **Passes**: `READ` or `ALL` listed; no operations listed (a broker that cannot say).
+  lack `READ`. The ERROR line names the topic, the identity and the cluster.
+- **Passes**: `READ` listed; no operations listed (a broker that cannot say).
 - **Left to the source's start**: any failure of the topic request. A topic that does
   not exist or that the identity cannot see fails the start (`MissingTopicsException`),
   and a broker that does not answer fails the source's metadata fetch. The topic check
@@ -65,3 +65,7 @@ here: a missing topic already fails the start.
   the state stays `running` (runbook §5.4), as for the group.
 - A custom authorizer or an old broker that lists no operations passes, and the first
   fetch stays the check there.
+
+## Correction (2026-11-14, #213)
+
+This record first listed `ALL` as a passing operation. kafka-clients 4.2 never reports `ALL`, `ANY` or `UNKNOWN` among the authorized operations (`AdminUtils.validAclOperations` filters them out), so only `READ` can pass; the text above is corrected and the dead test removed.
