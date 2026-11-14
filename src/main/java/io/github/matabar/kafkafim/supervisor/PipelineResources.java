@@ -14,6 +14,7 @@ import io.github.matabar.kafkafim.source.kafka.SourceOptions;
 import java.time.Clock;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
@@ -53,6 +54,10 @@ import org.springframework.context.SmartLifecycle;
  * coexist, so for a while two producers or clients may exist for the same {@code (cluster,
  * identity)}, and a cluster's breaker is per instance (each pipeline follows the breaker of the
  * instance it sends through).
+ *
+ * <p><b>Failures</b> (ADR-0041): an {@link #acquire} that throws takes nothing and leaves the
+ * current instances as they were. A reload that fails after some of its acquires gives them back
+ * with {@link #rollback}, which also makes the instances of a {@link #checkpoint} current again.
  *
  * <p><b>Lifecycle</b>: a {@link SmartLifecycle} in the DLQ producers' phase ({@link
  * DlqProducers#PHASE}): stopping closes every {@code DlqProducers} after the supervisor drained the
@@ -125,36 +130,56 @@ final class PipelineResources implements SmartLifecycle, AutoCloseable {
     }
     List<Handle> retired = new ArrayList<>();
     PipelineRuntime.Context context;
-    synchronized (this) {
-      if (closed) {
-        throw new IllegalStateException("Pipeline resources are closed");
-      }
-      KafkaHandle kafka = kafka(pipeline, config, properties, retired);
-      Map<String, ElasticsearchSinks> sinks = new LinkedHashMap<>();
-      List<EsHandle> es = new ArrayList<>();
-      for (Pipeline.Route route : config.routes()) {
-        if (route.cluster() != null && !sinks.containsKey(route.cluster())) {
-          EsHandle handle = elasticsearch(route.cluster(), properties, retired);
-          sinks.put(route.cluster(), handle.sinks);
-          es.add(handle);
+    try {
+      synchronized (this) {
+        if (closed) {
+          throw new IllegalStateException("Pipeline resources are closed");
         }
+        List<Handle> before = current();
+        KafkaHandle kafka;
+        Map<String, ElasticsearchSinks> sinks = new LinkedHashMap<>();
+        List<EsHandle> es = new ArrayList<>();
+        Preflight.AuthCheck authCheck;
+        try {
+          kafka = kafka(pipeline, config, properties, retired);
+          for (Pipeline.Route route : config.routes()) {
+            if (route.cluster() != null && !sinks.containsKey(route.cluster())) {
+              EsHandle handle = elasticsearch(route.cluster(), properties, retired);
+              sinks.put(route.cluster(), handle.sinks);
+              es.add(handle);
+            }
+          }
+          authCheck = authChecks.apply(properties);
+        } catch (RuntimeException e) {
+          // Nothing was taken yet: drop the instances created for this call (current, but unused)
+          // and make the ones they replaced current again. A current instance without users
+          // exists only inside the acquire that created it: unuse retires an instance at zero.
+          for (Handle handle : current()) {
+            if (handle.users == 0) {
+              retire(handle, retired);
+            }
+          }
+          restore(before, retired);
+          throw e;
+        }
+        kafka.users++;
+        kafka.pipelines.merge(pipeline, 1, Integer::sum);
+        es.forEach(handle -> handle.users++);
+        context =
+            new PipelineRuntime.Context(
+                properties,
+                kafka.consumerFactories,
+                kafka.dlq,
+                sinks,
+                authCheck,
+                settings.sourceOptions(),
+                settings.sinkCloseTimeout(),
+                settings.clock());
+        pipelineOf.put(context, pipeline);
       }
-      kafka.users++;
-      kafka.pipelines.merge(pipeline, 1, Integer::sum);
-      es.forEach(handle -> handle.users++);
-      context =
-          new PipelineRuntime.Context(
-              properties,
-              kafka.consumerFactories,
-              kafka.dlq,
-              sinks,
-              authChecks.apply(properties),
-              settings.sourceOptions(),
-              settings.sinkCloseTimeout(),
-              settings.clock());
-      pipelineOf.put(context, pipeline);
+    } finally {
+      closeAll(retired);
     }
-    closeAll(retired);
     return context;
   }
 
@@ -212,6 +237,74 @@ final class PipelineResources implements SmartLifecycle, AutoCloseable {
       }
     }
     closeAll(toClose);
+  }
+
+  /** The instances that were current at one moment; see {@link #checkpoint}. */
+  static final class Checkpoint {
+    private final List<Handle> current;
+
+    private Checkpoint(List<Handle> current) {
+      this.current = current;
+    }
+  }
+
+  /**
+   * Remembers which instances are current, before a reload acquires for a new configuration, so
+   * that {@link #rollback} can undo what those acquires change.
+   */
+  synchronized Checkpoint checkpoint() {
+    return new Checkpoint(current());
+  }
+
+  /**
+   * Undoes the acquires of a reload that failed (ADR-0041): releases {@code acquired}, then makes
+   * every instance of {@code checkpoint} that is still open current again, in place of whatever
+   * replaced it. Pipelines that start afterwards on the running configuration get the instances
+   * they had, instead of new ones. The releases and the restore are separate steps; that is safe
+   * because {@code PipelineSupervisor} makes every acquire, release and rollback under its
+   * lifecycle lock.
+   *
+   * @param checkpoint taken before the first of those acquires
+   * @param acquired the contexts to give back
+   */
+  void rollback(Checkpoint checkpoint, Collection<PipelineRuntime.Context> acquired) {
+    acquired.forEach(this::release);
+    List<Handle> toClose = new ArrayList<>();
+    synchronized (this) {
+      if (!closed) {
+        restore(checkpoint.current, toClose);
+      }
+    }
+    closeAll(toClose);
+  }
+
+  private List<Handle> current() {
+    List<Handle> current = new ArrayList<>(currentKafka.values());
+    current.addAll(currentEs.values());
+    return current;
+  }
+
+  /** Makes the still open ones of {@code previous} current again, retiring what replaced them. */
+  private void restore(List<Handle> previous, List<Handle> toClose) {
+    for (Handle handle : previous) {
+      if (handle.current || handles.get(handle.instance()) != handle) {
+        continue;
+      }
+      if (handle instanceof KafkaHandle kafka) {
+        retireCurrent(currentKafka.get(kafka.cluster), toClose);
+        currentKafka.put(kafka.cluster, kafka);
+      } else if (handle instanceof EsHandle es) {
+        retireCurrent(currentEs.get(es.cluster), toClose);
+        currentEs.put(es.cluster, es);
+      }
+      handle.current = true;
+    }
+  }
+
+  private void retireCurrent(@Nullable Handle replaced, List<Handle> toClose) {
+    if (replaced != null) {
+      retire(replaced, toClose);
+    }
   }
 
   /** Number of live {@code DlqProducers} and {@code ElasticsearchSinks} instances, for tests. */
