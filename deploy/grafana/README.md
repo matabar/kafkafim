@@ -92,7 +92,11 @@ Notes:
   sustained rate, so it has no such term.
 - Rules group by `job`/`instance` where a per-pod answer matters; relabel to your own
   pod label if your scrape config uses another one.
-- Each alert carries a `runbook_url` annotation to the matching RUNBOOK section.
+- Each alert carries a `runbook_url` annotation to the matching RUNBOOK section. In the
+  repository it points at `main`; the release copy points at the tag's RUNBOOK
+  (`release.yml` rewrites `blob/main` to `blob/v<ver>`) and the bundle ships `RUNBOOK.md`
+  so the prefix can be rewritten to an internal host
+  ([DELIVERY.md](../../docs/DELIVERY.md#alert-rules-and-dashboards)).
 
 Load the rules into Prometheus (`rule_files:`), or into a Prometheus Operator
 `PrometheusRule` by wrapping the `groups:` list.
