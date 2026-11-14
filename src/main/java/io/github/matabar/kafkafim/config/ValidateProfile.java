@@ -8,7 +8,7 @@ import org.springframework.core.env.Environment;
 import org.springframework.core.env.Profiles;
 
 /**
- * The {@code validate} profile (DESIGN §5.6, ADR-0018): started with {@code
+ * The {@code validate} profile (DESIGN §5.6, ADR-0018, ADR-0040, ADR-0043): started with {@code
  * --spring.profiles.active=validate,kafkafim} and a rendered configuration mounted, the application
  * binds and validates {@code kafkafim.*}, logs a summary and exits 0, or fails startup (exit 1)
  * with every violation. No pipeline, client, web server or telemetry export is started. It is meant

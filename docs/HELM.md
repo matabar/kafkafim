@@ -241,8 +241,9 @@ Elasticsearch cluster and no pipeline also exits 1 (`No kafkafim configuration f
 it means the file was not where the image reads it, the `kafkafim` profile was not
 active, or the file defines nothing, so a wrong mount path does not pass. This message
 is not a validation violation: it appears in the ERROR line `Application run failed`
-(under `error.message`), not in the summary line, so search the log for it. A group with clusters and no pipelines is
-valid and shows `0 pipeline(s)`. Warnings do not change the exit code: read the WARN
+(under `error.message`), not in the summary line, so search the log for it. A group
+with clusters and no pipelines is valid and shows `0 pipeline(s)`. Warnings do not
+change the exit code: read the WARN
 lines from `...config.KafkafimPropertiesValidator` too (for example a `bulk.max-bytes`
 above Elasticsearch's default limit).
 

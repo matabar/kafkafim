@@ -874,10 +874,10 @@ in `ConfigValidator`, whose messages never include values.
   profile (`No kafkafim configuration found`, exit 1): there it means the rendered file
   was not found (a wrong mount path, the `kafkafim` profile not active), and a normal
   start only warns about it. Clusters without pipelines, a deliberately empty group,
-  stay valid and show `0 pipeline(s)`. Warnings never change the exit code. It is meant for the infrastructure
-  repository's CI, where the per-cluster values live. This repository's CI does not
-  use it; it builds the image and smoke-tests it with a liveness probe
-  ([DELIVERY.md](DELIVERY.md)).
+  stay valid and show `0 pipeline(s)`. Warnings never change the exit code. It is
+  meant for the infrastructure repository's CI, where the per-cluster values live.
+  This repository's CI does not use it; it builds the image and smoke-tests it with a
+  liveness probe ([DELIVERY.md](DELIVERY.md)).
 - **Reload** (ADR-0028): a watcher on the config and secret directories (Java
   `WatchService` + 10s hash poll, because kubelet updates volumes by symlink swap with
   up to ~1 min delay) plus `POST /actuator/reload`. The new tree is loaded with
