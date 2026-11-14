@@ -88,7 +88,8 @@ public final class KafkaClientSecurity {
 
   /**
    * A printable copy of kafka-clients settings: the values of keys that may carry secrets are
-   * replaced, so the result is safe to log.
+   * replaced, so the result is safe to log. Its key rule is broader than the one {@link Redaction}
+   * applies to the configuration records, on purpose (see {@link Redaction}).
    *
    * @param settings consumer, producer or admin settings
    * @return the settings as strings, with secret values masked

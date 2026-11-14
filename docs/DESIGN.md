@@ -834,7 +834,9 @@ reports the origin but never the value; likewise the bound configuration records
 every secret (passwords, API keys, keystore and key passwords, secret passthrough
 `properties` values) as `******` in `toString()`, while usernames stay readable. A
 literal in YAML, an environment variable or a system property is rejected, also when
-reached through a placeholder. A credential
+reached through a placeholder. A secret file whose own content contains `${` is an error
+(ADR-0045): the binder would substitute it from any property source, which would bypass
+this check and also mangle a real secret with that text. A credential
 placeholder (secret or username) that nothing defines fails startup (except under the
 `validate` profile, which lists it instead, §5.6), even with
 inline secrets allowed: Spring leaves unresolvable placeholders as literal text, so a
