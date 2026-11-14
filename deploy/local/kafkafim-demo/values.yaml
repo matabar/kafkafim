@@ -95,3 +95,9 @@ kafkafim:
   # in-cluster Grafana LGTM (in production: the external APM Server).
   otel:
     endpoint: http://lgtm:4318
+
+  # Trace every batch. The application default keeps 1% of batches and every failed one
+  # (ADR-0029), which leaves a demo with a handful of records without a trace to look at.
+  extraEnv:
+    - name: MANAGEMENT_TRACING_SAMPLING_PROBABILITY
+      value: "1.0"

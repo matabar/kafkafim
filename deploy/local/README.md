@@ -95,7 +95,11 @@ Then open <http://localhost:3000>:
 - *Dashboards → kafkafim*: **kafkafim / Overview** and **kafkafim / Elasticsearch**. Run
   `demo.sh smoke` a few times first; metrics arrive every 15s, and rate panels need two
   samples.
-- *Explore → Tempo*: search for `service.name = kafkafim` to see a record's trace.
+- *Explore → Tempo*: the TraceQL query `{name="pipeline.batch"}` lists one trace per
+  batch, each with its `es.bulk` child span. The demo traces every batch
+  (`MANAGEMENT_TRACING_SAMPLING_PROBABILITY=1.0` in the demo values); the application
+  default keeps 1% of batches and every failed one. Health probes are traced too, so a
+  search by `service.name` alone returns mostly those.
 - *Explore → Loki*: kafkafim's logs, once the application exports logs over OTLP (#182).
   They use the same endpoint, so the demo needs no change.
 
@@ -118,31 +122,34 @@ a restart (HELM.md, *Operating notes*).
 
 ## Verified
 
-On 2026-11-13, with kind 0.33.0 (node image `kindest/node:v1.37.0`), Helm 4.3.1 and
-Docker Desktop for Mac (7.7 GiB):
+On 2026-11-14, on the branch with main `34accd9` merged, with kind 0.33.0 (node image
+`kindest/node:v1.37.0`), Helm 4.3.1 and Docker Desktop for Mac (7.7 GiB):
 
 - `demo.sh up` on a new cluster: the one `helm upgrade --install` finished in about a
   minute with images already pulled; all four pods ready with no restarts
-  (`kafka` 2/2, the others 1/1). The kind node used 3.8 GiB with everything running.
-- kafkafim started while the broker pod was still creating the topics, stayed in
-  `starting`, and went to `running` on its own.
+  (`kafka` 2/2, the others 1/1). The kind node used 4.0 GiB with everything running.
+- kafkafim went `stopped` → `starting` → `running` on its own. (On 2026-11-13 it was
+  also seen starting while the broker pod was still creating the topics, staying in
+  `starting` until they existed.)
 - `demo.sh smoke`, ten times: each record indexed in `demo-eu-<date>`.
 - Grafana 11.6.0 through the port-forward: *kafkafim / Overview* and *kafkafim /
-  Elasticsearch* are in the *kafkafim* folder. Overview: all 21 panels it had at that commit have data
+  Elasticsearch* are in the *kafkafim* folder. Overview: 21 of 22 panels have data
   (`running` = 1 for pipeline `demo`, end-to-end latency, records, documents by route,
-  one DLQ record from a deliberately bad timestamp). Elasticsearch: 9 of 11 panels have
+  one DLQ record from a deliberately bad timestamp); *Pause reasons by pod* is empty
+  because the pipeline never paused. Elasticsearch: 9 of 11 panels have
   data (breaker `closed`, bulk requests with status 200, bulk latency); *Retries by
   scope* and *Item errors by type* are empty because the demo had no retry or item error.
-- Not covered by that run: the Overview panel for pause reasons, added to the dashboard
-  afterwards (#185).
-- Tempo: a `pipeline.batch` trace of service `kafkafim` with its `es.bulk` child span
-  (`http.response.status_code` 200, `kafkafim.pipeline` `demo`).
+- Tempo: five `smoke` records gave five `pipeline.batch` traces of service `kafkafim`,
+  each with its `es.bulk` child span (`http.response.status_code` 200,
+  `kafkafim.pipeline` `demo`). Before the demo sampled every batch, the same run with
+  ten records had no batch trace.
 - Loki has no kafkafim logs yet: the application does not export logs over OTLP before
   #182.
 - Running the same `helm upgrade --install` again kept both generated passwords, and
   `smoke` passed after it.
 - After a restart of the broker container alone (SIGTERM to the broker; same pod,
-  restart count 1) the topics were still there and `smoke` passed.
+  restart count 1) the topics were still there and `smoke` passed (run on 2026-11-13,
+  not repeated).
 - `demo.sh down`. `helm lint` passes and the rendered chart passes `kubeconform -strict`.
 
 `CLUSTER=docker-desktop` has not been run.
