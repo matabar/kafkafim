@@ -155,6 +155,38 @@ class PipelineResourcesTest {
   }
 
   @Test
+  void errorWhileAcquiringTakesNothingEither() {
+    KafkafimProperties first = config(A);
+    KafkafimProperties failing = configNewPassword(A + C);
+    PipelineResources pool =
+        new PipelineResources(
+            new ListenerRelay(List.of(), List.of()),
+            p -> {
+              if (p == failing) {
+                throw new NoClassDefFoundError("some/Client");
+              }
+              return (cluster, identity) -> Preflight.Status.OK;
+            },
+            PipelineSupervisorTest.SETTINGS);
+    try {
+      final PipelineRuntime.Context a = pool.acquire("a", first);
+      assertThat(pool.instances()).isEqualTo(2);
+
+      // c is new to the DLQ producers of k and routes to es and es2; es is defined differently.
+      // Its acquire creates new DLQ producers and two registries before it fails.
+      assertThatThrownBy(() -> pool.acquire("c", failing)).isInstanceOf(NoClassDefFoundError.class);
+
+      assertThat(pool.instances()).isEqualTo(2);
+      PipelineRuntime.Context again = pool.acquire("a", first);
+      assertThat(again.dlqProducers()).isSameAs(a.dlqProducers());
+      assertThat(again.sinks().get("es")).isSameAs(a.sinks().get("es"));
+    } finally {
+      pool.stop();
+      pool.close();
+    }
+  }
+
+  @Test
   void rollbackReleasesTheContextsAndMakesTheCheckpointsInstancesCurrentAgain() {
     KafkafimProperties first = config(A + B);
     final PipelineRuntime.Context a = resources.acquire("a", first);
