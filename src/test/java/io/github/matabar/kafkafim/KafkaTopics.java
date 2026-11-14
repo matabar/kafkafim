@@ -12,10 +12,13 @@ import org.apache.kafka.clients.admin.NewTopic;
 import org.apache.kafka.clients.admin.OffsetSpec;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.common.TopicPartition;
+import org.apache.kafka.common.errors.TopicExistsException;
 import org.apache.kafka.common.serialization.ByteArraySerializer;
 
 /** Topic creation and the seeding producer configuration shared by the integration tests. */
 public final class KafkaTopics {
+
+  private static final String PROBE_TOPIC = "kafkafim.ready-probe";
 
   private static final Duration READY_TIMEOUT = Duration.ofSeconds(90);
 
@@ -27,8 +30,12 @@ public final class KafkaTopics {
    * <p>A container that is started is not always reachable yet: the first admin call of a test once
    * waited its full 60 s for a node assignment while the client logged ~111,000 metadata retries
    * (#212). Each attempt here uses a fresh client with short timeouts, so a bootstrap attempt that
-   * went nowhere is dropped rather than waited out, and the client that is returned starts with a
-   * broker that answered {@code describeCluster}.
+   * went nowhere is dropped rather than waited out. The client that is returned starts with a
+   * broker that answered {@code describeCluster} and accepted a {@code createTopics} for a
+   * throwaway topic (dropped again, best effort): {@code describeCluster} alone is not enough, a
+   * broker can answer it while still fenced, and the first real {@code createTopics} then fails
+   * with {@code InvalidReplicationFactorException: All brokers are currently fenced} (seen in a
+   * full verify on a loaded Docker).
    */
   public static Admin awaitedAdmin(String bootstrapServers) {
     Map<String, Object> probe =
@@ -37,7 +44,7 @@ public final class KafkaTopics {
             "request.timeout.ms", 5000,
             "default.api.timeout.ms", 5000);
     await()
-        .alias("broker creates a topic")
+        .alias("broker answers describeCluster and creates a topic")
         .atMost(READY_TIMEOUT)
         .pollInterval(Duration.ofMillis(500))
         .ignoreExceptions()
@@ -46,11 +53,21 @@ public final class KafkaTopics {
             if (candidate.describeCluster().nodes().get().isEmpty()) {
               return false;
             }
-            candidate
-                .createTopics(List.of(new NewTopic("kafkafim.ready-probe", 1, (short) 1)))
-                .all()
-                .get();
-            candidate.deleteTopics(List.of("kafkafim.ready-probe")).all().get();
+            try {
+              candidate.createTopics(List.of(new NewTopic(PROBE_TOPIC, 1, (short) 1))).all().get();
+            } catch (ExecutionException e) {
+              // An earlier attempt may have created it just as it timed out: the broker accepts
+              // writes either way.
+              if (!(e.getCause() instanceof TopicExistsException)) {
+                throw e;
+              }
+            }
+            try {
+              candidate.deleteTopics(List.of(PROBE_TOPIC)).all().get();
+            } catch (ExecutionException e) {
+              // Best effort: readiness does not depend on the cleanup, and a topic left behind is
+              // an orphan on a container that is per test class.
+            }
             return true;
           }
         });
