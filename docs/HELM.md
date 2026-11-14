@@ -135,7 +135,9 @@ For each `groups.<g>`:
   the file in place and hot reload sees it. A `/tmp` `emptyDir` backs the read-only
   root filesystem.
 - `NetworkPolicy` (opt-in) is ingress-only: TCP 8080 from `networkPolicy.allowFrom`
-  (default: pods in the release namespace). Egress is not restricted. An empty
+  (default: pods in the release namespace). Egress is not restricted
+  (what the pods need to reach, for a cluster that default-denies egress:
+  [Egress the pods need](#egress-the-pods-need)). An empty
   `allowFrom` list means any source, as in Kubernetes.
 - Metrics, traces and logs are all exported to `otel.endpoint` (DESIGN §10); stdout
   keeps the logs as readable text for `kubectl logs`. OTLP export headers reach the
