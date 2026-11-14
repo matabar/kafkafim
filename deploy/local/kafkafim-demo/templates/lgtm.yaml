@@ -1,0 +1,102 @@
+{{- $labels := include "kafkafim-demo.labels" (dict "root" . "name" "lgtm") }}
+{{- $content := "" }}
+{{- range $path, $bytes := .Files.Glob "files/**" }}
+{{- $content = print $content $path (toString $bytes) }}
+{{- end }}
+# Grafana LGTM (grafana/otel-lgtm: OpenTelemetry Collector, Prometheus, Tempo, Loki and
+# Grafana in one container), no persistence. It stands in for the external APM Server and
+# Grafana of production; charts/kafkafim deploys neither.
+#
+# The dashboards and their Grafana provider are read from deploy/grafana through the
+# symlinks under files/, so this chart holds no second copy.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: lgtm-kafkafim-dashboards
+  labels:
+    {{- $labels | nindent 4 }}
+data:
+  {{- $dashboards := .Files.Glob "files/dashboards/*.json" }}
+  {{- if not $dashboards }}
+  {{- fail "no dashboards under files/dashboards (a symlink to deploy/grafana/dashboards): install from a checkout with symlinks" }}
+  {{- end }}
+  {{- range $path, $_ := $dashboards }}
+  {{ base $path }}: |-
+    {{- $.Files.Get $path | nindent 4 }}
+  {{- end }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: lgtm-kafkafim-provisioning
+  labels:
+    {{- $labels | nindent 4 }}
+data:
+  kafkafim.yaml: |-
+    {{- required "files/provisioning/kafkafim-dashboards.yaml is missing (a symlink to deploy/grafana/provisioning)" (.Files.Get "files/provisioning/kafkafim-dashboards.yaml") | nindent 4 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: lgtm
+  labels:
+    {{- $labels | nindent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/name: lgtm
+    app.kubernetes.io/instance: {{ .Release.Name }}
+  ports:
+    - { name: grafana, port: 3000, targetPort: grafana }
+    - { name: otlp-grpc, port: 4317, targetPort: otlp-grpc }
+    - { name: otlp-http, port: 4318, targetPort: otlp-http }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lgtm
+  labels:
+    {{- $labels | nindent 4 }}
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: lgtm
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        {{- $labels | nindent 8 }}
+      annotations:
+        # Grafana reads the provider at startup only: restart on a dashboard change.
+        checksum/dashboards: {{ $content | sha256sum | trunc 16 | quote }}
+    spec:
+      enableServiceLinks: false
+      containers:
+        - name: lgtm
+          image: {{ .Values.lgtm.image | quote }}
+          ports:
+            - { name: grafana, containerPort: 3000 }
+            - { name: otlp-grpc, containerPort: 4317 }
+            - { name: otlp-http, containerPort: 4318 }
+          volumeMounts:   # the same two mounts as compose.yaml
+            - name: dashboards
+              mountPath: /otel-lgtm/kafkafim-dashboards
+              readOnly: true
+            - name: provisioning
+              mountPath: /otel-lgtm/grafana/conf/provisioning/dashboards/kafkafim.yaml
+              subPath: kafkafim.yaml
+              readOnly: true
+          readinessProbe:
+            # The image writes this file once every component answers.
+            exec: { command: [cat, /tmp/ready] }
+            periodSeconds: 5
+            failureThreshold: 60
+          resources:
+            requests: { cpu: 250m, memory: 1Gi }
+            limits: { memory: 1536Mi }
+      volumes:
+        - name: dashboards
+          configMap: { name: lgtm-kafkafim-dashboards }
+        - name: provisioning
+          configMap: { name: lgtm-kafkafim-provisioning }

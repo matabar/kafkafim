@@ -1,0 +1,3 @@
+# Left by an unneeded `helm dependency build`; charts/kafkafim is a symlink.
+charts/*.tgz
+Chart.lock
