@@ -25,10 +25,10 @@ public final class KafkaTopics {
    * An admin client for a broker that has been seen to answer.
    *
    * <p>A container that is started is not always reachable yet: the first admin call of a test once
-   * waited its full 60 s for a node assignment while the client retried the bootstrap address
-   * ~111,000 times (#212). Each attempt here uses a fresh client with short timeouts, so a
-   * bootstrap attempt that went nowhere is dropped rather than waited out, and the client that is
-   * returned starts with a broker that answered {@code describeCluster}.
+   * waited its full 60 s for a node assignment while the client logged ~111,000 metadata retries
+   * (#212). Each attempt here uses a fresh client with short timeouts, so a bootstrap attempt that
+   * went nowhere is dropped rather than waited out, and the client that is returned starts with a
+   * broker that answered {@code describeCluster}.
    */
   public static Admin awaitedAdmin(String bootstrapServers) {
     Map<String, Object> probe =
@@ -37,6 +37,7 @@ public final class KafkaTopics {
             "request.timeout.ms", 5000,
             "default.api.timeout.ms", 5000);
     await()
+        .alias("broker answers describeCluster")
         .atMost(READY_TIMEOUT)
         .pollInterval(Duration.ofMillis(500))
         .ignoreExceptions()
