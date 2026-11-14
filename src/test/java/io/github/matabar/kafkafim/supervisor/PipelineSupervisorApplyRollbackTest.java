@@ -2,9 +2,14 @@ package io.github.matabar.kafkafim.supervisor;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.awaitility.Awaitility.await;
 
 import io.github.matabar.kafkafim.config.ConfigDiff;
 import io.github.matabar.kafkafim.config.KafkafimProperties;
+import io.github.matabar.kafkafim.dlq.DlqRequest;
+import io.github.matabar.kafkafim.dlq.DlqWriter;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
@@ -193,6 +198,62 @@ class PipelineSupervisorApplyRollbackTest {
     assertThat(context("b")).isSameAs(b);
     assertThat(resources.instances()).isEqualTo(2);
     assertThat(supervisor.states().values()).containsOnly(PipelineState.STARTING);
+  }
+
+  /**
+   * A rollback restores {@code dlq-blocked}: b moved to new DLQ producers, a then failed to
+   * reconfigure, and b's previous writer is blocked. The rollback gives b that writer back with its
+   * pause; the writer reports only the change to blocked (#207).
+   */
+  @Test
+  void failedReconfigureRestoresDlqBlockedOfTheWriterItGivesBack() {
+    start(deadBroker(B + A));
+    final KafkafimProperties running = supervisor.properties();
+    final DlqWriter writer = context("b").dlqProducers().writer("b");
+    writer.send(
+        new DlqRequest(
+            "b",
+            0,
+            0,
+            null,
+            null,
+            null,
+            List.of(),
+            "test",
+            null,
+            null,
+            null,
+            1,
+            Instant.now(),
+            null));
+    await().atMost(Duration.ofSeconds(60)).until(writer::isBlocked);
+    await()
+        .atMost(Duration.ofSeconds(10))
+        .until(() -> runtime("b").pauseReasons().contains(PipelineRuntime.DLQ_BLOCKED_REASON));
+
+    KafkafimProperties next = deadBrokerNewPassword(C + B + A);
+    ConfigDiff diff = ConfigDiff.between(running, next);
+    AtomicInteger acquires = new AtomicInteger();
+    onAcquire =
+        properties -> {
+          if (properties == next && acquires.incrementAndGet() == 1) {
+            supervisor.startPipeline("a");
+          }
+        };
+
+    assertThatThrownBy(() -> supervisor.apply(next, diff))
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessageContaining("'a' must be stopped to reconfigure");
+
+    assertThat(context("b").dlqProducers().writer("b")).isSameAs(writer);
+    assertThat(runtime("b").pauseReasons()).contains(PipelineRuntime.DLQ_BLOCKED_REASON);
+  }
+
+  private PipelineRuntime runtime(String pipeline) {
+    return supervisor.runtimes().stream()
+        .filter(r -> r.name().equals(pipeline))
+        .findFirst()
+        .orElseThrow();
   }
 
   @Test

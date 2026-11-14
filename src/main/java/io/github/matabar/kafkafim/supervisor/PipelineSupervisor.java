@@ -377,6 +377,7 @@ public final class PipelineSupervisor implements SmartLifecycle {
     replaced.forEach((runtime, previous) -> {
       try {
         runtime.reconfigure(previous);
+        runtime.restoreDlqBlocked();
       } catch (RuntimeException e) {
         // Something started or is stopping it meanwhile (startPipeline and stopPipeline do not
         // take the lifecycle lock): it has the new context, so that one stays in use.

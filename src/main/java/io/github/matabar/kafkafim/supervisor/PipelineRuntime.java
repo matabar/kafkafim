@@ -195,6 +195,30 @@ final class PipelineRuntime {
     }
   }
 
+  /**
+   * Re-adds {@code dlq-blocked} if the DLQ writer of the current context is blocked, after a
+   * rollback gave the previous context back ({@link #reconfigure} dropped the reason when the
+   * writer changed and the old writer reports only the change to blocked, not its state). Called
+   * without the lock: the writer takes its own lock first when it reports to this runtime, so the
+   * check cannot run under {@link #lock}. The reason is added first and dropped again if the writer
+   * unblocked meanwhile, so a report of the writer cannot be lost between the two.
+   */
+  void restoreDlqBlocked() {
+    DlqProducers producers = context.dlqProducers();
+    DlqWriter writer;
+    try {
+      writer = producers.writer(name);
+    } catch (RuntimeException e) {
+      return; // closed or misconfigured: the next start reports it
+    }
+    if (writer.isBlocked()) {
+      pauseIfOwner(r -> r.usesDlq(producers), DLQ_BLOCKED_REASON, true);
+      if (!writer.isBlocked()) {
+        resume(DLQ_BLOCKED_REASON);
+      }
+    }
+  }
+
   /** Whether this pipeline's DLQ writer belongs to {@code owner} (a {@code DlqProducers}). */
   boolean usesDlq(@Nullable Object owner) {
     return context.dlqProducers() == owner;
