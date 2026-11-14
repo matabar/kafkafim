@@ -192,8 +192,8 @@ Where to read it:
 - **Logs**: every transition is logged at INFO as `Pipeline '<name>': <from> -> <to>`;
   a pause as WARN `Pipeline '<name>': pausing (<reason>)` and its end as INFO
   `Pipeline '<name>': <reason> cleared`.
-- **Harmless ERROR after a stop or reload**: a stop or reload that lands within milliseconds of
-  an Elasticsearch preflight check can log `ERROR org.apache.hc.client5.http.impl.async` with a
+- **Harmless ERROR after a stop or reload**: a stop or reload that interrupts an Elasticsearch
+  preflight check within milliseconds of its start can log `ERROR org.apache.hc.client5.http.impl.async` with a
   `java.nio.channels.ClosedSelectorException` (from `SingleCoreIOReactor.closeOpenChannels`).
   The check's short-lived client was closed by force; it held one connection and nothing is
   lost. Ignore it unless it repeats without any stop or reload ([#202](https://github.com/matabar/kafkafim/issues/202)).
