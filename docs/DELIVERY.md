@@ -124,7 +124,8 @@ against the Spring Boot BOM's OpenTelemetry SDK (instrumentation 2.N pairs with 
    - `kafkafim-<ver>.sbom.spdx.json`
    - `kafkafim-<ver>-grafana/` (the Prometheus alert rules and Grafana dashboards of this
      version, copied from [`deploy/grafana/`](../deploy/grafana/README.md):
-     `alerts/kafkafim-alerts.yaml` and `dashboards/*.json`). The workflow copies them
+     `alerts/kafkafim-alerts.yaml` and `dashboards/*.json`, plus `RUNBOOK.md` that the
+     alerts' `runbook_url` annotations point to). The workflow copies them
      first, so a missing file fails the release before anything is published.
    - `SHA256SUMS` (every file in the bundle)
    - `IMPORT.md` (this document with the exact version filled in; the procedure is
@@ -309,6 +310,23 @@ thresholds can change between versions:
   `kafkafim-elasticsearch`), so importing a newer version replaces the old dashboard
   and links to it keep working. Both have a `datasource` variable; pick the
   Prometheus-compatible data source that scrapes kafkafim.
+
+Every alert has a `runbook_url` annotation. In the release's copy it names the
+`RUNBOOK.md` of this tag
+(`https://github.com/matabar/kafkafim/blob/v1.2.3/docs/RUNBOOK.md#...`, so section
+anchors match the version that is running), which the air gap cannot open. The bundle
+therefore carries `kafkafim-1.2.3-grafana/RUNBOOK.md`: host it inside the air gap (a
+wiki, a static web server) and rewrite the prefix in the rules file before loading it,
+keeping the `#...` anchors:
+
+```bash
+sed -i 's#https://github.com/matabar/kafkafim/blob/v1.2.3/docs/RUNBOOK.md#https://docs.internal/kafkafim/RUNBOOK#' \
+  kafkafim-1.2.3-grafana/alerts/kafkafim-alerts.yaml
+```
+
+Repeat it as part of each import, like the thresholds below. Anchors follow GitHub's
+heading slugs, so a host that renders Markdown differently may need its own. The
+runbook's relative links to other documents in `docs/` do not resolve from the lone copy.
 
 Thresholds marked "tune" in the rules file are starting points. Keep local changes to
 them as a patch applied after each import, since the next bundle's file replaces them.
