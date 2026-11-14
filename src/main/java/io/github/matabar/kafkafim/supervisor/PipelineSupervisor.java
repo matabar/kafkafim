@@ -377,7 +377,6 @@ public final class PipelineSupervisor implements SmartLifecycle {
     replaced.forEach((runtime, previous) -> {
       try {
         runtime.reconfigure(previous);
-        runtime.restoreDlqBlocked();
       } catch (RuntimeException e) {
         // Something started or is stopping it meanwhile (startPipeline and stopPipeline do not
         // take the lifecycle lock): it has the new context, so that one stays in use.
@@ -389,6 +388,13 @@ public final class PipelineSupervisor implements SmartLifecycle {
                 + " the new configuration until a reload restarts it or the pod restarts",
             runtime.name(),
             e);
+      }
+      try {
+        runtime
+            .restoreDlqBlocked(); // not part of the reconfigure above: its failure keeps previous
+      } catch (RuntimeException e) {
+        LOG.warn(
+            "Pipeline '{}': restoring dlq-blocked after a failed reload failed", runtime.name(), e);
       }
     });
     resources.rollback(checkpoint, toRelease);

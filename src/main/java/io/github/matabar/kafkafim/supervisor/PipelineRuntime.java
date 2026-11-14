@@ -201,7 +201,10 @@ final class PipelineRuntime {
    * writer changed and the old writer reports only the change to blocked, not its state). Called
    * without the lock: the writer takes its own lock first when it reports to this runtime, so the
    * check cannot run under {@link #lock}. The reason is added first and dropped again if the writer
-   * unblocked meanwhile, so a report of the writer cannot be lost between the two.
+   * unblocked meanwhile, so a report of the writer is not lost between the two. Accepted limit: a
+   * writer that unblocks and blocks again between the recheck and the final resume leaves the
+   * reason cleared until its next event; the window is a few instructions, on a path that needs a
+   * concurrent start or stop.
    */
   void restoreDlqBlocked() {
     DlqProducers producers = context.dlqProducers();
@@ -214,7 +217,7 @@ final class PipelineRuntime {
     if (writer.isBlocked()) {
       pauseIfOwner(r -> r.usesDlq(producers), DLQ_BLOCKED_REASON, true);
       if (!writer.isBlocked()) {
-        resume(DLQ_BLOCKED_REASON);
+        pauseIfOwner(r -> r.usesDlq(producers), DLQ_BLOCKED_REASON, false);
       }
     }
   }
