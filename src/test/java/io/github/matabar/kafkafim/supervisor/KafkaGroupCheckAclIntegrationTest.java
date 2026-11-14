@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 
 import io.github.matabar.kafkafim.KafkaTestContainers;
+import io.github.matabar.kafkafim.KafkaTopics;
 import io.github.matabar.kafkafim.config.KafkaCluster;
 import io.github.matabar.kafkafim.config.KafkafimProperties;
 import io.github.matabar.kafkafim.source.kafka.ConsumerFactories;
@@ -83,10 +84,7 @@ class KafkaGroupCheckAclIntegrationTest {
   @BeforeAll
   static void setUp() throws Exception {
     admin = Admin.create(adminSettings());
-    admin
-        .createTopics(List.of(new NewTopic(TOPIC, 1, (short) 1)))
-        .all()
-        .get(TIMEOUT.toSeconds(), TimeUnit.SECONDS);
+    KafkaTopics.create(admin, List.of(new NewTopic(TOPIC, 1, (short) 1)));
     grant(ResourceType.TOPIC, TOPIC, AclOperation.READ);
     KafkaCluster cluster =
         new KafkaCluster(
@@ -180,11 +178,9 @@ class KafkaGroupCheckAclIntegrationTest {
     String describeOnly = "describe-only-" + UUID.randomUUID();
     String hidden = "hidden-" + UUID.randomUUID();
     String absent = "absent-" + UUID.randomUUID();
-    admin
-        .createTopics(
-            List.of(new NewTopic(describeOnly, 1, (short) 1), new NewTopic(hidden, 1, (short) 1)))
-        .all()
-        .get(TIMEOUT.toSeconds(), TimeUnit.SECONDS);
+    KafkaTopics.create(
+        admin,
+        List.of(new NewTopic(describeOnly, 1, (short) 1), new NewTopic(hidden, 1, (short) 1)));
     grant(ResourceType.TOPIC, describeOnly, AclOperation.DESCRIBE);
     grant(ResourceType.TOPIC, absent, AclOperation.READ);
     List<String> topics = List.of(TOPIC, describeOnly, hidden, absent);
