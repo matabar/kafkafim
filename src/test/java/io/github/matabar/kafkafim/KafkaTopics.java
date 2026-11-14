@@ -22,6 +22,33 @@ public final class KafkaTopics {
   private KafkaTopics() {}
 
   /**
+   * An admin client for a broker that has been seen to answer.
+   *
+   * <p>A container that is started is not always reachable yet: the first admin call of a test once
+   * waited its full 60 s for a node assignment while the client retried the bootstrap address
+   * ~111,000 times (#212). Each attempt here uses a fresh client with short timeouts, so a
+   * bootstrap attempt that went nowhere is dropped rather than waited out, and the client that is
+   * returned starts with a broker that answered {@code describeCluster}.
+   */
+  public static Admin awaitedAdmin(String bootstrapServers) {
+    Map<String, Object> probe =
+        Map.of(
+            "bootstrap.servers", bootstrapServers,
+            "request.timeout.ms", 5000,
+            "default.api.timeout.ms", 5000);
+    await()
+        .atMost(READY_TIMEOUT)
+        .pollInterval(Duration.ofMillis(500))
+        .ignoreExceptions()
+        .until(() -> {
+          try (Admin candidate = Admin.create(probe)) {
+            return !candidate.describeCluster().nodes().get().isEmpty();
+          }
+        });
+    return Admin.create(Map.of("bootstrap.servers", bootstrapServers));
+  }
+
+  /**
    * Creates the topics and returns once the broker serves every partition of them.
    *
    * <p>{@code createTopics} returns when the controller accepted the topics, and the broker's

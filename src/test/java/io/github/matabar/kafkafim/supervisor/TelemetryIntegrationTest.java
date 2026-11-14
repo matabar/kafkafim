@@ -111,7 +111,7 @@ class TelemetryIntegrationTest {
   @BeforeAll
   static void startContainers() {
     Startables.deepStart(KAFKA, ES).join();
-    admin = Admin.create(Map.of("bootstrap.servers", KAFKA.getBootstrapServers()));
+    admin = KafkaTopics.awaitedAdmin(KAFKA.getBootstrapServers());
     producer = new KafkaProducer<>(KafkaTopics.seedingProducerConfig(KAFKA.getBootstrapServers()));
     http = HttpClient.newHttpClient();
   }
