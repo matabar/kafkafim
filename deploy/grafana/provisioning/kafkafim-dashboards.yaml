@@ -1,5 +1,7 @@
-# Grafana dashboard provider for the compose demo (compose.yaml mounts it into
-# grafana/otel-lgtm next to the image's own providers). Elsewhere, point a provider of
+# Grafana dashboard provider for the demos: compose.yaml mounts it into grafana/otel-lgtm
+# next to the image's own providers, and the local Kubernetes demo
+# (deploy/local/kafkafim-demo) mounts the same file and the same dashboards/ directory.
+# Elsewhere, point a provider of
 # your Grafana at a copy of deploy/grafana/dashboards/, or import the JSON files.
 apiVersion: 1
 
