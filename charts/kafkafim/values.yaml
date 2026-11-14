@@ -173,9 +173,10 @@ topologySpread:
 
 # Ingress-only NetworkPolicy for every kafkafim pod of this release: allows TCP 8080
 # (actuator, Prometheus scrape, /actuator/reload) from the listed peers only. Egress
-# is not restricted. The default allows pods in the release's namespace; add the
-# monitoring namespace if Prometheus scrapes from elsewhere. An empty list means any
-# source (Kubernetes semantics for an ingress rule without `from`).
+# is not restricted; a cluster that default-denies egress writes its own policy (see
+# "Egress the pods need" in docs/HELM.md). The default allows pods in the release's
+# namespace; add the monitoring namespace if Prometheus scrapes from elsewhere. An empty
+# list means any source (Kubernetes semantics for an ingress rule without `from`).
 networkPolicy:
   enabled: false
   allowFrom:
