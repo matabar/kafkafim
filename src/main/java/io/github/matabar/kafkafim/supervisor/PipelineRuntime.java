@@ -318,21 +318,63 @@ final class PipelineRuntime {
       }
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
-    } catch (RuntimeException e) {
+    } catch (RuntimeException | Error e) {
       LOG.error("Pipeline '{}': start failed unexpectedly", name, e);
-      synchronized (lock) {
-        // Only while this thread is still the starter: once it published its outcome
-        // (finishStart), a retry may have begun a newer start, whose state this must not replace.
-        if (starter == Thread.currentThread()) {
-          failure = e.toString();
-          setState(PipelineState.FAILED_PREFLIGHT);
-          finishStart();
-        }
+      abandonStart(e);
+      if (e instanceof Error error) {
+        throw error;
       }
     } finally {
       synchronized (lock) {
         finishStart();
       }
+    }
+  }
+
+  /**
+   * Ends a start that failed unexpectedly (anything {@code attemptStart} did not expect, an {@link
+   * Error} included): discards what it published (the sinks, and the source, stopped if it had
+   * started), then marks the pipeline {@code failed_preflight} and forgets the starter, so that a
+   * retry begins from nothing. Only while this thread is still the starter: once it published its
+   * outcome ({@link #finishStart}), a retry may have begun a newer start, whose state and resources
+   * this must not touch.
+   */
+  private void abandonStart(Throwable cause) {
+    KafkaPipelineSource abandoned;
+    Map<RouteTarget.StreamKey, BulkSink<RecordProcessor.DocumentRef>> toClose;
+    synchronized (lock) {
+      if (starter != Thread.currentThread()) {
+        return;
+      }
+      abandoned = source;
+      toClose = sinks;
+      source = null;
+      sinks = Map.of();
+    }
+    try {
+      if (abandoned != null) {
+        abandoned.stop();
+      }
+      closeSinks(toClose, Duration.ZERO);
+    } catch (RuntimeException e) {
+      LOG.warn("Pipeline '{}': discarding the failed start failed", name, e);
+    }
+    synchronized (lock) {
+      if (starter == Thread.currentThread()) {
+        failure = cause.toString();
+        try {
+          setState(PipelineState.FAILED_PREFLIGHT);
+        } finally {
+          finishStart();
+        }
+      }
+    }
+  }
+
+  /** Whether a source or sinks are held; for tests. */
+  boolean holdsResources() {
+    synchronized (lock) {
+      return source != null || !sinks.isEmpty();
     }
   }
 
@@ -454,6 +496,9 @@ final class PipelineRuntime {
       } catch (IllegalArgumentException | KafkaException e) {
         closeSinks(opened, Duration.ZERO);
         return failed(List.of("configuration cannot run: " + e.getMessage()));
+      } catch (RuntimeException | Error e) {
+        closeSinks(opened, Duration.ZERO); // nothing published them: startLoop cannot close them
+        throw e;
       }
       sinks = opened;
       source = created;
