@@ -147,7 +147,7 @@ On 2026-11-14, on the branch with main `34accd9` merged, with kind 0.33.0 (node 
 - Loki (on 2026-11-14, a new cluster on main `c29bf90`, which exports logs over OTLP,
   two `smoke` runs): the `service_name` label had the value `kafkafim`, and the query
   `{service_name="kafkafim"}` through Grafana's Loki data source returned kafkafim's
-  log lines (Kafka consumer coordinator and subscription messages). Checked through the
+  log lines (Kafka consumer subscription messages, for example offset resets). Checked through the
   data source's HTTP API, not in the *Explore* page.
 - Running the same `helm upgrade --install` again kept both generated passwords, and
   `smoke` passed after it.
