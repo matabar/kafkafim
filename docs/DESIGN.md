@@ -1302,7 +1302,7 @@ to Elasticsearch. Dropped documents (§5.3) never join a batch, so they appear i
 
 ### Logs
 
-Every log event goes to two places (ADR-0041):
+Every log event goes to two places (ADR-0044):
 
 - **OTLP**, the structured copy, for the backend. OpenTelemetry's Logback appender
   (`logback-spring.xml`) feeds the logger provider Spring Boot auto-configures; records

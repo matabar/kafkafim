@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  Two destinations for every log event (docs/DESIGN.md §10 Logs, ADR-0041):
+  Two destinations for every log event (docs/DESIGN.md §10 Logs, ADR-0044):
 
   CONSOLE  readable text on stdout, for a person reading `kubectl logs` or running locally:
            Spring Boot's own console appender and pattern (time, level, pid, application,

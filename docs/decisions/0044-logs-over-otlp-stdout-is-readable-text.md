@@ -1,4 +1,4 @@
-# ADR-0041: Logs are exported over OTLP with metrics and traces; stdout is readable text
+# ADR-0044: Logs are exported over OTLP with metrics and traces; stdout is readable text
 
 Status: accepted · Date: 2026-11-13 · Supersedes the logs part of [ADR-0013](0013-observability-otel-via-spring-boot.md)
 

@@ -10,7 +10,7 @@ import org.springframework.context.annotation.Profile;
 /**
  * Connects the {@code OTLP} appender of {@code logback-spring.xml} to the OpenTelemetry SDK that
  * Spring Boot auto-configures, so log records leave over OTLP with the metrics' and traces'
- * resource attributes and the current span's trace id (DESIGN §10 Logs, ADR-0041).
+ * resource attributes and the current span's trace id (DESIGN §10 Logs, ADR-0044).
  *
  * <p>Spring Boot provides the logger provider, the batching processor and the OTLP exporter; this
  * bridge from Logback is the one piece it leaves to the application. Until it runs, the appender

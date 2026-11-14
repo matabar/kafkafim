@@ -36,7 +36,7 @@
 		     micrometer-registry-otlp ${micrometer.version} depends on (runtime scope).
 		     The maven-enforcer-plugin execution below fails the build when they differ. -->
 		<opentelemetry-proto.version>1.10.0-alpha</opentelemetry-proto.version>
-		<!-- Logback to OpenTelemetry log bridge (ADR-0041). Not in the Boot or OpenTelemetry BOMs:
+		<!-- Logback to OpenTelemetry log bridge (ADR-0044). Not in the Boot or OpenTelemetry BOMs:
 		     keep on the instrumentation release built against the BOM's ${opentelemetry.version}
 		     (instrumentation 2.N pairs with SDK 1.(N+34)). Dependabot ignores the artifact
 		     (.github/dependabot.yml); bump it in the Boot upgrade that moves the SDK. -->
@@ -64,7 +64,7 @@
 		</dependency>
 		<dependency>
 			<!-- Feeds Logback events to the OpenTelemetry SDK's logger provider, which Spring Boot
-			     auto-configures with an OTLP exporter (logback-spring.xml, ADR-0041). -->
+			     auto-configures with an OTLP exporter (logback-spring.xml, ADR-0044). -->
 			<groupId>io.opentelemetry.instrumentation</groupId>
 			<artifactId>opentelemetry-logback-appender-1.0</artifactId>
 			<version>${opentelemetry-logback-appender.version}</version>

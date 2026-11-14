@@ -54,7 +54,7 @@ class KafkafimApplicationIntegrationTest {
   void contextLoads() {}
 
   /**
-   * DESIGN §10 Logs against a real OTLP backend (ADR-0041): a line logged through SLF4J inside a
+   * DESIGN §10 Logs against a real OTLP backend (ADR-0044): a line logged through SLF4J inside a
    * span reaches the Loki of the Grafana LGTM container over OTLP, under the resource attributes
    * metrics and traces carry, with the span's trace and span id, its logger, thread and exception.
    * The same line on stdout is plain text. {@code OtlpExportIntegrationTest} covers the endpoint
