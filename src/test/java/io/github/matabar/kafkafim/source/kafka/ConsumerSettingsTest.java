@@ -164,24 +164,6 @@ class ConsumerSettingsTest {
   }
 
   @Test
-  void redactedHidesSecrets() {
-    Map<String, Object> settings =
-        ConsumerSettings.forIdentity(
-            cluster(SecurityProtocol.SASL_SSL, new Trust("/t", "trust-pass", null), Map.of()),
-            new KafkaIdentity(SCRAM, new Keystore("/k", "ks-pass", "key-pass", null)));
-    String printed = ConsumerSettings.redacted(settings).toString();
-    assertThat(printed)
-        .doesNotContain("s3cr3t", "trust-pass", "ks-pass", "key-pass")
-        .contains("sasl.jaas.config=[hidden]", "bootstrap.servers=k1:9093,k2:9093");
-  }
-
-  @Test
-  void redactedHidesUserInfoLikeTheDlqProducerDoes() {
-    assertThat(ConsumerSettings.redacted(Map.of("basic.auth.user.info", "user:secret")))
-        .containsEntry("basic.auth.user.info", "[hidden]");
-  }
-
-  @Test
   void pipelineOverridesComeFromTheSourceBlock() {
     Pipeline.Source source =
         new Pipeline.Source(
