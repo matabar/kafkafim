@@ -49,8 +49,8 @@ docker compose down -v                             # reset the stack and its dat
 `kafka-init` service for topic and producer commands.)
 
 To run the real Helm chart instead, on a local kind or Docker Desktop cluster with
-in-cluster Kafka and Elasticsearch and secrets mounted as files like production, see
-[deploy/local](deploy/local/README.md):
+in-cluster Kafka, Elasticsearch and Grafana LGTM (one `helm install`) and secrets mounted
+as files like production, see [deploy/local](deploy/local/README.md):
 
 ```bash
 deploy/local/demo.sh up && deploy/local/demo.sh smoke
