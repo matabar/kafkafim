@@ -545,11 +545,17 @@ class PipelineSupervisorIntegrationTest {
         .value();
   }
 
+  /**
+   * The readiness status of the application's own actuator. Asks 127.0.0.1, not {@code localhost}:
+   * the context listens on an ephemeral port, and the same port number can be published by a Docker
+   * container (the shared Elasticsearch answers 404 to this path) on another address {@code
+   * localhost} resolves to (#211).
+   */
   private static int readiness(ConfigurableApplicationContext app) throws Exception {
     String port = app.getEnvironment().getProperty("local.server.port");
     return http.send(
             HttpRequest.newBuilder(
-                    URI.create("http://localhost:" + port + "/actuator/health/readiness"))
+                    URI.create("http://127.0.0.1:" + port + "/actuator/health/readiness"))
                 .build(),
             HttpResponse.BodyHandlers.discarding())
         .statusCode();
