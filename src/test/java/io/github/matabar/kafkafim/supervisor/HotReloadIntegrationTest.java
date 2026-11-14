@@ -515,11 +515,13 @@ class HotReloadIntegrationTest {
     }
   }
 
+  // The actuator calls ask 127.0.0.1, not localhost: the context listens on an ephemeral port that
+  // a Docker-published port of another container can share on another address (#211, #222).
   private static HttpResponse<String> postReload(ConfigurableApplicationContext app)
       throws IOException, InterruptedException {
     String port = app.getEnvironment().getProperty("local.server.port");
     return http.send(
-        HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/actuator/reload"))
+        HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + "/actuator/reload"))
             .POST(HttpRequest.BodyPublishers.noBody())
             .timeout(TIMEOUT)
             .build(),
@@ -531,7 +533,7 @@ class HotReloadIntegrationTest {
     String port = app.getEnvironment().getProperty("local.server.port");
     return http.send(
             HttpRequest.newBuilder(
-                    URI.create("http://localhost:" + port + "/actuator/health/readiness"))
+                    URI.create("http://127.0.0.1:" + port + "/actuator/health/readiness"))
                 .timeout(TIMEOUT)
                 .build(),
             HttpResponse.BodyHandlers.discarding())
