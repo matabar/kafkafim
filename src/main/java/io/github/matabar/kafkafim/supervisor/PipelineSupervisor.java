@@ -390,6 +390,13 @@ public final class PipelineSupervisor implements SmartLifecycle {
             runtime.name(),
             e);
       }
+      try {
+        runtime
+            .restoreDlqBlocked(); // not part of the reconfigure above: its failure keeps previous
+      } catch (RuntimeException e) {
+        LOG.warn(
+            "Pipeline '{}': restoring dlq-blocked after a failed reload failed", runtime.name(), e);
+      }
     });
     resources.rollback(checkpoint, toRelease);
     if (!running) {

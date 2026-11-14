@@ -64,10 +64,10 @@ stopped for the reload stayed stopped until a later reload succeeded.
   the last pipeline of an Elasticsearch registry restarts away from it and another
   pipeline of the same reload joins that cluster with the same definition, the registry
   (and its breaker state) is now shared instead of closed and built again.
-- Known limit: a pipeline that had moved to new DLQ producers before a later
-  reconfigure failed, and whose previous writer was blocked, comes back without its
-  `dlq-blocked` pause, because the writer reports only the change to blocked. This
-  needs the same concurrent start or stop as above (#207).
+- A pipeline that had moved to new DLQ producers before a later reconfigure failed gets
+  its previous writer back, and `dlq-blocked` with it when that writer is still blocked:
+  the writer reports only the change to blocked, so the rollback reads `isBlocked()`
+  (#207).
 - An `Error` (for example a `NoClassDefFoundError` while a client is built) is rolled back
   like a `RuntimeException` and rethrown unchanged (#208). Only the rollback is shared:
   `ConfigReloader` counts and logs a `RuntimeException`, so an `Error` is neither counted
