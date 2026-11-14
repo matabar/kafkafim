@@ -61,7 +61,9 @@ Follow [DELIVERY.md § Importing into the air-gapped environment](DELIVERY.md#im
 download and `cosign verify` on the internet side, carry the bundle across,
 `sha256sum -c SHA256SUMS`, `cosign load` the image into the internal registry,
 `helm push` the chart, and record the image digest in each per-cluster values file
-(`image.registry`, `image.digest`).
+(`image.registry`, `image.digest`). The bundle also carries that version's alert rules and
+dashboards (`kafkafim-<ver>-grafana/`); `helm upgrade` does not install them, so load them
+with each import ([DELIVERY.md § Alert rules and dashboards](DELIVERY.md#alert-rules-and-dashboards)).
 
 ### 2.2 Upgrade
 
@@ -231,7 +233,9 @@ neither (`kafkafim_config_reload_total` has `result`) ([DESIGN §10](DESIGN.md#1
 | Does this pod own partitions? Is Kafka connected? | `kafkafim_assigned_partitions`, `kafkafim_kafka_connected` (1/0) |
 
 Dashboards and alert rules for these metrics ship in `deploy/grafana/`
-([DESIGN §10](DESIGN.md#shipped-with-the-repo)): see
+([DESIGN §10](DESIGN.md#shipped-with-the-repo)) and, versioned with the image, in the
+release bundle's `kafkafim-<ver>-grafana/` (what the air gap loads, see
+[§2.1](#21-import-a-release-into-the-air-gap)): see
 [deploy/grafana/README.md](../deploy/grafana/README.md) for importing the dashboards
 and loading the rules. Every alert's `runbook_url` points to a section of §5 (or
 §3.1), and each of those sections names the alerts that lead to it.
