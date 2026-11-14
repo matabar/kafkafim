@@ -169,7 +169,7 @@ final class ConfigTestSupport {
         .toArray(String[]::new);
   }
 
-  private static List<String> messages(AssertableApplicationContext context) {
+  static List<String> messages(AssertableApplicationContext context) {
     Throwable failure = context.getStartupFailure();
     for (Throwable t = failure; t != null; t = t.getCause()) {
       if (t instanceof BindValidationException validation) {
