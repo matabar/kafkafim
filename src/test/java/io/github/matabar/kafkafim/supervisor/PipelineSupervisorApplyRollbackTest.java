@@ -270,13 +270,6 @@ class PipelineSupervisorApplyRollbackTest {
     assertThat(runtime("b").pauseReasons()).contains(PipelineRuntime.DLQ_BLOCKED_REASON);
   }
 
-  private PipelineRuntime runtime(String pipeline) {
-    return supervisor.runtimes().stream()
-        .filter(r -> r.name().equals(pipeline))
-        .findFirst()
-        .orElseThrow();
-  }
-
   @Test
   void failedApplyStartsPipelinesTheTreeRemovesAgain() {
     start(deadBroker(A + B));
