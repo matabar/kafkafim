@@ -409,7 +409,7 @@ the consumer-only keys) and is bounded by the source's metadata timeout. An
 authorization or authentication error (no group ACL, or one on another group name:
 `FindCoordinator` needs `Describe`) is a configuration failure. So is an existing group
 whose authorized operations lack `READ`, and a group id another protocol already uses.
-`READ` or `ALL` listed, no operations listed, or a broker that does not support the
+`READ` listed, no operations listed, or a broker that does not support the
 request passes. So does a group that has never been joined: the broker answers
 `GroupIdNotFoundException` and cannot tell `Read` from `Describe`, so the first join
 stays the check for `Describe` without `Read` on a new group (ADR-0038).
@@ -834,7 +834,9 @@ reports the origin but never the value; likewise the bound configuration records
 every secret (passwords, API keys, keystore and key passwords, secret passthrough
 `properties` values) as `******` in `toString()`, while usernames stay readable. A
 literal in YAML, an environment variable or a system property is rejected, also when
-reached through a placeholder. A credential
+reached through a placeholder. A secret file whose own content contains `${` is an error
+(ADR-0045): the binder would substitute it from any property source, which would bypass
+this check and also mangle a real secret with that text. A credential
 placeholder (secret or username) that nothing defines fails startup (except under the
 `validate` profile, which lists it instead, §5.6), even with
 inline secrets allowed: Spring leaves unresolvable placeholders as literal text, so a
