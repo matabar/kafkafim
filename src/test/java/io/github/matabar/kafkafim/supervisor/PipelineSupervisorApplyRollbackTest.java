@@ -2,10 +2,16 @@ package io.github.matabar.kafkafim.supervisor;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.awaitility.Awaitility.await;
 
 import io.github.matabar.kafkafim.config.ConfigDiff;
 import io.github.matabar.kafkafim.config.KafkafimProperties;
+import io.github.matabar.kafkafim.dlq.DlqRequest;
+import io.github.matabar.kafkafim.dlq.DlqWriter;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 import org.junit.jupiter.api.AfterEach;
@@ -41,6 +47,9 @@ class PipelineSupervisorApplyRollbackTest {
   /** Runs whenever a context is acquired, with the configuration it is acquired for. */
   private volatile Consumer<KafkafimProperties> onAcquire = properties -> {};
 
+  /** Runs when a pipeline's pause reasons change, with its lock held. */
+  private volatile Consumer<String> onReasons = pipeline -> {};
+
   private final ListenerRelay relay = new ListenerRelay(List.of(), List.of());
   private final PipelineResources resources =
       new PipelineResources(
@@ -61,7 +70,17 @@ class PipelineSupervisorApplyRollbackTest {
   }
 
   private PipelineSupervisor start(KafkafimProperties properties) {
-    supervisor = new PipelineSupervisor(properties, resources, List.of());
+    supervisor =
+        new PipelineSupervisor(
+            properties,
+            resources,
+            List.of(
+                new SupervisorListener() {
+                  @Override
+                  public void onPauseReasonsChange(String pipeline, Set<String> reasons) {
+                    onReasons.accept(pipeline);
+                  }
+                }));
     relay.attach(supervisor);
     supervisor.start();
     return supervisor;
@@ -83,6 +102,13 @@ class PipelineSupervisorApplyRollbackTest {
         (TestConfigs.CLUSTERS + "  pipelines:\n" + pipelines.indent(4))
             .replace("k1:9092", "127.0.0.1:9")
             .replace("password: p", "password: p2"));
+  }
+
+  private PipelineRuntime runtime(String pipeline) {
+    return supervisor.runtimes().stream()
+        .filter(r -> r.name().equals(pipeline))
+        .findFirst()
+        .orElseThrow();
   }
 
   private PipelineRuntime.Context context(String pipeline) {
@@ -214,5 +240,150 @@ class PipelineSupervisorApplyRollbackTest {
     assertThat(context("b")).isSameAs(b);
     assertThat(supervisor.state("b")).isEqualTo(PipelineState.STARTING);
     assertThat(resources.instances()).isEqualTo(2);
+  }
+
+  /** The shutdown began during the failing apply: nothing starts again, and the error stays. */
+  @Test
+  void shutdownDuringFailingApplyRestartsNothing() {
+    start(deadBroker(A + B));
+    final KafkafimProperties running = supervisor.properties();
+    final KafkafimProperties next = deadBrokerNewPassword(A + B);
+    onAcquire =
+        properties -> {
+          if (properties == next) {
+            supervisor.stop();
+            throw new IllegalStateException("no client today");
+          }
+        };
+
+    assertThatThrownBy(() -> supervisor.apply(next, ConfigDiff.between(running, next)))
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessage("no client today");
+
+    assertThat(supervisor.isRunning()).isFalse();
+    assertThat(supervisor.states().values()).containsOnly(PipelineState.STOPPED);
+    assertThat(supervisor.properties()).isSameAs(running);
+  }
+
+  /** A pipeline in {@code failed_preflight} is not among those started again. */
+  @Test
+  void failedApplyLeavesFailedPreflightPipelineFailed() {
+    start(
+        TestConfigs.bind(
+            (TestConfigs.CLUSTERS + "  pipelines:\n" + (A + B).indent(4))
+                .replace("k1:9092", "127.0.0.1:9")
+                .replace(
+                    "[127.0.0.1:9] }", "[127.0.0.1:9], properties: { max.poll.records: 5 } }")));
+    await()
+        .atMost(Duration.ofSeconds(30))
+        .until(() -> supervisor.state("a") == PipelineState.FAILED_PREFLIGHT);
+    final String failure = supervisor.failure("a");
+    final KafkafimProperties running = supervisor.properties();
+    final KafkafimProperties next =
+        TestConfigs.bind(
+            (TestConfigs.CLUSTERS
+                    + "  pipelines:\n"
+                    + (A.replace("index: a", "index: a2") + B).indent(4))
+                .replace("k1:9092", "127.0.0.1:9")
+                .replace(
+                    "[127.0.0.1:9] }", "[127.0.0.1:9], properties: { max.poll.records: 5 } }"));
+    ConfigDiff diff = ConfigDiff.between(running, next);
+    assertThat(diff.restarted()).containsOnlyKeys("a");
+    failAcquire(next, 1);
+
+    assertThatThrownBy(() -> supervisor.apply(next, diff))
+        .isInstanceOf(IllegalStateException.class);
+
+    assertThat(supervisor.state("a")).isEqualTo(PipelineState.FAILED_PREFLIGHT);
+    assertThat(supervisor.failure("a")).isEqualTo(failure);
+    assertThat(supervisor.properties()).isSameAs(running);
+  }
+
+  /** An {@link Error} while a client is built is rolled back too, and rethrown as it is. */
+  @Test
+  void errorWhileAcquiringIsRolledBackAndRethrown() {
+    start(deadBroker(A));
+    final KafkafimProperties running = supervisor.properties();
+    final PipelineRuntime.Context before = context("a");
+    final KafkafimProperties next = deadBrokerNewPassword(A + C);
+    final NoClassDefFoundError error = new NoClassDefFoundError("some/Client");
+    onAcquire =
+        properties -> {
+          if (properties == next) {
+            throw error;
+          }
+        };
+
+    assertThatThrownBy(() -> supervisor.apply(next, ConfigDiff.between(running, next)))
+        .isSameAs(error);
+
+    assertThat(supervisor.properties()).isSameAs(running);
+    assertThat(context("a")).isSameAs(before);
+    assertThat(resources.instances()).isEqualTo(2);
+    assertThat(supervisor.state("a")).isEqualTo(PipelineState.STARTING);
+  }
+
+  /**
+   * The catch branch of the rollback: b is started again while its reconfigure is reported (its
+   * {@code dlq-blocked} goes with the writer), so the rollback cannot give it its context back. It
+   * keeps the new one, which stays in use, and the rest of the rollback goes on.
+   */
+  @Test
+  void pipelineStartedWhileTheRollbackGivesItsContextBackKeepsTheNewContext() {
+    start(deadBroker(B + A));
+    final KafkafimProperties running = supervisor.properties();
+    final PipelineRuntime.Context a = context("a");
+    final DlqWriter writer = context("b").dlqProducers().writer("b");
+    writer.send(
+        new DlqRequest(
+            "b",
+            0,
+            0,
+            null,
+            null,
+            null,
+            List.of(),
+            "test",
+            null,
+            null,
+            null,
+            1,
+            Instant.now(),
+            null));
+    await().atMost(Duration.ofSeconds(60)).until(writer::isBlocked);
+    await()
+        .atMost(Duration.ofSeconds(10))
+        .until(() -> runtime("b").pauseReasons().contains(PipelineRuntime.DLQ_BLOCKED_REASON));
+    supervisor.stopPipeline("b");
+
+    final KafkafimProperties next = deadBrokerNewPassword(C + B + A);
+    ConfigDiff diff = ConfigDiff.between(running, next);
+    AtomicInteger acquires = new AtomicInteger();
+    onAcquire =
+        properties -> {
+          if (properties == next && acquires.incrementAndGet() == 1) {
+            supervisor.startPipeline("a"); // so that a's reconfigure fails after b's
+          }
+        };
+    // The new writer of b has failed nothing: reconfigure drops dlq-blocked and reports it.
+    onReasons =
+        pipeline -> {
+          if (pipeline.equals("b") && !runtime("b").pauseReasons().contains("dlq-blocked")) {
+            onReasons = ignored -> {};
+            runtime("b").start();
+          }
+        };
+
+    assertThatThrownBy(() -> supervisor.apply(next, diff))
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessageContaining("'a' must be stopped to reconfigure");
+
+    assertThat(supervisor.properties()).isSameAs(running);
+    assertThat(context("a")).isSameAs(a);
+    assertThat(context("b").properties()).isSameAs(next); // kept the new context
+    assertThat(context("b").dlqProducers().writer("b")).isNotSameAs(writer);
+    // The new context's instances stay; the rest went back: DLQ producers of k (b's new ones),
+    // the registry of es (b's new one), and a's previous ones, which a is using again.
+    assertThat(resources.instances()).isEqualTo(4);
   }
 }

@@ -150,7 +150,7 @@ final class PipelineResources implements SmartLifecycle, AutoCloseable {
             }
           }
           authCheck = authChecks.apply(properties);
-        } catch (RuntimeException e) {
+        } catch (RuntimeException | Error e) {
           // Nothing was taken yet: drop the instances created for this call (current, but unused)
           // and make the ones they replaced current again. A current instance without users
           // exists only inside the acquire that created it: unuse retires an instance at zero.

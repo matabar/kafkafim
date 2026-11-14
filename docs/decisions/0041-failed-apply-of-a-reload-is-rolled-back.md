@@ -67,4 +67,5 @@ stopped for the reload stayed stopped until a later reload succeeded.
   reconfigure failed, and whose previous writer was blocked, comes back without its
   `dlq-blocked` pause, because the writer reports only the change to blocked. This
   needs the same concurrent start or stop as above (#207).
-- An `Error` (not a `RuntimeException`) while a client is built is not rolled back (#208).
+- An `Error` (for example a `NoClassDefFoundError` while a client is built) is rolled back
+  like a `RuntimeException` and rethrown unchanged (#208).

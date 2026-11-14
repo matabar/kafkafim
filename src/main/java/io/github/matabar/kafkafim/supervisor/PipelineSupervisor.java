@@ -273,7 +273,8 @@ public final class PipelineSupervisor implements SmartLifecycle {
    * ones; unchanged ones keep running on what they have.
    *
    * <p>If acquiring a context or reconfiguring a pipeline fails, nothing of {@code next} takes
-   * effect (ADR-0041): what was acquired is released, and the pipelines stopped for it that were
+   * effect (ADR-0041; also for an {@link Error} such as a {@code NoClassDefFoundError} while a
+   * client is built): what was acquired is released, and the pipelines stopped for it that were
    * running or starting start again on the running configuration, including those {@code next}
    * removes. The exception is rethrown.
    *
@@ -332,7 +333,7 @@ public final class PipelineSupervisor implements SmartLifecycle {
           }
           updated.put(name, runtime);
         }
-      } catch (RuntimeException e) {
+      } catch (RuntimeException | Error e) {
         rollBack(checkpoint, acquired.values(), replaced, active);
         throw e;
       }
