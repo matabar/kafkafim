@@ -99,7 +99,7 @@ tests:
           path: spec.template.spec.containers[0].env
           content: { name: OTEL_EXPORTER_OTLP_HEADERS, value: "x-tenant=a%2Cb%25c" }
 
-  - it: mounts otel.secretHeaders as one projected volume at both exporter header paths
+  - it: mounts otel.secretHeaders as one projected volume at the metrics, trace and log exporter header paths
     values:
       - ../ci/two-groups-values.yaml
     set:
@@ -118,6 +118,12 @@ tests:
           content:
             name: otel-secret-headers
             mountPath: /etc/kafkafim/secrets/management/opentelemetry/tracing/export/otlp/headers
+            readOnly: true
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: otel-secret-headers
+            mountPath: /etc/kafkafim/secrets/management/opentelemetry/logging/export/otlp/headers
             readOnly: true
       - contains:
           path: spec.template.spec.volumes
