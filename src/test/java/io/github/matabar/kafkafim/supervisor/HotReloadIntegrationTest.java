@@ -8,6 +8,7 @@ import co.elastic.clients.transport.rest5_client.low_level.Response;
 import co.elastic.clients.transport.rest5_client.low_level.ResponseException;
 import co.elastic.clients.transport.rest5_client.low_level.Rest5Client;
 import io.github.matabar.kafkafim.KafkaTestContainers;
+import io.github.matabar.kafkafim.KafkaTopics;
 import io.github.matabar.kafkafim.KafkafimApplication;
 import io.github.matabar.kafkafim.config.ElasticsearchCluster;
 import io.github.matabar.kafkafim.config.ElasticsearchCluster.ElasticsearchIdentity;

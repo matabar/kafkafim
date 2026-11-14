@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 
 import io.github.matabar.kafkafim.KafkaTestContainers;
+import io.github.matabar.kafkafim.KafkaTopics;
 import io.github.matabar.kafkafim.config.KafkaCluster;
 import io.github.matabar.kafkafim.config.KafkafimProperties;
 import io.github.matabar.kafkafim.config.Pipeline;
@@ -135,10 +136,7 @@ class DlqWriterAclIntegrationTest {
       throws Exception {
     String source = "orders-" + UUID.randomUUID();
     DlqWriter writer = writer(source);
-    admin
-        .createTopics(List.of(new NewTopic(writer.topic(), 1, (short) 1)))
-        .all()
-        .get(30, TimeUnit.SECONDS);
+    KafkaTopics.create(admin, List.of(new NewTopic(writer.topic(), 1, (short) 1)));
     assertThat(producers.checkTopic("orders")).isEqualTo(TopicStatus.NOT_AUTHORIZED);
     grant(writer.topic(), AclOperation.DESCRIBE);
     await().atMost(TIMEOUT).until(() -> producers.checkTopic("orders") == TopicStatus.EXISTS);
