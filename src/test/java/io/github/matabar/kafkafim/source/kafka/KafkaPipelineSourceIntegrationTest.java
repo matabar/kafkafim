@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.awaitility.Awaitility.await;
 
 import io.github.matabar.kafkafim.KafkaTestContainers;
+import io.github.matabar.kafkafim.KafkaTopics;
 import io.github.matabar.kafkafim.config.KafkaCluster;
 import io.github.matabar.kafkafim.config.KafkafimProperties;
 import io.github.matabar.kafkafim.config.Pipeline;
@@ -30,13 +31,11 @@ import org.apache.kafka.clients.admin.NewTopic;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.clients.producer.KafkaProducer;
-import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.GroupState;
 import org.apache.kafka.common.KafkaException;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.errors.GroupIdNotFoundException;
-import org.apache.kafka.common.serialization.ByteArraySerializer;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
@@ -73,15 +72,7 @@ class KafkaPipelineSourceIntegrationTest {
   @BeforeAll
   static void connect() {
     admin = Admin.create(Map.of("bootstrap.servers", KAFKA.getBootstrapServers()));
-    producer =
-        new KafkaProducer<>(
-            Map.of(
-                ProducerConfig.BOOTSTRAP_SERVERS_CONFIG,
-                KAFKA.getBootstrapServers(),
-                ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG,
-                ByteArraySerializer.class,
-                ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG,
-                ByteArraySerializer.class));
+    producer = new KafkaProducer<>(KafkaTopics.seedingProducerConfig(KAFKA.getBootstrapServers()));
     KafkaCluster local =
         new KafkaCluster(List.of(KAFKA.getBootstrapServers()), null, null, null, null, null);
     factories =
@@ -603,7 +594,7 @@ class KafkaPipelineSourceIntegrationTest {
 
   private static String createTopic(int partitions) throws Exception {
     String topic = "t-" + UUID.randomUUID().toString().substring(0, 8);
-    admin.createTopics(List.of(new NewTopic(topic, partitions, (short) 1))).all().get();
+    KafkaTopics.create(admin, List.of(new NewTopic(topic, partitions, (short) 1)));
     return topic;
   }
 

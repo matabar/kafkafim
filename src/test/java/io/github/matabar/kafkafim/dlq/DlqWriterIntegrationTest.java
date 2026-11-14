@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.awaitility.Awaitility.await;
 
 import io.github.matabar.kafkafim.KafkaTestContainers;
+import io.github.matabar.kafkafim.KafkaTopics;
 import io.github.matabar.kafkafim.config.KafkaCluster;
 import io.github.matabar.kafkafim.config.KafkafimProperties;
 import io.github.matabar.kafkafim.config.Pipeline;
@@ -111,7 +112,7 @@ class DlqWriterIntegrationTest {
   }
 
   private static void createTopic(String topic) throws Exception {
-    admin.createTopics(List.of(new NewTopic(topic, 1, (short) 1))).all().get(30, TimeUnit.SECONDS);
+    KafkaTopics.create(admin, List.of(new NewTopic(topic, 1, (short) 1)));
   }
 
   private static Header header(String key, byte[] value) {
