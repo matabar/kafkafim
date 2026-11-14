@@ -286,8 +286,8 @@ The endpoint answers JSON (names and violations only, never values):
 | 200 `applied` | Valid and changed something; `generation` went up by one. `kafkafim_config_reload_total{result="success"}` +1; INFO lines `Configuration reload (<trigger>): applying generation <n>: added ..., removed ..., restarted ..., unchanged ...` and `... generation <n> applied`, with `; retrying failed pipeline(s) [...]` appended when `retried` is not empty. | Check the restarted, added and retried pipelines reach `running`. |
 | 200 `unchanged` | Valid, identical to what runs; nothing restarted, `generation` stays. Pipelines in `failed_preflight` or `failed` are still retried and listed under `retried`; INFO `Configuration reload (<trigger>): no change, generation <n> stays`. Counts as `success`. | If you expected a change: kubelet has not refreshed the mount yet, or the change was outside `kafkafim.*`. Check the retried pipelines reach `running`. |
 | 400 `rejected` | The new tree is invalid or unreadable; **the running configuration stays**, nothing was touched. `errors` lists every violation as `<property path>: <problem>`; `kafkafim_config_reload_total{result="failure"}` +1; one ERROR line `Configuration reload (<trigger>) rejected; generation <n> keeps running. ...`. | Fix the values and upgrade again. See the warning below. |
-| 503 | Body `"result":"rejected"` with the reason in `errors`. Usually the supervisor is not running (startup not finished, or shutting down); an internal state error while applying is also mapped here. | Retry once the pod is up; if it persists on a running pod, treat it like a 500. |
-| 500 | Applying a valid tree failed part-way (ERROR `... failed while applying generation <n>; pipelines may be partly reconfigured`); `kafkafim_config_reload_total{result="failure"}` +1. | Restart the group's pods ([§2.4](#24-restart-pods)) so they start cleanly from the files. |
+| 503 | Body `"result":"rejected"` with the reason in `errors`. Usually the supervisor is not running (startup not finished, or shutting down); an internal state error while applying is also mapped here, and is rolled back like a 500. | Retry once the pod is up; if it persists on a running pod, treat it like a 500. |
+| 500 | Applying a valid tree failed (ERROR `... failed while applying generation <n>; the running configuration stays in effect`, with the cause); `kafkafim_config_reload_total{result="failure"}` +1. The reload was rolled back: `generation` stays, and the pipelines drained for it were started again on the previous configuration (WARN `Applying the configuration failed; ...` lists them). | Check those pipelines reach `running` again. The files still hold the new tree and the watcher does not retry the same content: once the cause in the ERROR line is fixed, `POST /actuator/reload` on each pod applies it; if it fails again, restart the group's pods ([§2.4](#24-restart-pods)) so they start from the files. |
 
 > **A rejected reload is a time bomb.** The pods keep running the old generation, but
 > the `ConfigMap` now holds the invalid one: any pod that restarts, is rescheduled or
@@ -688,7 +688,9 @@ tooling shows it too (`kafka-consumer-groups.sh --describe --group kafkafim.<pip
 `increase(kafkafim_config_reload_total{result="failure"}[10m]) > 0`: see
 [§4.2](#42-reading-the-result). Find the ERROR `Configuration reload (...) rejected`
 (or `... failed while applying generation`) line on any pod of the group for the violations, fix the values and upgrade again,
-or roll back. Until then the pods run the previous generation and new pods fail.
+or roll back. Until then the pods run the previous generation, and new pods fail on a rejected
+tree (a valid tree that only failed while it was applied usually starts on new pods, unless the
+cause in the ERROR line also applies at startup).
 
 ### 5.12 Pipeline stuck in `starting`
 

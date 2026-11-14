@@ -13,7 +13,6 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -86,9 +85,8 @@ class PipelineSupervisorReloadFailureTest {
   }
 
   /**
-   * {@link TestConfigs#CLUSTERS} with the given pipelines, as YAML, on a Kafka address that
-   * resolves and refuses connections: a started pipeline stays in {@code starting}, retrying its
-   * preflight.
+   * {@link TestConfigs#CLUSTERS} with the given pipelines, as YAML, on a loopback address that
+   * refuses connections: a started pipeline stays in {@code starting}, retrying its preflight.
    */
   private static String deadBrokerYaml(String pipelines) {
     return (TestConfigs.CLUSTERS + "  pipelines:\n" + pipelines.indent(4))
@@ -193,12 +191,12 @@ class PipelineSupervisorReloadFailureTest {
 
   /**
    * The same failure with a pipeline added earlier in the tree: what was acquired for the added
-   * pipeline has to go back too. It does not today (#161); enable this with the fix.
+   * pipeline goes back too (#161, ADR-0041).
    */
   @Test
-  @Disabled("#161: apply does not release what it acquired for added pipelines when it fails")
   void failedApplyReleasesWhatItAcquiredForAddedPipelines() {
     start(TestConfigs.bind(deadBrokerYaml(A)));
+    final PipelineRuntime.Context before = context("a");
     final KafkafimProperties running = supervisor.properties();
     assertThat(resources.instances()).isEqualTo(2);
 
@@ -220,7 +218,9 @@ class PipelineSupervisorReloadFailureTest {
         .isInstanceOf(IllegalStateException.class)
         .hasMessageContaining("'a' must be stopped to reconfigure");
 
+    assertThat(supervisor.properties()).isSameAs(running);
     assertThat(supervisor.pipelineNames()).containsExactly("a");
+    assertThat(context("a")).isSameAs(before);
     // Only what a runs with is left: not the DLQ producers and the es2 registry acquired for c.
     assertThat(resources.instances()).isEqualTo(2);
   }

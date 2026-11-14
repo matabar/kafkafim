@@ -32,6 +32,15 @@ class PipelineResourcesTest {
         routes: [ { default: true, cluster: es, index: b } ]
       """;
 
+  private static final String C =
+      """
+      c:
+        source: { cluster: k, topics: [c] }
+        routes:
+          - { when: [ { field: /kind, equals: x } ], cluster: es2, index: c }
+          - { default: true, cluster: es, index: c }
+      """;
+
   private final PipelineResources resources =
       new PipelineResources(
           new ListenerRelay(List.of(), List.of()),
@@ -45,9 +54,17 @@ class PipelineResourcesTest {
   }
 
   private static KafkafimProperties config(String pipelines) {
-    return TestConfigs.bind(
-        (TestConfigs.CLUSTERS + "  pipelines:\n" + pipelines.indent(4))
-            .replace("k1:9092", "localhost:9"));
+    return TestConfigs.bind(yaml(pipelines));
+  }
+
+  /** The same tree with another password for identity {@code writer} of {@code es}. */
+  private static KafkafimProperties configNewPassword(String pipelines) {
+    return TestConfigs.bind(yaml(pipelines).replace("password: p", "password: p2"));
+  }
+
+  private static String yaml(String pipelines) {
+    return (TestConfigs.CLUSTERS + "  pipelines:\n" + pipelines.indent(4))
+        .replace("k1:9092", "localhost:9");
   }
 
   @Test
@@ -101,6 +118,67 @@ class PipelineResourcesTest {
 
     assertThat(writerOfA.send(request())).isCompletedExceptionally();
     assertThat(b.dlqProducers().writer("b").isBlocked()).isFalse();
+  }
+
+  @Test
+  void failedAcquireTakesNothingAndLeavesTheCurrentInstancesCurrent() {
+    KafkafimProperties first = config(A);
+    KafkafimProperties failing = configNewPassword(A + C);
+    PipelineResources pool =
+        new PipelineResources(
+            new ListenerRelay(List.of(), List.of()),
+            p -> {
+              if (p == failing) {
+                throw new IllegalStateException("no client today");
+              }
+              return (cluster, identity) -> Preflight.Status.OK;
+            },
+            PipelineSupervisorTest.SETTINGS);
+    try {
+      final PipelineRuntime.Context a = pool.acquire("a", first);
+      assertThat(pool.instances()).isEqualTo(2);
+
+      // c is new to the DLQ producers of k and routes to es and es2; es is defined differently.
+      // Its acquire creates new DLQ producers and two registries before it fails.
+      assertThatThrownBy(() -> pool.acquire("c", failing))
+          .isInstanceOf(IllegalStateException.class)
+          .hasMessage("no client today");
+
+      assertThat(pool.instances()).isEqualTo(2);
+      PipelineRuntime.Context again = pool.acquire("a", first);
+      assertThat(again.dlqProducers()).isSameAs(a.dlqProducers());
+      assertThat(again.sinks().get("es")).isSameAs(a.sinks().get("es"));
+    } finally {
+      pool.stop();
+      pool.close();
+    }
+  }
+
+  @Test
+  void rollbackReleasesTheContextsAndMakesTheCheckpointsInstancesCurrentAgain() {
+    KafkafimProperties first = config(A + B);
+    final PipelineRuntime.Context a = resources.acquire("a", first);
+    final PipelineRuntime.Context b = resources.acquire("b", first);
+    final DlqWriter writerOfA = a.dlqProducers().writer("a");
+
+    // A reload moves a to new DLQ producers and both to a new registry of es, then fails.
+    PipelineResources.Checkpoint checkpoint = resources.checkpoint();
+    KafkafimProperties next = configNewPassword(MOVED_A + B);
+    PipelineRuntime.Context movedA = resources.acquire("a", next);
+    PipelineRuntime.Context movedB = resources.acquire("b", next);
+    assertThat(movedA.dlqProducers()).isNotSameAs(a.dlqProducers());
+    assertThat(resources.instances()).isEqualTo(4);
+
+    resources.rollback(checkpoint, List.of(movedA, movedB));
+
+    assertThat(resources.instances()).isEqualTo(2);
+    // a never left its DLQ producers: its writer there is kept (ADR-0035).
+    assertThat(a.dlqProducers().writer("a")).isSameAs(writerOfA);
+    // The instances of the running tree are the current ones again.
+    PipelineRuntime.Context again = resources.acquire("b", first);
+    assertThat(again.dlqProducers()).isSameAs(b.dlqProducers());
+    assertThat(again.sinks().get("es")).isSameAs(b.sinks().get("es"));
+    assertThat(resources.instances()).isEqualTo(2);
   }
 
   private static DlqRequest request() {
