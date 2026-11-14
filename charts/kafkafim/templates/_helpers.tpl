@@ -121,13 +121,14 @@ Normalised secret mount path (no trailing slash, "." and ".." resolved).
 
 {{/*
 Where otel.secretHeaders is mounted (JSON list): configtree turns each file into
-management.otlp.metrics.export.headers.<header> and
-management.opentelemetry.tracing.export.otlp.headers.<header> (Spring Boot 4 names).
+management.otlp.metrics.export.headers.<header>,
+management.opentelemetry.tracing.export.otlp.headers.<header> and
+management.opentelemetry.logging.export.otlp.headers.<header> (Spring Boot 4 names).
 Everything under /etc/kafkafim/secrets/management is reserved for these mounts.
 Keep in sync with OtlpExportIntegrationTest.SECRET_HEADER_DIRS.
 */}}
 {{- define "kafkafim.otelSecretHeaderMountPaths" -}}
-{{- list "/etc/kafkafim/secrets/management/otlp/metrics/export/headers" "/etc/kafkafim/secrets/management/opentelemetry/tracing/export/otlp/headers" | toJson -}}
+{{- list "/etc/kafkafim/secrets/management/otlp/metrics/export/headers" "/etc/kafkafim/secrets/management/opentelemetry/tracing/export/otlp/headers" "/etc/kafkafim/secrets/management/opentelemetry/logging/export/otlp/headers" | toJson -}}
 {{- end -}}
 
 {{/*
@@ -250,7 +251,7 @@ cannot express.
 {{- /* Boot maps these env vars into a property source that wins over configtree, so
        they would silently override otel.headers / otel.secretHeaders. */}}
 {{- if or .Values.otel.headers .Values.otel.secretHeaders -}}
-  {{- $reserved = concat $reserved (list "OTEL_EXPORTER_OTLP_HEADERS" "OTEL_EXPORTER_OTLP_METRICS_HEADERS" "OTEL_EXPORTER_OTLP_TRACES_HEADERS") -}}
+  {{- $reserved = concat $reserved (list "OTEL_EXPORTER_OTLP_HEADERS" "OTEL_EXPORTER_OTLP_METRICS_HEADERS" "OTEL_EXPORTER_OTLP_TRACES_HEADERS" "OTEL_EXPORTER_OTLP_LOGS_HEADERS") -}}
 {{- end -}}
 {{- range $e := .Values.extraEnv -}}
   {{- if eq $e.name "POD_NAME" -}}

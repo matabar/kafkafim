@@ -162,7 +162,7 @@ spec:
               readOnly: true
             {{- end }}
             {{- if $.Values.otel.secretHeaders }}
-            {{- /* configtree turns these files into the OTLP metrics and trace exporters' headers maps. */}}
+            {{- /* configtree turns these files into the OTLP metrics, trace and log exporters' headers maps. */}}
             {{- range $path := include "kafkafim.otelSecretHeaderMountPaths" $ | fromJsonArray }}
             - name: otel-secret-headers
               mountPath: {{ $path | quote }}

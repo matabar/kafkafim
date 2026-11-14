@@ -11,6 +11,9 @@ updates:
       # rule fails otherwise, which would block the whole all-others group. Bump it by
       # hand in the Boot/Micrometer upgrade that trips the rule.
       - dependency-name: "io.opentelemetry.proto:opentelemetry-proto"
+      # Built against one OpenTelemetry SDK version; must move with the SDK the Spring
+      # Boot BOM manages, not ahead of it (pom.xml, ADR-0044).
+      - dependency-name: "io.opentelemetry.instrumentation:opentelemetry-logback-appender-1.0"
   - package-ecosystem: github-actions
     directory: /
     schedule: { interval: weekly }

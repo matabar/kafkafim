@@ -18,7 +18,7 @@ Versions are the ones pinned at project creation (2026-11-07). Everything marked
 | Resilience | `resilience4j-circuitbreaker` (brings `resilience4j-core`) | 2.3.0 | Per-ES-cluster circuit breaker and backoff intervals only (`resilience4j-retry` is not used); the bulk retry loop itself is the sink's own | [0016](decisions/0016-resilience4j-for-breaker-and-retry.md), [0026](decisions/0026-bulk-retry-loop-in-the-sink.md) |
 | Metrics | Micrometer → OTLP + Prometheus registry | BOM | OTLP to Elastic APM Server; `/actuator/prometheus` for free | [0013](decisions/0013-observability-otel-via-spring-boot.md) |
 | Tracing | Micrometer Tracing + OpenTelemetry bridge → OTLP | BOM (OTel 1.62) | Bulk-level spans, span links from Kafka headers | [0013](decisions/0013-observability-otel-via-spring-boot.md) |
-| Logs | Spring Boot structured logging (ECS JSON) | BOM | Native to the Elastic stack | [0013](decisions/0013-observability-otel-via-spring-boot.md) |
+| Logs | Logback → OpenTelemetry Logback appender → OTLP (Spring Boot's auto-configured exporter); plain text on stdout | BOM; appender 2.28.1-alpha | Logs travel with metrics and traces; stdout is for people | [0044](decisions/0044-logs-over-otlp-stdout-is-readable-text.md) |
 | Web | `spring-boot-starter-webmvc` | BOM | Actuator endpoints and the reload endpoint only | — |
 | Validation | `spring-boot-starter-validation` | BOM | Bean Validation of the bound config | [0012](decisions/0012-spring-configuration-helm-configtree-hot-reload.md) |
 | Tests | JUnit 5, Spring Boot Test, Testcontainers (Kafka, Elasticsearch, LGTM), Awaitility | BOM (Testcontainers 2.0.x) | End-to-end and chaos cases against real brokers | [0019](decisions/0019-testing-strategy.md) |

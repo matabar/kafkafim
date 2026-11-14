@@ -430,6 +430,7 @@ class HotReloadIntegrationTest {
     Map<String, Object> props = new LinkedHashMap<>();
     props.put("spring.docker.compose.enabled", false);
     props.put("management.otlp.metrics.export.enabled", false);
+    props.put("management.logging.export.otlp.enabled", false);
     props.put("management.tracing.sampling.probability", 0.0);
     props.put("spring.config.additional-location", "file:" + dir.resolve("config") + "/");
     props.put("spring.config.import", "optional:configtree:" + dir.resolve("secrets") + "/");

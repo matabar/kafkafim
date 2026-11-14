@@ -57,7 +57,7 @@ groups:
     replicas: 2
 
 otel:
-  endpoint: http://apm-server.observability:8200   # OTLP/HTTP; a Collector later is just a new URL
+  endpoint: http://apm-server.observability:8200   # OTLP/HTTP for metrics, traces and logs; a Collector later is just a new URL
   headers: {}                                       # non-secret, e.g. { x-tenant: kafkafim }
   secretHeaders: {}                                 # e.g. { Authorization: { secretName: apm-server-token, key: authorization } }
 
@@ -137,17 +137,21 @@ For each `groups.<g>`:
 - `NetworkPolicy` (opt-in) is ingress-only: TCP 8080 from `networkPolicy.allowFrom`
   (default: pods in the release namespace). Egress is not restricted. An empty
   `allowFrom` list means any source, as in Kubernetes.
-- OTLP export headers reach both the metrics and the trace exporter:
+- Metrics, traces and logs are all exported to `otel.endpoint` (DESIGN §10); stdout
+  keeps the logs as readable text for `kubectl logs`. OTLP export headers reach the
+  metrics, the trace and the log exporter:
   - `otel.headers` (non-secret) render as `OTEL_EXPORTER_OTLP_HEADERS=k=v,…`, with `%`
     and `,` in values percent-encoded. Spring Boot 4.1 maps that variable itself to
-    `management.otlp.metrics.export.headers.*` and
-    `management.opentelemetry.tracing.export.otlp.headers.*` (and the OTLP logging
-    headers); the application adds no code for it.
+    `management.otlp.metrics.export.headers.*`,
+    `management.opentelemetry.tracing.export.otlp.headers.*` and
+    `management.opentelemetry.logging.export.otlp.headers.*`; the application adds no
+    code for it.
   - `otel.secretHeaders` (header name → `secretName` + `key` of an existing Secret)
     render one projected volume `otel-secret-headers`, one file per header named after
-    it, mounted read-only at both
-    `/etc/kafkafim/secrets/management/otlp/metrics/export/headers/` and
-    `/etc/kafkafim/secrets/management/opentelemetry/tracing/export/otlp/headers/`. The
+    it, mounted read-only at
+    `/etc/kafkafim/secrets/management/otlp/metrics/export/headers/`,
+    `/etc/kafkafim/secrets/management/opentelemetry/tracing/export/otlp/headers/` and
+    `/etc/kafkafim/secrets/management/opentelemetry/logging/export/otlp/headers/`. The
     configtree import turns each file into an entry of the exporter's headers map. Only
     the Secret name and key appear in the rendered manifests.
 
@@ -183,7 +187,8 @@ For each `groups.<g>`:
   case-insensitively). Header names are letters, digits and `-` (schema).
 - `extraEnv` does not redefine a variable the chart sets (the `SPRING_*` triple,
   `OTEL_EXPORTER_OTLP_ENDPOINT`, `POD_NAME`, `JAVA_TOOL_OPTIONS`,
-  and `OTEL_EXPORTER_OTLP_HEADERS` / `_METRICS_HEADERS` / `_TRACES_HEADERS` when
+  and `OTEL_EXPORTER_OTLP_HEADERS` / `_METRICS_HEADERS` / `_TRACES_HEADERS` /
+  `_LOGS_HEADERS` when
   `otel.headers` or `otel.secretHeaders` is set: Boot maps those variables into a
   property source that wins over configtree, so they would silently replace the
   chart's headers).
@@ -225,10 +230,9 @@ docker run --rm -v "$PWD/rendered/default:/etc/kafkafim/config:ro" registry.inte
 Exit code 0 means the configuration is valid, and an INFO line from
 `...config.KafkafimConfiguration` holds a summary: the pipelines with their clusters,
 identities, topics and indices, and the secret names the configuration expects under
-`/etc/kafkafim/secrets/`. The image logs ECS JSON, one object per line, so the
-summary's line breaks are `\n` inside `message`; append
-`| jq -r 'select(.log.logger | endswith("KafkafimConfiguration")).message'` to read
-it. Exit code 1 means it is invalid, and the log lists every violation as
+`/etc/kafkafim/secrets/`. The image logs plain text
+([DESIGN §10](DESIGN.md#logs)), so the summary reads as printed, over several
+lines. Exit code 1 means it is invalid, and the log lists every violation as
 `<property path>: <problem>`. Nothing is contacted, so the check needs no network and
 no Secrets: a secret that is not mounted is listed as `(not mounted)`, not rejected.
 Compare that list with `secrets[]`; a misnamed secret is otherwise found only when the
@@ -240,12 +244,11 @@ values is rejected as in production. A configuration that defines no Kafka clust
 Elasticsearch cluster and no pipeline also exits 1 (`No kafkafim configuration found`):
 it means the file was not where the image reads it, the `kafkafim` profile was not
 active, or the file defines nothing, so a wrong mount path does not pass. This message
-is not a validation violation: it appears in the ERROR line `Application run failed`
-(under `error.message`), not in the summary line, so search the log for it. A group
-with clusters and no pipelines is valid and shows `0 pipeline(s)`. Warnings do not
-change the exit code: read the WARN lines from
-`...config.KafkafimPropertiesValidator` too (for example a `bulk.max-bytes` above
-Elasticsearch's default limit).
+is not a validation violation: it appears in the stack trace under the ERROR line
+`Application run failed`, not in the summary, so search the log for it. A group with
+clusters and no pipelines is valid and shows `0 pipeline(s)`. Warnings do not change
+the exit code: read the WARN lines from `...config.KafkafimPropertiesValidator` too
+(for example a `bulk.max-bytes` above Elasticsearch's default limit).
 
 ## Secrets and configtree naming
 
@@ -287,7 +290,7 @@ otel:
       key: authorization
 ```
 
-Both the OTLP metrics and trace export requests then carry the header. The value is
+The OTLP metrics, trace and log export requests then carry the header. The value is
 read once at startup: after rotating the Secret, restart the pods
 (`kubectl rollout restart deployment -l app.kubernetes.io/instance=<release>`). Do not
 put a token in `otel.headers`, which renders into the Deployment, and prefer
