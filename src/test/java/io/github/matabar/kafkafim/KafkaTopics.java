@@ -37,13 +37,21 @@ public final class KafkaTopics {
             "request.timeout.ms", 5000,
             "default.api.timeout.ms", 5000);
     await()
-        .alias("broker answers describeCluster")
+        .alias("broker creates a topic")
         .atMost(READY_TIMEOUT)
         .pollInterval(Duration.ofMillis(500))
         .ignoreExceptions()
         .until(() -> {
           try (Admin candidate = Admin.create(probe)) {
-            return !candidate.describeCluster().nodes().get().isEmpty();
+            if (candidate.describeCluster().nodes().get().isEmpty()) {
+              return false;
+            }
+            candidate
+                .createTopics(List.of(new NewTopic("kafkafim.ready-probe", 1, (short) 1)))
+                .all()
+                .get();
+            candidate.deleteTopics(List.of("kafkafim.ready-probe")).all().get();
+            return true;
           }
         });
     return Admin.create(Map.of("bootstrap.servers", bootstrapServers));
