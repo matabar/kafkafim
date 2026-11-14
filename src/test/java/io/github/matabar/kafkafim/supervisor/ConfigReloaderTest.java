@@ -55,10 +55,16 @@ class ConfigReloaderTest {
         }
       };
 
+  private volatile Runnable onAcquire = () -> {};
   private final ListenerRelay relay = new ListenerRelay(List.of(), List.of());
   private final PipelineResources resources =
       new PipelineResources(
-          relay, p -> (cluster, identity) -> Preflight.Status.OK, PipelineSupervisorTest.SETTINGS);
+          relay,
+          p -> {
+            onAcquire.run();
+            return (cluster, identity) -> Preflight.Status.OK;
+          },
+          PipelineSupervisorTest.SETTINGS);
   private final SimpleMeterRegistry registry = new SimpleMeterRegistry();
   private PipelineSupervisor supervisor;
   private volatile Supplier<Environment> disk;
@@ -337,6 +343,32 @@ class ConfigReloaderTest {
     assertThat(generationGauge()).isEqualTo(1);
     assertThat(supervisor.properties()).isSameAs(running);
     assertThat(supervisor.pipelineNames()).containsExactly("a");
+  }
+
+  /**
+   * A shutdown during a failing apply: the apply was rolled back and nothing started again, but it
+   * is no failure of the tree, so it is neither counted as one nor as a success.
+   */
+  @Test
+  void shutdownDuringFailingApplyIsNotCountedAsFailedReload() {
+    final ConfigReloader reloader = start(A);
+    awaitSettled();
+    final KafkafimProperties running = supervisor.properties();
+    onDisk(A + B);
+    onAcquire =
+        () -> {
+          supervisor.stop();
+          throw new IllegalStateException("no client today");
+        };
+
+    assertThatThrownBy(() -> reloader.reload("test"))
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessage("no client today");
+
+    assertThat(reloads("failure")).isZero();
+    assertThat(reloads("success")).isZero();
+    assertThat(reloader.generation()).isEqualTo(1);
+    assertThat(supervisor.properties()).isSameAs(running);
   }
 
   @Test

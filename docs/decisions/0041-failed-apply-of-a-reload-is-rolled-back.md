@@ -56,7 +56,8 @@ stopped for the reload stayed stopped until a later reload succeeded.
   producers, breakers and DLQ writers. The restarted pipelines went through one drain
   and one start (a new preflight, a consumer group rebalance); nothing is lost, as with
   any reload restart.
-- `kafkafim_config_reload_total{result=failure}` and the ERROR line are unchanged; the
+- `kafkafim_config_reload_total{result=failure}` and the ERROR line are unchanged for a
+  `RuntimeException` (an `Error` is neither counted nor logged by the reloader, below); the
   generation does not move. One WARN line lists the pipelines started again.
 - A reload holds the old and the new building blocks of all its restarted pipelines at
   once for the time of the reconfigure, a little longer than before. One effect: when
@@ -67,4 +68,8 @@ stopped for the reload stayed stopped until a later reload succeeded.
   its previous writer back, and `dlq-blocked` with it when that writer is still blocked:
   the writer reports only the change to blocked, so the rollback reads `isBlocked()`
   (#207).
-- An `Error` (not a `RuntimeException`) while a client is built is not rolled back (#208).
+- An `Error` (for example a `NoClassDefFoundError` while a client is built) is rolled back
+  like a `RuntimeException` and rethrown unchanged (#208). Only the rollback is shared:
+  `ConfigReloader` counts and logs a `RuntimeException`, so an `Error` is neither counted
+  as a failed reload nor logged by it, and it ends the watcher thread (an `Error` stays
+  fatal there).
