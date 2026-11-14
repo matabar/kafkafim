@@ -11,8 +11,9 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 /**
- * Pause reasons of one {@link PipelineRuntime} against a change of its building blocks, without
- * starting it (no broker needed): events of the DLQ producers and registries a reload replaced.
+ * One {@link PipelineRuntime} without a broker: its pause reasons against a change of its building
+ * blocks (events of the DLQ producers and registries a reload replaced), and a start that fails
+ * unexpectedly.
  */
 class PipelineRuntimeTest {
 
@@ -172,6 +173,22 @@ class PipelineRuntimeTest {
   void pauseReasonDoesNotMakeStoppedPipelinePaused() {
     dlqEvent(first, true);
     assertThat(runtime.state()).isEqualTo(PipelineState.STOPPED);
+  }
+
+  @Test
+  void unexpectedExceptionWhileStartingFailsThePipelineAndLeavesItRetryable() {
+    // Closed DLQ producers answer writer() with an IllegalStateException, which no check expects.
+    first.dlqProducers().close();
+
+    runtime.start();
+
+    await()
+        .atMost(Duration.ofSeconds(10))
+        .until(() -> runtime.state() == PipelineState.FAILED_PREFLIGHT);
+    assertThat(runtime.failure()).contains("IllegalStateException");
+    // The starter was forgotten with the state, so a retry can begin at once.
+    assertThat(runtime.retryIfFailed()).isTrue();
+    runtime.stop();
   }
 
   @Test
