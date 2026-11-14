@@ -811,5 +811,6 @@ Current behaviour that this runbook works around; each is a follow-up, not a fea
 - **The `validate` profile does not check secrets or connectivity**
   ([DESIGN §5.6](DESIGN.md#56-validation-and-hot-reload), [HELM.md](HELM.md)): it
   accepts a secret that is not mounted and only lists its name, opens no trust or
-  keystore file and runs no preflight. A misnamed secret, a missing topic or a wrong
-  credential is still found only by a new pod's startup or a running pod's reload.
+  keystore file and runs no preflight. A misnamed secret, a missing topic, a missing
+  ACL or a wrong credential is still found only by a new pod's startup or a running
+  pod's reload.

@@ -206,15 +206,60 @@ class ValidateProfileTest {
   }
 
   @Test
-  void summarizesTreeWithoutPipelinesOrSecrets() {
+  void treeThatDefinesNothingFailsUnderTheProfile() {
     ConfigTestSupport.runner("kafkafim: {}", Map.of())
+        .withPropertyValues(VALIDATE)
+        .run(context -> {
+          assertThat(context).hasFailed();
+          assertThat(context.getStartupFailure())
+              .rootCause()
+              .isInstanceOf(IllegalStateException.class)
+              .hasMessageContaining("No kafkafim configuration found")
+              .hasMessageContaining("/etc/kafkafim/config/")
+              .hasMessageContaining("validate,kafkafim");
+        });
+  }
+
+  @Test
+  void reloadSettingsAloneAreNotConfiguration() {
+    // The image's own application.yaml always sets kafkafim.reload.*.
+    ConfigTestSupport.runner("kafkafim: { reload: { enabled: true } }", Map.of())
+        .withPropertyValues(VALIDATE)
+        .run(context -> {
+          assertThat(context).hasFailed();
+          assertThat(context.getStartupFailure())
+              .rootCause()
+              .hasMessageContaining("No kafkafim configuration found");
+        });
+  }
+
+  @Test
+  void treeThatDefinesNothingStillStartsOutsideTheProfile() {
+    ConfigTestSupport.runner("kafkafim: {}", Map.of())
+        .run(context -> assertThat(context).hasNotFailed());
+  }
+
+  @Test
+  void clustersWithoutPipelinesPassUnderTheProfile() {
+    String yaml =
+        ConfigTestSupport.tree(
+            ConfigTestSupport.KAFKA_CLUSTERS, ConfigTestSupport.ES_CLUSTERS, "{}\n");
+
+    ConfigTestSupport.runner(yaml, Map.of())
         .withPropertyValues(VALIDATE)
         .run(context -> {
           assertThat(context).hasNotFailed();
           assertThat(context.getBean(ValidateProfile.Summary.class).text())
               .isEqualTo(
-                  "Configuration is valid; nothing was started. 0 pipeline(s), 0 Kafka"
-                      + " cluster(s), 0 Elasticsearch cluster(s)\n  expected secrets (0)");
+                  "Configuration is valid; nothing was started. 0 pipeline(s), 1 Kafka"
+                      + " cluster(s), 1 Elasticsearch cluster(s)\n  expected secrets (0)");
         });
+  }
+
+  @Test
+  void oneClusterAloneIsConfiguration() {
+    ConfigTestSupport.runner("kafkafim: {}", Map.of())
+        .withPropertyValues(VALIDATE, "kafkafim.kafka.clusters.k.bootstrap-servers=k1:9092")
+        .run(context -> assertThat(context).hasNotFailed());
   }
 }

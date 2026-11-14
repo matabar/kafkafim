@@ -854,7 +854,7 @@ in `ConfigValidator`, whose messages never include values.
   5.7 run in the same pass), each as `<property path>: <problem>`; readiness never goes
   green. The `local` profile active, or `kafkafim.allow-inline-secrets=true` set, on
   `CloudPlatform.KUBERNETES` stops startup before binding (section 5.4).
-- **`validate` profile** (`config/ValidateProfile`, ADR-0040): started with
+- **`validate` profile** (`config/ValidateProfile`, ADR-0040, ADR-0043): started with
   `--spring.profiles.active=validate,kafkafim` and a rendered
   `application-kafkafim.yaml` mounted at `/etc/kafkafim/config/`, the application
   binds and validates, logs a summary, and exits 0; an invalid tree fails startup
@@ -869,12 +869,15 @@ in `ConfigValidator`, whose messages never include values.
   names the tree expects from mounted files, each marked `(not mounted)` when it is
   missing. It never prints a secret value. So a misnamed secret passes validation and
   is found when the pod starts; compare the list with the chart's `secrets[]`. Trust
-  and keystore files are not opened, and preflight (§4.6) does not run. A tree without
-  pipelines is valid, as at startup (it warns), so a wrong mount path shows as
-  `0 pipeline(s)` in the summary, not as a failure. It is meant for the infrastructure
-  repository's CI, where the per-cluster values live. This repository's CI does not
-  use it; it builds the image and smoke-tests it with a liveness probe
-  ([DELIVERY.md](DELIVERY.md)).
+  and keystore files are not opened, and preflight (§4.6) does not run. A tree that
+  defines no Kafka cluster, no Elasticsearch cluster and no pipeline fails under the
+  profile (`No kafkafim configuration found`, exit 1): there it means the rendered file
+  was not found (a wrong mount path, the `kafkafim` profile not active), and a normal
+  start only warns about it. Clusters without pipelines, a deliberately empty group,
+  stay valid and show `0 pipeline(s)`. Warnings never change the exit code. It is
+  meant for the infrastructure repository's CI, where the per-cluster values live.
+  This repository's CI does not use it; it builds the image and smoke-tests it with a
+  liveness probe ([DELIVERY.md](DELIVERY.md)).
 - **Reload** (ADR-0028): a watcher on the config and secret directories (Java
   `WatchService` + 10s hash poll, because kubelet updates volumes by symlink swap with
   up to ~1 min delay) plus `POST /actuator/reload`. The new tree is loaded with

@@ -240,9 +240,15 @@ pod starts. With the command above every secret shows as `(not mounted)`: the im
 does not import secret files by itself (the chart's Deployment does), so to check
 mounted ones also pass `-v <dir>:/etc/kafkafim/secrets:ro` and
 `-e SPRING_CONFIG_IMPORT=configtree:/etc/kafkafim/secrets/`. A literal secret in the
-values is rejected as in production. Check that the summary's pipeline count is what
-you expect: a directory without the file is a valid configuration with
-`0 pipeline(s)`.
+values is rejected as in production. A configuration that defines no Kafka cluster, no
+Elasticsearch cluster and no pipeline also exits 1 (`No kafkafim configuration found`):
+it means the file was not where the image reads it, the `kafkafim` profile was not
+active, or the file defines nothing, so a wrong mount path does not pass. This message
+is not a validation violation: it appears in the stack trace under the ERROR line
+`Application run failed`, not in the summary, so search the log for it. A group with
+clusters and no pipelines is valid and shows `0 pipeline(s)`. Warnings do not change
+the exit code: read the WARN lines from `...config.KafkafimPropertiesValidator` too
+(for example a `bulk.max-bytes` above Elasticsearch's default limit).
 
 ## Secrets and configtree naming
 

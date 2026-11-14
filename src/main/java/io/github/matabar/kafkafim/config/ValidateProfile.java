@@ -8,11 +8,14 @@ import org.springframework.core.env.Environment;
 import org.springframework.core.env.Profiles;
 
 /**
- * The {@code validate} profile (DESIGN §5.6, ADR-0018): started with {@code
+ * The {@code validate} profile (DESIGN §5.6, ADR-0018, ADR-0040, ADR-0043): started with {@code
  * --spring.profiles.active=validate,kafkafim} and a rendered configuration mounted, the application
  * binds and validates {@code kafkafim.*}, logs a summary and exits 0, or fails startup (exit 1)
  * with every violation. No pipeline, client, web server or telemetry export is started. It is meant
  * for the infrastructure repository's CI.
+ *
+ * <p>A tree that defines no cluster and no pipeline also fails ({@link #requireConfiguration}): it
+ * means the configuration was not found.
  *
  * <p>The checks are those of a normal start, with one exception: where the profile runs, the
  * Secrets are usually not mounted, so a credential placeholder that nothing defines is accepted and
@@ -33,6 +36,32 @@ public final class ValidateProfile {
    */
   public static boolean isActive(Environment environment) {
     return environment.acceptsProfiles(Profiles.of(NAME));
+  }
+
+  /**
+   * Refuses a tree that defines nothing: no Kafka cluster, no Elasticsearch cluster and no
+   * pipeline. A normal start accepts it with a warning, but under this profile it almost always
+   * means the configuration was not found (a wrong mount path, a missing {@code
+   * application-kafkafim.yaml}, the {@code kafkafim} profile not active), and passing it would
+   * report a configuration as valid that was never read. A tree with clusters and no pipelines is a
+   * deliberately empty group and passes. The bound tree is what is checked, not "no {@code
+   * kafkafim.*} property": the image's own {@code application.yaml} always sets {@code
+   * kafkafim.reload.*}.
+   *
+   * @param properties the bound tree
+   * @throws IllegalStateException if the tree defines no cluster and no pipeline
+   */
+  static void requireConfiguration(KafkafimProperties properties) {
+    if (properties.pipelines().isEmpty()
+        && properties.kafka().clusters().isEmpty()
+        && properties.elasticsearch().clusters().isEmpty()) {
+      throw new IllegalStateException(
+          "No kafkafim configuration found: no Kafka cluster, no Elasticsearch cluster and no"
+              + " pipeline is defined. Check that application-kafkafim.yaml is mounted where"
+              + " the image reads it (/etc/kafkafim/config/), that the 'kafkafim' profile is"
+              + " active (--spring.profiles.active=validate,kafkafim), and that the file"
+              + " defines clusters or pipelines.");
+    }
   }
 
   /**
