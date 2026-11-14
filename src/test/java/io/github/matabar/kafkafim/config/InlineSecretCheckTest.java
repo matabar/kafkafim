@@ -211,6 +211,64 @@ class InlineSecretCheckTest {
   }
 
   @Test
+  void rejectsSecretFileWhoseContentIsPlaceholder() {
+    // The binder would substitute ${my.lit} from YAML, so a literal would reach the password.
+    List<String> errors =
+        ConfigTestSupport.errors(
+            yamlWithSaslPassword("${kafka.k.r.password}") + "my:\n  lit: hunter2\n",
+            Map.of("kafka.k.r.password", "${my.lit}"),
+            SASL,
+            READER);
+
+    assertThat(errors)
+        .singleElement()
+        .asString()
+        .startsWith(K + ".identities.r.sasl.password: ")
+        .contains("placeholder ${kafka.k.r.password} reaches a secret file", "contains \"${\"")
+        .doesNotContain("hunter2");
+  }
+
+  @Test
+  void rejectsSecretFileWithPlaceholderInsideEvenWhenInlineSecretsAllowed() {
+    assertThat(
+            ConfigTestSupport.errors(
+                yamlWithSaslPassword("${kafka.k.r.password}"),
+                Map.of("kafka.k.r.password", "pa${ss}word"),
+                SASL,
+                READER,
+                "kafkafim.allow-inline-secrets=true"))
+        .singleElement()
+        .asString()
+        .contains("contains \"${\"")
+        .doesNotContain("pa${ss}word");
+  }
+
+  @Test
+  void rejectsSecretFileReadStraightWhoseContentHasPlaceholder(@TempDir Path tree)
+      throws IOException {
+    Path file = tree.resolve("kafkafim/kafka/clusters/k/identities/r/sasl/password");
+    Files.createDirectories(file.getParent());
+    Files.writeString(file, "${my.lit}");
+    List<String> errors = new ArrayList<>();
+
+    ConfigTestSupport.runner(MINIMAL + "my:\n  lit: hunter2\n", Map.of())
+        .withInitializer(context ->
+            context
+                .getEnvironment()
+                .getPropertySources()
+                .addFirst(new ConfigTreePropertySource("configtree", tree)))
+        .withPropertyValues(SASL)
+        .withPropertyValues(READER.split("\n"))
+        .run(context -> errors.addAll(ConfigTestSupport.messages(context)));
+
+    assertThat(errors)
+        .singleElement()
+        .asString()
+        .contains("the secret file", "contains \"${\"")
+        .doesNotContain("hunter2");
+  }
+
+  @Test
   void rejectsUnresolvedPlaceholderEvenWhenInlineSecretsAreAllowed() {
     assertThat(
             ConfigTestSupport.errors(
