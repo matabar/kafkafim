@@ -191,6 +191,50 @@ class PipelineRuntimeTest {
     runtime.stop();
   }
 
+  /**
+   * An {@link Error} from the starter (here the identity check) is not a {@code RuntimeException},
+   * but the pipeline must not stay {@code starting} with no starter, where {@code retryIfFailed}
+   * never acts (#209). The error still escapes the starter thread, as it would anywhere.
+   */
+  @Test
+  void errorWhileStartingFailsThePipelineAndLeavesItRetryable() {
+    // The starter rethrows the error after cleaning up; keep it from failing the test run.
+    AtomicReference<Throwable> escaped = new AtomicReference<>();
+    Thread.UncaughtExceptionHandler previous = Thread.getDefaultUncaughtExceptionHandler();
+    Thread.setDefaultUncaughtExceptionHandler((thread, error) -> escaped.set(error));
+    try (PipelineResources failing =
+        new PipelineResources(
+            new ListenerRelay(List.of(), List.of()),
+            p ->
+                (cluster, identity) -> {
+                  throw new NoClassDefFoundError("some/Client");
+                },
+            PipelineSupervisorTest.FAST_SETTINGS)) {
+      PipelineRuntime broken =
+          new PipelineRuntime(
+              "a",
+              failing.acquire("a", TestConfigs.bind(yaml(A).replace("k1:9092", "127.0.0.1:9"))),
+              r -> {});
+
+      broken.start();
+
+      await()
+          .dontCatchUncaughtExceptions()
+          .atMost(Duration.ofSeconds(30))
+          .until(() -> broken.state() == PipelineState.FAILED_PREFLIGHT);
+      assertThat(broken.failure()).contains("NoClassDefFoundError");
+      await()
+          .dontCatchUncaughtExceptions()
+          .atMost(Duration.ofSeconds(10))
+          .until(() -> escaped.get() != null);
+      assertThat(escaped.get()).isInstanceOf(NoClassDefFoundError.class);
+      assertThat(broken.retryIfFailed()).isTrue();
+      broken.stop();
+    } finally {
+      Thread.setDefaultUncaughtExceptionHandler(previous);
+    }
+  }
+
   @Test
   void reconfigureNeedsContextThatHasThePipeline() {
     PipelineRuntime.Context other =
