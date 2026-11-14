@@ -21,7 +21,9 @@ import org.springframework.core.env.PropertySource;
  * accepted when its value is read straight from a {@code configtree} file, or when its raw value is
  * exactly one {@code ${name}} placeholder (no {@code :default}) whose chain of references ends in a
  * {@code configtree} file. Anything else is a literal secret: a value in YAML, an environment
- * variable or a system property, also when reached through a placeholder.
+ * variable or a system property, also when reached through a placeholder. A {@code configtree} file
+ * whose own content holds a placeholder is an error (ADR-0045): the binder would substitute it,
+ * bypassing this check.
  *
  * <p>Detection reads <em>unresolved</em> values: the {@code Binder} resolves placeholders while
  * binding, so the {@link ConfigurationPropertySource} that wins for a name (the binder's own
@@ -58,6 +60,8 @@ final class InlineSecretCheck {
 
   private enum Kind {
     SECRET_FILE,
+    /** A secret file whose content has a {@code ${...}} the binder would substitute. */
+    PLACEHOLDER_IN_SECRET_FILE,
     LITERAL,
     UNRESOLVED
   }
@@ -96,14 +100,24 @@ final class InlineSecretCheck {
         }
         continue;
       }
+      String name = property.getName().toString();
       if (isSecretFile(property.getSource())) {
+        if (containsPlaceholder(property.getValue())) {
+          errors.add(name + ": " + secretFileWithPlaceholder(origin(property.getOrigin())));
+        }
         continue;
       }
-      String name = property.getName().toString();
       Matcher placeholder = placeholder(property.getValue());
       if (placeholder != null) {
         Resolution resolution = follow(placeholder.group(1), sources, 0);
-        if (resolution.kind() == Kind.UNRESOLVED) {
+        if (resolution.kind() == Kind.PLACEHOLDER_IN_SECRET_FILE) {
+          errors.add(
+              name
+                  + ": placeholder ${"
+                  + resolution.placeholder()
+                  + "} reaches a secret file whose content is substituted: "
+                  + secretFileWithPlaceholder(resolution.origin()));
+        } else if (resolution.kind() == Kind.UNRESOLVED) {
           if (allowUnmountedSecrets) {
             continue;
           }
@@ -154,7 +168,7 @@ final class InlineSecretCheck {
       Resolution resolution = follow(placeholder.group(1), sources, 0);
       if (resolution.kind() != Kind.LITERAL) {
         expected.merge(
-            resolution.placeholder(), resolution.kind() == Kind.SECRET_FILE, Boolean::logicalOr);
+            resolution.placeholder(), resolution.kind() != Kind.UNRESOLVED, Boolean::logicalOr);
       }
     }
     List<ExpectedSecret> secrets = new ArrayList<>();
@@ -216,7 +230,9 @@ final class InlineSecretCheck {
       Iterable<ConfigurationPropertySource> sources,
       int depth) {
     if (secretFile) {
-      return new Resolution(Kind.SECRET_FILE, name, null);
+      return containsPlaceholder(value)
+          ? new Resolution(Kind.PLACEHOLDER_IN_SECRET_FILE, name, origin)
+          : new Resolution(Kind.SECRET_FILE, name, null);
     }
     Matcher next = placeholder(value);
     if (next != null && depth < MAX_DEPTH) {
@@ -227,6 +243,22 @@ final class InlineSecretCheck {
 
   private static boolean isSecretFile(ConfigurationPropertySource source) {
     return source != null && source.getUnderlyingSource() instanceof ConfigTreePropertySource;
+  }
+
+  /**
+   * Whether a secret file's content has a {@code ${...}}: the binder substitutes it from whatever
+   * source has that name, so it would turn a mounted secret into any literal (or mangle a real
+   * secret that contains the text). There is no escape the binder honours here, so it is an error.
+   */
+  private static boolean containsPlaceholder(Object raw) {
+    return raw instanceof CharSequence text && text.toString().contains("${");
+  }
+
+  private static String secretFileWithPlaceholder(String origin) {
+    return "the secret file ("
+        + origin
+        + ") contains \"${\", which the binder would substitute from any property source; a"
+        + " secret cannot contain that text";
   }
 
   private static Matcher placeholder(Object raw) {

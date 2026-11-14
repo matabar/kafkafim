@@ -830,7 +830,9 @@ at the property source that wins for each name, before placeholder resolution, a
 follows a placeholder to the source the binder takes it from, relaxed names included
 (an environment variable such as `KAFKA_PRODA_READER_PASSWORD` that wins over the
 mounted `kafka.prod-a.reader.password` file is a literal). It
-reports the origin but never the value; likewise the bound configuration records print
+reports the origin but never the value. A secret file whose own content contains `${`
+is an error (ADR-0045): the binder would substitute it from any property source, which
+would bypass this check and also mangle a real secret with that text. Likewise the bound configuration records print
 every secret (passwords, API keys, keystore and key passwords, secret passthrough
 `properties` values) as `******` in `toString()`, while usernames stay readable. A
 literal in YAML, an environment variable or a system property is rejected, also when
