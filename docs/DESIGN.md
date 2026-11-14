@@ -944,6 +944,15 @@ in `ConfigValidator`, whose messages never include values.
     nothing the reload would have started, and may then exceed the 60s shutdown
     phase, after which Spring moves on: records not yet committed are re-delivered
     after the restart, nothing is lost.
+  - **A reload that fails while it is applied** (ADR-0041): a valid tree can still fail
+    in the supervisor, when a client or producer for it cannot be built or a drained
+    pipeline was started again before it got its new context. The reload is
+    then rolled back as a whole: the building blocks acquired for the new tree are
+    released, the ones the running tree uses stay the current ones, and the pipelines
+    drained for the reload (those that were running, paused or starting, including the
+    ones the new tree removes) start again on the running tree. The generation stays,
+    `kafkafim_config_reload_total{result=failure}` counts it, and one ERROR line carries
+    the cause.
   - **`POST /actuator/reload`** returns `{result, generation, added, removed,
     restarted: [{pipeline, reasons}], retried, unchanged, errors}`: 200 for `applied` or
     `unchanged`, 400 with every violation for `rejected`, 503 while the supervisor is

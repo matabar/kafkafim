@@ -189,8 +189,8 @@ final class ConfigReloader implements SmartLifecycle {
         }
         failures.increment();
         LOG.error(
-            "Configuration reload ({}) failed while applying generation {}; pipelines may be"
-                + " partly reconfigured",
+            "Configuration reload ({}) failed while applying generation {}; the running"
+                + " configuration stays in effect",
             trigger,
             generation() + 1,
             e);
